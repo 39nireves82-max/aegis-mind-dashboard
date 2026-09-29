@@ -1,0 +1,2018 @@
+{
+    "global_settings": {
+        "rsi_defensiv": 35.0,
+        "rsi_aggressiv": 30.0,
+        "rsi_sell_defensiv": 70.0,
+        "rsi_sell_aggressiv": 80.0,
+        "ema_trend_default": 200.0,
+        "custom_sectors": [],
+        "risk_mode": "Festes Euro-Risiko (\u20ac)",
+        "account_size": 10000.0,
+        "risk_eur": 100.0,
+        "risk_pct": 1.0,
+        "fixed_investment": 1000.0,
+        "currency_view": "Duale Ansicht (Original & EUR)",
+        "dynamic_risk_scaling": false,
+        "fee_mode": "Keine Geb\u00fchren / Raw",
+        "tax_jurisdiction": "DE"
+    },
+    "pro_mode_settings": {
+        "ema200_killer": "Aktiv",
+        "rsi_aktiv": "Aktiv",
+        "bollinger_aktiv": "Aktiv",
+        "macd_aktiv": "Aktiv",
+        "volumen_aktiv": "Aktiv",
+        "keltner_aktiv": "Aktiv",
+        "plateau_aktiv": "Inaktiv"
+    },
+    "esg_blacklist": {
+        "aktiv": false,
+        "tickers": [
+            "NESN.SW",
+            "GLEN.L",
+            "RHM.DE"
+        ]
+    },
+    "tab2_settings": {
+        "tf": "1d",
+        "rsi_buy": 30.0,
+        "rsi_sell": 70.0
+    },
+    "tab3_settings": {
+        "tf": "1h",
+        "rsi_short_entry": 70.0,
+        "rsi_take_profit": 30.0,
+        "tf_futures": "1h",
+        "tf_forex": "4h",
+        "rsi_long_entry": 30.0
+    },
+    "tickers": [],
+    "screener_tickers": [],
+    "futures_tickers": [
+        {
+            "symbol": "NQ=F",
+            "name": "Nasdaq 100",
+            "asset_class": "Futures",
+            "contract": "MNQ"
+        },
+        {
+            "symbol": "ES=F",
+            "name": "S&P 500",
+            "asset_class": "Futures",
+            "contract": "MES"
+        },
+        {
+            "symbol": "YM=F",
+            "name": "Dow Jones",
+            "asset_class": "Futures",
+            "contract": "MYM"
+        },
+        {
+            "symbol": "RTY=F",
+            "name": "Russell 2000",
+            "asset_class": "Futures",
+            "contract": "M2K",
+            "active": false
+        },
+        {
+            "symbol": "GC=F",
+            "name": "Gold",
+            "asset_class": "Rohstoffe",
+            "contract": "MGC"
+        },
+        {
+            "symbol": "SI=F",
+            "name": "Silber",
+            "asset_class": "Rohstoffe",
+            "contract": "SIL",
+            "active": false
+        },
+        {
+            "symbol": "CL=F",
+            "name": "Crude Oil",
+            "asset_class": "Rohstoffe",
+            "contract": "MCL"
+        },
+        {
+            "symbol": "NG=F",
+            "name": "Erdgas",
+            "asset_class": "Rohstoffe",
+            "contract": "QG"
+        },
+        {
+            "symbol": "HG=F",
+            "name": "Kupfer",
+            "asset_class": "Rohstoffe",
+            "contract": "MHG"
+        },
+        {
+            "symbol": "EURUSD=X",
+            "name": "EUR/USD",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "GBPUSD=X",
+            "name": "GBP/USD",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "USDJPY=X",
+            "name": "USD/JPY",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "AUDUSD=X",
+            "name": "AUD/USD",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "USDCAD=X",
+            "name": "USD/CAD",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "USDCHF=X",
+            "name": "USD/CHF",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "EURJPY=X",
+            "name": "EUR/JPY",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        },
+        {
+            "symbol": "DX-Y.NYB",
+            "name": "US Dollar Index",
+            "asset_class": "Forex",
+            "contract": "Lot"
+        }
+    ],
+    "lab_accounts": {
+        "default": {
+            "id": "default",
+            "name": "Privatkonto (10k)",
+            "account_size": 10000.0,
+            "risk_pct": 1.0,
+            "compounding": "inactive",
+            "trailing_stop": "active",
+            "broker_profile": "Bitpanda Fusion (0.10% / 0.05%)",
+            "min_score": 70,
+            "years": 5,
+            "tickers": [],
+            "last_backtest": null,
+            "tax_category": "private",
+            "exit_profile": "private_alpha"
+        },
+        "apex": {
+            "id": "apex",
+            "name": "Apex 50k Demo",
+            "account_size": 50000.0,
+            "risk_pct": 1.0,
+            "compounding": "inactive",
+            "trailing_stop": "active",
+            "broker_profile": "Apex / CME Futures (Insti-Rate)",
+            "min_score": 60,
+            "years": 2,
+            "tickers": [
+                "NQ=F"
+            ],
+            "last_backtest": null,
+            "tax_category": "prop_firm",
+            "exit_profile": "apex_lock"
+        },
+        "ftmo": {
+            "id": "ftmo",
+            "name": "FTMO 50k Demo",
+            "account_size": 50000.0,
+            "risk_pct": 1.0,
+            "compounding": "inactive",
+            "trailing_stop": "active",
+            "broker_profile": "FTMO / Forex (Raw Spread)",
+            "min_score": 60,
+            "years": 2,
+            "tickers": [
+                "USDJPY=X",
+                "GBPUSD=X"
+            ],
+            "last_backtest": null,
+            "tax_category": "prop_firm",
+            "exit_profile": "ftmo_swing"
+        }
+    },
+    "scan_universes": {
+        "Krypto": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BTC-USD",
+                    "name": "Bitcoin"
+                },
+                {
+                    "symbol": "ETH-USD",
+                    "name": "Ethereum"
+                },
+                {
+                    "symbol": "SOL-USD",
+                    "name": "Solana"
+                },
+                {
+                    "symbol": "KAS-USD",
+                    "name": "Kaspa"
+                },
+                {
+                    "symbol": "ADA-USD",
+                    "name": "Cardano"
+                },
+                {
+                    "symbol": "XRP-USD",
+                    "name": "XRP"
+                },
+                {
+                    "symbol": "DOT-USD",
+                    "name": "Polkadot"
+                },
+                {
+                    "symbol": "LINK-USD",
+                    "name": "Chainlink"
+                },
+                {
+                    "symbol": "MATIC-USD",
+                    "name": "Polygon"
+                },
+                {
+                    "symbol": "DOGE-USD",
+                    "name": "Dogecoin"
+                }
+            ]
+        },
+        "Futures": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BTC-USD",
+                    "name": "Bitcoin"
+                },
+                {
+                    "symbol": "ETH-USD",
+                    "name": "Ethereum"
+                },
+                {
+                    "symbol": "SOL-USD",
+                    "name": "Solana"
+                },
+                {
+                    "symbol": "NQ=F",
+                    "name": "Nasdaq 100"
+                },
+                {
+                    "symbol": "ES=F",
+                    "name": "S&P 500"
+                },
+                {
+                    "symbol": "YM=F",
+                    "name": "Dow Jones"
+                },
+                {
+                    "symbol": "RTY=F",
+                    "name": "Russell 2000"
+                },
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold"
+                },
+                {
+                    "symbol": "SI=F",
+                    "name": "Silber"
+                },
+                {
+                    "symbol": "CL=F",
+                    "name": "Crude Oil"
+                },
+                {
+                    "symbol": "NG=F",
+                    "name": "Erdgas"
+                },
+                {
+                    "symbol": "HG=F",
+                    "name": "Kupfer"
+                }
+            ]
+        },
+        "Cybersecurity": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "PANW",
+                    "name": "Palo Alto Networks"
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies"
+                },
+                {
+                    "symbol": "ISPY.SW",
+                    "name": "L&G Cyber Security UCITS ETF"
+                },
+                {
+                    "symbol": "FO8.MU",
+                    "name": "Fortinet Inc"
+                },
+                {
+                    "symbol": "45C.MU",
+                    "name": "CrowdStrike Holdings Inc"
+                },
+                {
+                    "symbol": "OKTA",
+                    "name": "Okta"
+                },
+                {
+                    "symbol": "ZS",
+                    "name": "Zscaler"
+                },
+                {
+                    "symbol": "CYBR",
+                    "name": "CyberArk"
+                },
+                {
+                    "symbol": "TENB",
+                    "name": "Tenable"
+                },
+                {
+                    "symbol": "CRWD",
+                    "name": "CrowdStrike"
+                },
+                {
+                    "symbol": "FTNT",
+                    "name": "Fortinet"
+                },
+                {
+                    "symbol": "CHKP",
+                    "name": "Check Point"
+                },
+                {
+                    "symbol": "S",
+                    "name": "SentinelOne"
+                },
+                {
+                    "symbol": "QLYS",
+                    "name": "Qualys"
+                }
+            ]
+        },
+        "Dax Auswahl": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "SAP.DE",
+                    "name": "SAP SE"
+                },
+                {
+                    "symbol": "SIE.DE",
+                    "name": "Siemens AG"
+                },
+                {
+                    "symbol": "ALV.DE",
+                    "name": "Allianz SE"
+                },
+                {
+                    "symbol": "AIR.DE",
+                    "name": "Airbus SE"
+                },
+                {
+                    "symbol": "DTE.DE",
+                    "name": "Deutsche Telekom"
+                },
+                {
+                    "symbol": "BMW.DE",
+                    "name": "BMW AG"
+                },
+                {
+                    "symbol": "MBG.DE",
+                    "name": "Mercedes-Benz Group"
+                },
+                {
+                    "symbol": "VOW3.DE",
+                    "name": "Volkswagen AG"
+                },
+                {
+                    "symbol": "BAS.DE",
+                    "name": "BASF SE"
+                }
+            ]
+        },
+        "Etf Sammlung": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "SPY",
+                    "name": "SPDR S&P 500 ETF"
+                },
+                {
+                    "symbol": "QQQ",
+                    "name": "Invesco QQQ Trust"
+                },
+                {
+                    "symbol": "DIA",
+                    "name": "SPDR Dow Jones Industrial"
+                },
+                {
+                    "symbol": "IWM",
+                    "name": "iShares Russell 2000 ETF"
+                },
+                {
+                    "symbol": "VTI",
+                    "name": "Vanguard Total Stock Market"
+                },
+                {
+                    "symbol": "VEA",
+                    "name": "Vanguard FTSE Developed Markets"
+                },
+                {
+                    "symbol": "VWO",
+                    "name": "Vanguard FTSE Emerging Markets"
+                },
+                {
+                    "symbol": "ARKK",
+                    "name": "ARK Innovation ETF"
+                },
+                {
+                    "symbol": "SMH",
+                    "name": "VanEck Semiconductor ETF"
+                }
+            ]
+        },
+        "Exoten High Risk": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "8XP.F",
+                    "name": "XPeng Inc."
+                },
+                {
+                    "symbol": "NIO",
+                    "name": "NIO Inc."
+                },
+                {
+                    "symbol": "PLUG",
+                    "name": "Plug Power"
+                },
+                {
+                    "symbol": "SPCE",
+                    "name": "Virgin Galactic Holdings"
+                },
+                {
+                    "symbol": "RIVN",
+                    "name": "Rivian Automotive"
+                },
+                {
+                    "symbol": "LCID",
+                    "name": "Lucid Group"
+                },
+                {
+                    "symbol": "CRSP",
+                    "name": "CRISPR Therapeutics"
+                },
+                {
+                    "symbol": "PACB",
+                    "name": "Pacific Biosciences"
+                }
+            ]
+        },
+        "Forex": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "EURUSD=X",
+                    "name": "EUR/USD"
+                },
+                {
+                    "symbol": "GBPUSD=X",
+                    "name": "GBP/USD"
+                },
+                {
+                    "symbol": "USDJPY=X",
+                    "name": "USD/JPY"
+                },
+                {
+                    "symbol": "AUDUSD=X",
+                    "name": "AUD/USD"
+                },
+                {
+                    "symbol": "USDCAD=X",
+                    "name": "USD/CAD"
+                },
+                {
+                    "symbol": "USDCHF=X",
+                    "name": "USD/CHF"
+                },
+                {
+                    "symbol": "EURJPY=X",
+                    "name": "EUR/JPY"
+                },
+                {
+                    "symbol": "DX-Y.NYB",
+                    "name": "Dollar Index"
+                }
+            ]
+        },
+        "W\u00e4hrungen": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "EURUSD=X",
+                    "name": "EUR/USD"
+                },
+                {
+                    "symbol": "GBPUSD=X",
+                    "name": "GBP/USD"
+                },
+                {
+                    "symbol": "USDJPY=X",
+                    "name": "USD/JPY"
+                },
+                {
+                    "symbol": "AUDUSD=X",
+                    "name": "AUD/USD"
+                },
+                {
+                    "symbol": "USDCAD=X",
+                    "name": "USD/CAD"
+                },
+                {
+                    "symbol": "USDCHF=X",
+                    "name": "USD/CHF"
+                },
+                {
+                    "symbol": "EURJPY=X",
+                    "name": "EUR/JPY"
+                },
+                {
+                    "symbol": "DX-Y.NYB",
+                    "name": "Dollar Index"
+                }
+            ]
+        },
+        "Makro": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "EURUSD=X",
+                    "name": "EUR/USD"
+                },
+                {
+                    "symbol": "GBPUSD=X",
+                    "name": "GBP/USD"
+                },
+                {
+                    "symbol": "USDJPY=X",
+                    "name": "USD/JPY"
+                },
+                {
+                    "symbol": "AUDUSD=X",
+                    "name": "AUD/USD"
+                },
+                {
+                    "symbol": "USDCAD=X",
+                    "name": "USD/CAD"
+                },
+                {
+                    "symbol": "USDCHF=X",
+                    "name": "USD/CHF"
+                },
+                {
+                    "symbol": "EURJPY=X",
+                    "name": "EUR/JPY"
+                },
+                {
+                    "symbol": "DX-Y.NYB",
+                    "name": "Dollar Index"
+                }
+            ]
+        },
+        "CME": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NQ=F",
+                    "name": "Nasdaq 100"
+                },
+                {
+                    "symbol": "ES=F",
+                    "name": "S&P 500"
+                },
+                {
+                    "symbol": "YM=F",
+                    "name": "Dow Jones"
+                },
+                {
+                    "symbol": "RTY=F",
+                    "name": "Russell 2000"
+                },
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold"
+                },
+                {
+                    "symbol": "SI=F",
+                    "name": "Silber"
+                },
+                {
+                    "symbol": "CL=F",
+                    "name": "Crude Oil"
+                },
+                {
+                    "symbol": "NG=F",
+                    "name": "Erdgas"
+                },
+                {
+                    "symbol": "HG=F",
+                    "name": "Kupfer"
+                }
+            ]
+        },
+        "US-Indizes": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NQ=F",
+                    "name": "Nasdaq 100"
+                },
+                {
+                    "symbol": "ES=F",
+                    "name": "S&P 500"
+                },
+                {
+                    "symbol": "YM=F",
+                    "name": "Dow Jones"
+                },
+                {
+                    "symbol": "RTY=F",
+                    "name": "Russell 2000"
+                },
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold"
+                },
+                {
+                    "symbol": "SI=F",
+                    "name": "Silber"
+                },
+                {
+                    "symbol": "CL=F",
+                    "name": "Crude Oil"
+                },
+                {
+                    "symbol": "NG=F",
+                    "name": "Erdgas"
+                },
+                {
+                    "symbol": "HG=F",
+                    "name": "Kupfer"
+                }
+            ]
+        },
+        "Rohstoffe": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NQ=F",
+                    "name": "Nasdaq 100"
+                },
+                {
+                    "symbol": "ES=F",
+                    "name": "S&P 500"
+                },
+                {
+                    "symbol": "YM=F",
+                    "name": "Dow Jones"
+                },
+                {
+                    "symbol": "RTY=F",
+                    "name": "Russell 2000"
+                },
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold"
+                },
+                {
+                    "symbol": "SI=F",
+                    "name": "Silber"
+                },
+                {
+                    "symbol": "CL=F",
+                    "name": "Crude Oil"
+                },
+                {
+                    "symbol": "NG=F",
+                    "name": "Erdgas"
+                },
+                {
+                    "symbol": "HG=F",
+                    "name": "Kupfer"
+                }
+            ]
+        },
+        "Industrie Und Konsum": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "ABBN.SW",
+                    "name": "ABB Ltd"
+                },
+                {
+                    "symbol": "ND50.F",
+                    "name": "Nitto Denko Corporation"
+                },
+                {
+                    "symbol": "TOR1.F",
+                    "name": "Toray Industries"
+                },
+                {
+                    "symbol": "PG",
+                    "name": "Procter & Gamble"
+                },
+                {
+                    "symbol": "KO",
+                    "name": "Coca-Cola Company"
+                },
+                {
+                    "symbol": "PEP",
+                    "name": "PepsiCo, Inc."
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson"
+                },
+                {
+                    "symbol": "MMM",
+                    "name": "3M Company"
+                },
+                {
+                    "symbol": "HON",
+                    "name": "Honeywell International"
+                },
+                {
+                    "symbol": "CAT",
+                    "name": "Caterpillar Inc."
+                }
+            ]
+        },
+        "US Tech & KI": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA"
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple"
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft"
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet"
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon"
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms"
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices"
+                },
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor"
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding"
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom"
+                },
+                {
+                    "symbol": "QCOM",
+                    "name": "Qualcomm"
+                },
+                {
+                    "symbol": "ADBE",
+                    "name": "Adobe"
+                },
+                {
+                    "symbol": "CRM",
+                    "name": "Salesforce"
+                },
+                {
+                    "symbol": "INTC",
+                    "name": "Intel"
+                },
+                {
+                    "symbol": "CSCO",
+                    "name": "Cisco Systems"
+                },
+                {
+                    "symbol": "IBM",
+                    "name": "IBM"
+                },
+                {
+                    "symbol": "ORCL",
+                    "name": "Oracle"
+                },
+                {
+                    "symbol": "NOW",
+                    "name": "ServiceNow"
+                },
+                {
+                    "symbol": "UBER",
+                    "name": "Uber"
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir"
+                },
+                {
+                    "symbol": "SNOW",
+                    "name": "Snowflake"
+                },
+                {
+                    "symbol": "DDOG",
+                    "name": "Datadog"
+                },
+                {
+                    "symbol": "NET",
+                    "name": "Cloudflare"
+                },
+                {
+                    "symbol": "MDB",
+                    "name": "MongoDB"
+                }
+            ]
+        },
+        "Halbleiter & Equipment": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "TXN",
+                    "name": "Texas Instruments"
+                },
+                {
+                    "symbol": "AMAT",
+                    "name": "Applied Materials"
+                },
+                {
+                    "symbol": "LRCX",
+                    "name": "Lam Research"
+                },
+                {
+                    "symbol": "KLAC",
+                    "name": "KLA Corp"
+                },
+                {
+                    "symbol": "MU",
+                    "name": "Micron Technology"
+                },
+                {
+                    "symbol": "NXPI",
+                    "name": "NXP Semiconductors"
+                },
+                {
+                    "symbol": "MRVL",
+                    "name": "Marvell Technology"
+                },
+                {
+                    "symbol": "ON",
+                    "name": "ON Semiconductor"
+                },
+                {
+                    "symbol": "MCHP",
+                    "name": "Microchip Technology"
+                },
+                {
+                    "symbol": "MPWR",
+                    "name": "Monolithic Power"
+                },
+                {
+                    "symbol": "ARM",
+                    "name": "ARM Holdings"
+                }
+            ]
+        },
+        "S&P 500 Heavyweights": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BRK-B",
+                    "name": "Berkshire Hathaway"
+                },
+                {
+                    "symbol": "LLY",
+                    "name": "Eli Lilly"
+                },
+                {
+                    "symbol": "JPM",
+                    "name": "JPMorgan Chase"
+                },
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil"
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth"
+                },
+                {
+                    "symbol": "V",
+                    "name": "Visa"
+                },
+                {
+                    "symbol": "PG",
+                    "name": "Procter & Gamble"
+                },
+                {
+                    "symbol": "MA",
+                    "name": "Mastercard"
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson"
+                },
+                {
+                    "symbol": "HD",
+                    "name": "Home Depot"
+                },
+                {
+                    "symbol": "MRK",
+                    "name": "Merck & Co"
+                },
+                {
+                    "symbol": "CVX",
+                    "name": "Chevron"
+                },
+                {
+                    "symbol": "KO",
+                    "name": "Coca-Cola"
+                },
+                {
+                    "symbol": "PEP",
+                    "name": "PepsiCo"
+                },
+                {
+                    "symbol": "COST",
+                    "name": "Costco"
+                },
+                {
+                    "symbol": "WMT",
+                    "name": "Walmart"
+                },
+                {
+                    "symbol": "MCD",
+                    "name": "McDonald's"
+                },
+                {
+                    "symbol": "ABBV",
+                    "name": "AbbVie"
+                }
+            ]
+        },
+        "DAX 40 & MDAX Picks": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "SAP.DE",
+                    "name": "SAP SE"
+                },
+                {
+                    "symbol": "SIE.DE",
+                    "name": "Siemens"
+                },
+                {
+                    "symbol": "ALV.DE",
+                    "name": "Allianz"
+                },
+                {
+                    "symbol": "AIR.DE",
+                    "name": "Airbus"
+                },
+                {
+                    "symbol": "DTE.DE",
+                    "name": "Deutsche Telekom"
+                },
+                {
+                    "symbol": "BMW.DE",
+                    "name": "BMW"
+                },
+                {
+                    "symbol": "MBG.DE",
+                    "name": "Mercedes-Benz"
+                },
+                {
+                    "symbol": "VOW3.DE",
+                    "name": "Volkswagen"
+                },
+                {
+                    "symbol": "BAS.DE",
+                    "name": "BASF"
+                },
+                {
+                    "symbol": "MUV2.DE",
+                    "name": "Munich Re"
+                },
+                {
+                    "symbol": "DHL.DE",
+                    "name": "DHL Group"
+                },
+                {
+                    "symbol": "IFX.DE",
+                    "name": "Infineon"
+                },
+                {
+                    "symbol": "DBK.DE",
+                    "name": "Deutsche Bank"
+                },
+                {
+                    "symbol": "RHM.DE",
+                    "name": "Rheinmetall"
+                },
+                {
+                    "symbol": "BAYN.DE",
+                    "name": "Bayer"
+                },
+                {
+                    "symbol": "BEI.DE",
+                    "name": "Beiersdorf"
+                },
+                {
+                    "symbol": "MRK.DE",
+                    "name": "Merck KGaA"
+                },
+                {
+                    "symbol": "ENR.DE",
+                    "name": "Siemens Energy"
+                },
+                {
+                    "symbol": "CBK.DE",
+                    "name": "Commerzbank"
+                },
+                {
+                    "symbol": "SY1.DE",
+                    "name": "Symrise"
+                },
+                {
+                    "symbol": "MTX.DE",
+                    "name": "MTU Aero Engines"
+                },
+                {
+                    "symbol": "LHA.DE",
+                    "name": "Lufthansa"
+                },
+                {
+                    "symbol": "FRA.DE",
+                    "name": "Fraport"
+                },
+                {
+                    "symbol": "NOEJ.DE",
+                    "name": "Norma Group"
+                }
+            ]
+        },
+        "SMI & Swiss Midcaps": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NOVN.SW",
+                    "name": "Novartis"
+                },
+                {
+                    "symbol": "ROG.SW",
+                    "name": "Roche"
+                },
+                {
+                    "symbol": "NESN.SW",
+                    "name": "Nestle"
+                },
+                {
+                    "symbol": "UBSG.SW",
+                    "name": "UBS Group"
+                },
+                {
+                    "symbol": "ZURN.SW",
+                    "name": "Zurich Insurance"
+                },
+                {
+                    "symbol": "SREN.SW",
+                    "name": "Swiss Re"
+                },
+                {
+                    "symbol": "SIK.SW",
+                    "name": "Sika AG"
+                },
+                {
+                    "symbol": "LONN.SW",
+                    "name": "Lonza Group"
+                },
+                {
+                    "symbol": "CFR.SW",
+                    "name": "Richemont"
+                },
+                {
+                    "symbol": "HOLN.SW",
+                    "name": "Holcim"
+                },
+                {
+                    "symbol": "ABBN.SW",
+                    "name": "ABB Ltd"
+                },
+                {
+                    "symbol": "ALC.SW",
+                    "name": "Alcon"
+                },
+                {
+                    "symbol": "KNIN.SW",
+                    "name": "Kuehne + Nagel"
+                },
+                {
+                    "symbol": "SGSN.SW",
+                    "name": "SGS"
+                },
+                {
+                    "symbol": "GEBN.SW",
+                    "name": "Geberit"
+                },
+                {
+                    "symbol": "GIVN.SW",
+                    "name": "Givaudan"
+                },
+                {
+                    "symbol": "SOON.SW",
+                    "name": "Sonova"
+                },
+                {
+                    "symbol": "VATN.SW",
+                    "name": "VAT Group"
+                },
+                {
+                    "symbol": "SCHP.SW",
+                    "name": "Schindler"
+                }
+            ]
+        },
+        "Bauwesen & Landschaftsbau": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "CAT",
+                    "name": "Caterpillar"
+                },
+                {
+                    "symbol": "DE",
+                    "name": "Deere & Company"
+                },
+                {
+                    "symbol": "TTC",
+                    "name": "The Toro Company"
+                },
+                {
+                    "symbol": "HUSQ-B.ST",
+                    "name": "Husqvarna"
+                },
+                {
+                    "symbol": "URI",
+                    "name": "United Rentals"
+                },
+                {
+                    "symbol": "VMC",
+                    "name": "Vulcan Materials"
+                },
+                {
+                    "symbol": "MLM",
+                    "name": "Martin Marietta"
+                },
+                {
+                    "symbol": "BLDR",
+                    "name": "Builders FirstSource"
+                },
+                {
+                    "symbol": "PWR",
+                    "name": "Quanta Services"
+                },
+                {
+                    "symbol": "JCI",
+                    "name": "Johnson Controls"
+                },
+                {
+                    "symbol": "FAST",
+                    "name": "Fastenal"
+                }
+            ]
+        },
+        "Automobil & Zulieferer": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "TM",
+                    "name": "Toyota Motor"
+                },
+                {
+                    "symbol": "F",
+                    "name": "Ford Motor"
+                },
+                {
+                    "symbol": "GM",
+                    "name": "General Motors"
+                },
+                {
+                    "symbol": "RNO.PA",
+                    "name": "Renault"
+                },
+                {
+                    "symbol": "STLA",
+                    "name": "Stellantis"
+                },
+                {
+                    "symbol": "CON.DE",
+                    "name": "Continental"
+                },
+                {
+                    "symbol": "SKF-B.ST",
+                    "name": "SKF"
+                },
+                {
+                    "symbol": "BWA",
+                    "name": "BorgWarner"
+                },
+                {
+                    "symbol": "MGA",
+                    "name": "Magna International"
+                },
+                {
+                    "symbol": "APTV",
+                    "name": "Aptiv"
+                },
+                {
+                    "symbol": "PII",
+                    "name": "Polaris"
+                },
+                {
+                    "symbol": "HOG",
+                    "name": "Harley-Davidson"
+                }
+            ]
+        },
+        "Krypto Top & Altcoins": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BTC-USD",
+                    "name": "Bitcoin"
+                },
+                {
+                    "symbol": "ETH-USD",
+                    "name": "Ethereum"
+                },
+                {
+                    "symbol": "SOL-USD",
+                    "name": "Solana"
+                },
+                {
+                    "symbol": "BNB-USD",
+                    "name": "BNB"
+                },
+                {
+                    "symbol": "XRP-USD",
+                    "name": "XRP"
+                },
+                {
+                    "symbol": "ADA-USD",
+                    "name": "Cardano"
+                },
+                {
+                    "symbol": "AVAX-USD",
+                    "name": "Avalanche"
+                },
+                {
+                    "symbol": "DOGE-USD",
+                    "name": "Dogecoin"
+                },
+                {
+                    "symbol": "DOT-USD",
+                    "name": "Polkadot"
+                },
+                {
+                    "symbol": "LINK-USD",
+                    "name": "Chainlink"
+                },
+                {
+                    "symbol": "MATIC-USD",
+                    "name": "Polygon"
+                },
+                {
+                    "symbol": "KAS-USD",
+                    "name": "Kaspa"
+                },
+                {
+                    "symbol": "UNI-USD",
+                    "name": "Uniswap"
+                },
+                {
+                    "symbol": "LTC-USD",
+                    "name": "Litecoin"
+                },
+                {
+                    "symbol": "NEAR-USD",
+                    "name": "NEAR Protocol"
+                },
+                {
+                    "symbol": "ATOM-USD",
+                    "name": "Cosmos"
+                },
+                {
+                    "symbol": "APT-USD",
+                    "name": "Aptos"
+                },
+                {
+                    "symbol": "INJ-USD",
+                    "name": "Injective"
+                },
+                {
+                    "symbol": "RNDR-USD",
+                    "name": "Render"
+                },
+                {
+                    "symbol": "HBAR-USD",
+                    "name": "Hedera"
+                }
+            ]
+        },
+        "Defense & Aerospace": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "LMT",
+                    "name": "Lockheed Martin"
+                },
+                {
+                    "symbol": "RTX",
+                    "name": "RTX Corporation"
+                },
+                {
+                    "symbol": "NOC",
+                    "name": "Northrop Grumman"
+                },
+                {
+                    "symbol": "GD",
+                    "name": "General Dynamics"
+                },
+                {
+                    "symbol": "BA",
+                    "name": "Boeing"
+                },
+                {
+                    "symbol": "HEI",
+                    "name": "Heico"
+                },
+                {
+                    "symbol": "TDG",
+                    "name": "TransDigm"
+                },
+                {
+                    "symbol": "HII",
+                    "name": "Huntington Ingalls"
+                },
+                {
+                    "symbol": "LHX",
+                    "name": "L3Harris Technologies"
+                },
+                {
+                    "symbol": "AXON",
+                    "name": "Axon Enterprise"
+                }
+            ]
+        },
+        "Pharma & Biotech": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "CRSP",
+                    "name": "CRISPR Therapeutics"
+                },
+                {
+                    "symbol": "PACB",
+                    "name": "Pacific Biosciences"
+                },
+                {
+                    "symbol": "VRTX",
+                    "name": "Vertex Pharmaceuticals"
+                },
+                {
+                    "symbol": "REGN",
+                    "name": "Regeneron"
+                },
+                {
+                    "symbol": "GILD",
+                    "name": "Gilead Sciences"
+                },
+                {
+                    "symbol": "AMGN",
+                    "name": "Amgen"
+                },
+                {
+                    "symbol": "BIIB",
+                    "name": "Biogen"
+                },
+                {
+                    "symbol": "ISRG",
+                    "name": "Intuitive Surgical"
+                },
+                {
+                    "symbol": "PFE",
+                    "name": "Pfizer"
+                },
+                {
+                    "symbol": "BMY",
+                    "name": "Bristol-Myers Squibb"
+                },
+                {
+                    "symbol": "AZN",
+                    "name": "AstraZeneca"
+                },
+                {
+                    "symbol": "NVO",
+                    "name": "Novo Nordisk"
+                },
+                {
+                    "symbol": "ZTS",
+                    "name": "Zoetis"
+                },
+                {
+                    "symbol": "IDXX",
+                    "name": "IDEXX Laboratories"
+                }
+            ]
+        },
+        "Finanzen & Banken": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "GS",
+                    "name": "Goldman Sachs"
+                },
+                {
+                    "symbol": "MS",
+                    "name": "Morgan Stanley"
+                },
+                {
+                    "symbol": "BAC",
+                    "name": "Bank of America"
+                },
+                {
+                    "symbol": "C",
+                    "name": "Citigroup"
+                },
+                {
+                    "symbol": "WFC",
+                    "name": "Wells Fargo"
+                },
+                {
+                    "symbol": "AXP",
+                    "name": "American Express"
+                },
+                {
+                    "symbol": "BLK",
+                    "name": "BlackRock"
+                },
+                {
+                    "symbol": "BX",
+                    "name": "Blackstone"
+                },
+                {
+                    "symbol": "CME",
+                    "name": "CME Group"
+                },
+                {
+                    "symbol": "SPGI",
+                    "name": "S&P Global"
+                },
+                {
+                    "symbol": "MCO",
+                    "name": "Moody's"
+                },
+                {
+                    "symbol": "ICE",
+                    "name": "Intercontinental Exchange"
+                }
+            ]
+        },
+        "Erneuerbare Energien & Utilities": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NEE",
+                    "name": "NextEra Energy"
+                },
+                {
+                    "symbol": "ENPH",
+                    "name": "Enphase Energy"
+                },
+                {
+                    "symbol": "FSLR",
+                    "name": "First Solar"
+                },
+                {
+                    "symbol": "SEDG",
+                    "name": "SolarEdge"
+                },
+                {
+                    "symbol": "VWDRY",
+                    "name": "Vestas Wind Systems"
+                },
+                {
+                    "symbol": "DUK",
+                    "name": "Duke Energy"
+                },
+                {
+                    "symbol": "SO",
+                    "name": "Southern Company"
+                },
+                {
+                    "symbol": "D",
+                    "name": "Dominion Energy"
+                },
+                {
+                    "symbol": "SRE",
+                    "name": "Sempra"
+                },
+                {
+                    "symbol": "EXC",
+                    "name": "Exelon"
+                }
+            ]
+        },
+        "\u00d6l, Gas & Rohstoffe": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "COP",
+                    "name": "ConocoPhillips"
+                },
+                {
+                    "symbol": "SLB",
+                    "name": "Schlumberger"
+                },
+                {
+                    "symbol": "HAL",
+                    "name": "Halliburton"
+                },
+                {
+                    "symbol": "BKR",
+                    "name": "Baker Hughes"
+                },
+                {
+                    "symbol": "EOG",
+                    "name": "EOG Resources"
+                },
+                {
+                    "symbol": "PXD",
+                    "name": "Pioneer Natural Resources"
+                },
+                {
+                    "symbol": "FCX",
+                    "name": "Freeport-McMoRan"
+                },
+                {
+                    "symbol": "NEM",
+                    "name": "Newmont"
+                },
+                {
+                    "symbol": "GOLD",
+                    "name": "Barrick Gold"
+                },
+                {
+                    "symbol": "SCCO",
+                    "name": "Southern Copper"
+                },
+                {
+                    "symbol": "ALB",
+                    "name": "Albemarle"
+                },
+                {
+                    "symbol": "SQM",
+                    "name": "Sociedad Quimica"
+                }
+            ]
+        },
+        "Konsum, Handel & E-Commerce": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "TGT",
+                    "name": "Target"
+                },
+                {
+                    "symbol": "DG",
+                    "name": "Dollar General"
+                },
+                {
+                    "symbol": "DLTR",
+                    "name": "Dollar Tree"
+                },
+                {
+                    "symbol": "NKE",
+                    "name": "Nike"
+                },
+                {
+                    "symbol": "LULU",
+                    "name": "Lululemon"
+                },
+                {
+                    "symbol": "SBUX",
+                    "name": "Starbucks"
+                },
+                {
+                    "symbol": "CMG",
+                    "name": "Chipotle"
+                },
+                {
+                    "symbol": "MELI",
+                    "name": "MercadoLibre"
+                },
+                {
+                    "symbol": "SE",
+                    "name": "Sea Limited"
+                },
+                {
+                    "symbol": "SHOP",
+                    "name": "Shopify"
+                },
+                {
+                    "symbol": "EBAY",
+                    "name": "eBay"
+                },
+                {
+                    "symbol": "ETSY",
+                    "name": "Etsy"
+                }
+            ]
+        },
+        "Reise, Transport & Freizeit": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BKNG",
+                    "name": "Booking Holdings"
+                },
+                {
+                    "symbol": "EXPE",
+                    "name": "Expedia"
+                },
+                {
+                    "symbol": "ABNB",
+                    "name": "Airbnb"
+                },
+                {
+                    "symbol": "MAR",
+                    "name": "Marriott"
+                },
+                {
+                    "symbol": "HLT",
+                    "name": "Hilton"
+                },
+                {
+                    "symbol": "DAL",
+                    "name": "Delta Air Lines"
+                },
+                {
+                    "symbol": "UAL",
+                    "name": "United Airlines"
+                },
+                {
+                    "symbol": "UPS",
+                    "name": "United Parcel Service"
+                },
+                {
+                    "symbol": "FDX",
+                    "name": "FedEx"
+                },
+                {
+                    "symbol": "UNP",
+                    "name": "Union Pacific"
+                },
+                {
+                    "symbol": "CSX",
+                    "name": "CSX Corp"
+                },
+                {
+                    "symbol": "DIS",
+                    "name": "Walt Disney"
+                }
+            ]
+        },
+        "China Tech & EV": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "BABA",
+                    "name": "Alibaba"
+                },
+                {
+                    "symbol": "TCEHY",
+                    "name": "Tencent"
+                },
+                {
+                    "symbol": "JD",
+                    "name": "JD.com"
+                },
+                {
+                    "symbol": "PDD",
+                    "name": "Pinduoduo"
+                },
+                {
+                    "symbol": "BIDU",
+                    "name": "Baidu"
+                },
+                {
+                    "symbol": "NTES",
+                    "name": "NetEase"
+                },
+                {
+                    "symbol": "BYDDY",
+                    "name": "BYD Co"
+                },
+                {
+                    "symbol": "LI",
+                    "name": "Li Auto"
+                },
+                {
+                    "symbol": "NIO",
+                    "name": "NIO Inc."
+                },
+                {
+                    "symbol": "8XP.F",
+                    "name": "XPeng Inc."
+                }
+            ]
+        },
+        "High Risk / Exoten": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "PLUG",
+                    "name": "Plug Power"
+                },
+                {
+                    "symbol": "SPCE",
+                    "name": "Virgin Galactic"
+                },
+                {
+                    "symbol": "RIVN",
+                    "name": "Rivian Automotive"
+                },
+                {
+                    "symbol": "LCID",
+                    "name": "Lucid Group"
+                },
+                {
+                    "symbol": "NKLA",
+                    "name": "Nikola"
+                },
+                {
+                    "symbol": "MSTR",
+                    "name": "MicroStrategy"
+                },
+                {
+                    "symbol": "COIN",
+                    "name": "Coinbase"
+                },
+                {
+                    "symbol": "MARA",
+                    "name": "Marathon Digital"
+                },
+                {
+                    "symbol": "RIOT",
+                    "name": "Riot Platforms"
+                },
+                {
+                    "symbol": "CVNA",
+                    "name": "Carvana"
+                }
+            ]
+        },
+        "Nasdaq Top Picks": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "QCOM",
+                    "name": "QUALCOMM Incorporated"
+                },
+                {
+                    "symbol": "TXN",
+                    "name": "Texas Instruments"
+                },
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corporation"
+                },
+                {
+                    "symbol": "CSCO",
+                    "name": "Cisco Systems"
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc."
+                },
+                {
+                    "symbol": "SBUX",
+                    "name": "Starbucks Corporation"
+                },
+                {
+                    "symbol": "PYPL",
+                    "name": "PayPal Holdings"
+                },
+                {
+                    "symbol": "INTU",
+                    "name": "Intuit Inc."
+                },
+                {
+                    "symbol": "AMAT",
+                    "name": "Applied Materials"
+                }
+            ]
+        },
+        "Rohstoffe Edelmetalle": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "GLD",
+                    "name": "SPDR Gold Trust"
+                },
+                {
+                    "symbol": "SLV",
+                    "name": "iShares Silver Trust"
+                },
+                {
+                    "symbol": "GOLD",
+                    "name": "Barrick Gold"
+                },
+                {
+                    "symbol": "NEM",
+                    "name": "Newmont Corporation"
+                },
+                {
+                    "symbol": "FCX",
+                    "name": "Freeport-McMoRan"
+                },
+                {
+                    "symbol": "X",
+                    "name": "United States Steel"
+                },
+                {
+                    "symbol": "CL=F",
+                    "name": "Crude Oil Futures"
+                },
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold Futures"
+                }
+            ]
+        },
+        "Smi Bluechips": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NOVN.SW",
+                    "name": "Novartis"
+                },
+                {
+                    "symbol": "ROG.SW",
+                    "name": "Roche"
+                },
+                {
+                    "symbol": "NESN.SW",
+                    "name": "Nestle"
+                },
+                {
+                    "symbol": "UBSG.SW",
+                    "name": "UBS Group"
+                },
+                {
+                    "symbol": "ZURN.SW",
+                    "name": "Zurich Insurance"
+                },
+                {
+                    "symbol": "SREN.SW",
+                    "name": "Swiss Re"
+                },
+                {
+                    "symbol": "SIK.SW",
+                    "name": "Sika AG"
+                },
+                {
+                    "symbol": "LONN.SW",
+                    "name": "Lonza Group"
+                },
+                {
+                    "symbol": "CFR.SW",
+                    "name": "Richemont"
+                }
+            ]
+        },
+        "Tech Giganten": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation"
+                },
+                {
+                    "symbol": "TL0.F",
+                    "name": "Tesla, Inc."
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc."
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation"
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. (Google)"
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc."
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc."
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices"
+                },
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor"
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding"
+                }
+            ]
+        },
+        "Wassertechnologie": {
+            "is_premium": false,
+            "tickers": [
+                {
+                    "symbol": "XYL",
+                    "name": "Xylem Inc."
+                },
+                {
+                    "symbol": "IQQQ.DE",
+                    "name": "iShares Global Water ETF"
+                },
+                {
+                    "symbol": "AWK",
+                    "name": "American Water Works"
+                },
+                {
+                    "symbol": "WTRG",
+                    "name": "Essential Utilities"
+                },
+                {
+                    "symbol": "CWT",
+                    "name": "California Water Service"
+                },
+                {
+                    "symbol": "FIW",
+                    "name": "First Trust Water ETF"
+                },
+                {
+                    "symbol": "PHO",
+                    "name": "Invesco Water Resources ETF"
+                },
+                {
+                    "symbol": "CGW",
+                    "name": "Invesco S&P Global Water ETF"
+                }
+            ]
+        }
+    }
+}
