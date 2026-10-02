@@ -1,1 +1,0 @@
-id,account_name,entry_date,exit_date,symbol,name,direction,signal_price,entry_price,currency,fx_rate,position_size,contract_type,point_value,base_currency,invest_eur,sl_price,tp_price,planned_risk_eur,est_fees_eur,master_score,setup_type,mc_robustness,atr_days,exit_mode,status,exit_price,pnl_eur,pnl_pct,r_multiple,exit_reason,notes,strategy_version,execution_type

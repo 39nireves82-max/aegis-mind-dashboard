@@ -1,0 +1,18 @@
+# Mandanten- und Benutzerdaten (leben persistent auf dem Server-Volume)
+users/
+users/*
+
+# Lokale Caches & Python-Dateien
+__pycache__/
+*.py[cod]
+*$py.class
+.streamlit/
+
+# Secrets
+.env
+.env.*
+
+# Temporäre Daten & Backups
+*.bak
+*.tmp
+users_backup*/
