@@ -43,7 +43,7 @@
         "rsi_short_entry": 70.0,
         "rsi_take_profit": 30.0,
         "tf_futures": "1h",
-        "tf_forex": "4h",
+        "tf_forex": "1h",
         "rsi_long_entry": 30.0
     },
     "tickers": [],
@@ -53,19 +53,22 @@
             "symbol": "NQ=F",
             "name": "Nasdaq 100",
             "asset_class": "Futures",
-            "contract": "MNQ"
+            "contract": "MNQ",
+            "active": false
         },
         {
             "symbol": "ES=F",
             "name": "S&P 500",
             "asset_class": "Futures",
-            "contract": "MES"
+            "contract": "MES",
+            "active": false
         },
         {
             "symbol": "YM=F",
             "name": "Dow Jones",
             "asset_class": "Futures",
-            "contract": "MYM"
+            "contract": "MYM",
+            "active": false
         },
         {
             "symbol": "RTY=F",
@@ -78,7 +81,8 @@
             "symbol": "GC=F",
             "name": "Gold",
             "asset_class": "Rohstoffe",
-            "contract": "MGC"
+            "contract": "MGC",
+            "active": false
         },
         {
             "symbol": "SI=F",
@@ -91,67 +95,78 @@
             "symbol": "CL=F",
             "name": "Crude Oil",
             "asset_class": "Rohstoffe",
-            "contract": "MCL"
+            "contract": "MCL",
+            "active": false
         },
         {
             "symbol": "NG=F",
             "name": "Erdgas",
             "asset_class": "Rohstoffe",
-            "contract": "QG"
+            "contract": "QG",
+            "active": false
         },
         {
             "symbol": "HG=F",
             "name": "Kupfer",
             "asset_class": "Rohstoffe",
-            "contract": "MHG"
+            "contract": "MHG",
+            "active": false
         },
         {
             "symbol": "EURUSD=X",
             "name": "EUR/USD",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "GBPUSD=X",
             "name": "GBP/USD",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "USDJPY=X",
             "name": "USD/JPY",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "AUDUSD=X",
             "name": "AUD/USD",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "USDCAD=X",
             "name": "USD/CAD",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "USDCHF=X",
             "name": "USD/CHF",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "EURJPY=X",
             "name": "EUR/JPY",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         },
         {
             "symbol": "DX-Y.NYB",
             "name": "US Dollar Index",
             "asset_class": "Forex",
-            "contract": "Lot"
+            "contract": "Lot",
+            "active": true
         }
     ],
     "lab_accounts": {

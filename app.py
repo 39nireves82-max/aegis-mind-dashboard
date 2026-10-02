@@ -30,12 +30,14 @@ _icon_path = os.path.join(_hdr_base, "assets", "aegis_icon.png")
 if not os.path.exists(_icon_path):
     _icon_path = os.path.join(_hdr_base, "assets", "aegis_mind_logo.png")
 
-c_hdr_icon, c_hdr_title = st.columns([0.045, 0.955], vertical_alignment="center")
-with c_hdr_icon:
-    if os.path.exists(_icon_path):
-        st.image(_icon_path, width=48)
-with c_hdr_title:
-    st.markdown("<h2 style='margin: 0; padding: 0; line-height: 1.2;'>AEGIS MIND — Rule-Based Trading Desk</h2>", unsafe_allow_html=True)
+show_header = st.session_state.get("splash_done", False) or st.session_state.get("username") is not None
+if show_header:
+    c_hdr_icon, c_hdr_title = st.columns([0.045, 0.955], vertical_alignment="center")
+    with c_hdr_icon:
+        if os.path.exists(_icon_path):
+            st.image(_icon_path, width=48)
+    with c_hdr_title:
+        st.markdown("<h2 style='margin: 0; padding: 0; line-height: 1.2;'>AEGIS MIND — Rule-Based Trading Desk</h2>", unsafe_allow_html=True)
 st.markdown("""
 <style>
     .stApp, div[data-testid="stAppViewContainer"] {
@@ -44,6 +46,10 @@ st.markdown("""
     }
     div[data-testid="stHeader"] {
         background: transparent !important;
+    }
+    #MainMenu, header, footer, .stAppDeployButton {
+        visibility: hidden !important;
+        display: none !important;
     }
     .block-container {
         padding-top: 7.2rem !important;
@@ -79,6 +85,35 @@ st.markdown("""
     }
     div[data-testid="stSidebar"] input {
         autocomplete: off !important;
+    }
+    /* Mobile Poka-Yoke & Responsive Score-Korridor (Smartphone Viewports) */
+    @media (max-width: 768px) {
+        /* 1. Touch-Targets für Checkboxen auf 44px vergrößern (Apple HIG / Fat-Finger-Schutz) */
+        div[data-testid="stCheckbox"] label {
+            min-height: 44px !important;
+            min-width: 44px !important;
+            display: flex !important;
+            align-items: center !important;
+            cursor: pointer !important;
+        }
+
+        /* 2. Score-Korridor responsiv zweizeilig umbrechen */
+        div[data-testid="stMetricValue"], 
+        div[data-testid="stMetricValue"] > div {
+            white-space: normal !important;
+            word-wrap: break-word !important;
+            line-height: 1.3 !important;
+            font-size: 1.4rem !important; /* Leichte Skalierung für fließenden Umbruch */
+            display: inline-block !important;
+        }
+        
+        div[data-testid="stMetricLabel"], 
+        div[data-testid="stMetricLabel"] p {
+            white-space: normal !important;
+            word-wrap: break-word !important;
+            height: auto !important;
+            margin-bottom: 4px !important;
+        }
     }
 </style>
 <script>
@@ -153,7 +188,113 @@ if "username" not in st.session_state:
     st.session_state.username = None
     st.session_state.role = None
 
+if "splash_done" not in st.session_state:
+    st.session_state.splash_done = False
+if not st.session_state.splash_done and st.session_state.username is None:
+    st.markdown("""
+    <style>
+        /* Versteckt den Streamlit-Header restlos */
+        .stApp header { display: none !important; }
+        
+        .block-container {
+            padding: 0 !important;
+            margin: 0 !important;
+            max-width: 100vw !important;
+            height: 100vh !important;
+            animation: splashFadeIn 1.2s ease-out forwards;
+        }
+        @keyframes splashFadeIn {
+            0% { opacity: 0; transform: translateY(15px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Absolute CSS-Brechstange: Zwingt das Logo exakt in die Bildschirmmitte */
+        div[data-testid="stImage"] {
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            z-index: 1 !important;
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            pointer-events: none !important; /* Lässt Klicks zum Button durch */
+        }
+        div[data-testid="stImage"] img {
+            max-height: 95vh !important;
+            max-width: 95vw !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
+            margin: auto !important;
+        }
+        
+        /* Unsichtbarer Vollbild-Button als Klick-Fläche */
+        div[data-testid="stButton"] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        div[data-testid="stButton"] button {
+            width: 100% !important;
+            height: 100% !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            background: transparent !important;
+            border: none !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo.png")
+    if not os.path.exists(logo_path_splash):
+        logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo.jpg")
+    
+    if os.path.exists(logo_path_splash):
+        st.image(logo_path_splash)
+        
+    if st.button("ENTER", key="invisible_btn"):
+        st.session_state.splash_done = True
+        st.rerun()
+        
+    st.stop()
+
 if st.session_state.username is None:
+    st.markdown("""
+    <style>
+        /* Bildgröße rechts maximieren (ohne Scrollen) */
+        div[data-testid="stImage"] img {
+            max-height: 75vh !important;
+            width: auto !important;
+            object-fit: contain !important;
+            margin: 0 auto;
+        }
+        /* Titel an das Formular rücken (kompakteres Layout) */
+        .block-container {
+            padding-top: 1rem !important; 
+        }
+        
+        /* Mobile Hierarchie für den Split-Login */
+        @media (max-width: 768px) {
+            div[data-testid="stHorizontalBlock"] {
+                flex-direction: column-reverse !important;
+            }
+            div[data-testid="stHorizontalBlock"] div[data-testid="stHorizontalBlock"] {
+                flex-direction: column !important;
+            }
+            div[data-testid="stImage"] img {
+                max-height: 40vh !important; /* Lässt auf Mobile Platz für die Login-Maske */
+            }
+        }
+    </style>
+    """, unsafe_allow_html=True)
     c_login, c_hero = st.columns([0.44, 0.56], gap="large", vertical_alignment="center")
     with c_login:
         env_path = os.path.join(BOT_DIR, ".env")
@@ -174,10 +315,13 @@ if st.session_state.username is None:
         </style>
         """, unsafe_allow_html=True)
         
-        show_pwd = st.checkbox("👁️ Passwörter anzeigen")
-        pwd_type = "default" if show_pwd else "password"
+        tab_login, tab_register, tab_forgot, tab_pwd = st.tabs(["🔐 Login", "📝 Register", "❓ Passwort", "👁️ Ansicht"])
         
-        tab_login, tab_register, tab_forgot = st.tabs(["🔐 Login", "📝 Registrierung", "❓ Passwort vergessen"])
+        with tab_pwd:
+            st.caption("Eingabe-Einstellungen")
+            show_pwd = st.checkbox("Passwörter im Klartext anzeigen")
+            
+        pwd_type = "default" if show_pwd else "password"
         
         with tab_login:
             with st.form("login_form", border=True):
@@ -403,7 +547,7 @@ if st.session_state.username is None:
                         with open(pf_path, "w", encoding="utf-8") as pf:
                             json.dump(p_data, pf, indent=4)
                             
-                    st.success("✅ Passwort erfolgreich neu gesetzt! Du kannst dich jetzt im ersten Tab anmelden.")
+                    st.success("✅ Passwort erfolgreich neu gesetzt! Du kannst dich jetzt im Login-Bereich anmelden.")
     with c_hero:
         logo_path = os.path.join(BASE_DIR, "assets", "aegis_mind_logo.png")
         if os.path.exists(logo_path):
@@ -1691,7 +1835,8 @@ with st.expander("📖 Schnellstart-Anleitung & Kader-Spickzettel", expanded=Fal
     ### 📋 Master-Kader & Profil-Spickzettel (Welches Setup wohin gehört)
     **🏢 Fremdkapital / Prop-Challenges (tax_category: prop_firm):**
     * **Apex 50k:** Ticker `NQ=F` (1h, RTH 15:30–21:30 MEZ) | Profil: **Target-Lock Intraday (apex_lock)** mit 10% Daily-Loss Sizing.
-    * **FTMO 50k:** Ticker `USDJPY=X` & `GBPUSD=X` (4h) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing.
+    * **FTMO 50k (Majors):** Ticker `USDJPY=X` & `GBPUSD=X` (4h) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing.
+    * **FTMO 50k (EURUSD):** Ticker `EURUSD=X` (1h, London/NY Overlap 13:00–18:00 MEZ) | Setup A (Reversal, Score ≥ 70) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing. (Strikte Kernliquidität beachten!)
 
     **👤 Privates Cashflow- & Alpha-Depot (tax_category: private):**
     * **High-Beta Tech & Growth (z.B. NVDA, PLTR, AAPL auf 4h, RTH 15:30–22:00 MEZ):** Ausschließlich Setup B Trend-Pullbacks über EMA 200. Profil: **Defensiv-Swing (defensive_swing)** für frühe Gewinnsicherung (+1.0 R) oder **Home-Run Trend (private_alpha)** für freie Mega-Trends.
@@ -2535,20 +2680,21 @@ with tab_screen:
     st.header("⚡ Shortterm Scanner & Scoring")
     st.markdown("Durchsuche vordefinierte Markt-Universen nach deinen Kriterien und speichere die besten Setups als Favoriten.")
 
-    render_dynamic_settings(
-        "🛠️ Pro-Modus: 6-Säulen-Bedingungen", "pro_mode_settings", 
-        [
-            {"label": "EMA 200 (Killerkriterium)", "key": "ema200_killer", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Zeigt den langfristigen Trend. Kurs über der Linie = Aufwärtstrend, darunter = Abwärtstrend (Achtung, fallendes Messer!)."}, 
-            {"label": "RSI Extremzone", "key": "rsi_aktiv", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Misst die aktuelle Markttemperatur. Ist der Wert unter deiner gesetzten Grenze, gilt der Markt als 'überverkauft' (potenziell günstig)."}, 
-            {"label": "Bollinger Bänder", "key": "bollinger_aktiv", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Zeigt die Schwankungsbreite. Kratzt der Kurs am unteren Band, ist er statistisch gesehen ungewöhnlich stark gefallen."}, 
-            {"label": "MACD Trend", "key": "macd_aktiv", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Misst den Schwung (Momentum). Dreht der Indikator ins Plus, baut sich neuer Kaufdruck auf."}, 
-            {"label": "Volumen-Bestätigung", "key": "volumen_aktiv", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Prüft, ob aktuell überdurchschnittlich stark gehandelt wird. Ein hohes Volumen gibt dem Signal mehr Gewicht."},
-            {"label": "Keltner Kanal (Volatilität)", "key": "keltner_aktiv", "default": "Aktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Nutzt die Average True Range (ATR). Fällt der Kurs unter das untere Band, liegt eine starke Übertreibung vor."},
-            {"label": "Plateau-Check (Overfitting)", "key": "plateau_aktiv", "default": "Inaktiv", "type": "radio", "options": ["Aktiv", "Inaktiv"], "help": "Prüft Nachbar-Parameter (z.B. RSI 12, 13, 15, 16). Schützt vor Glückstreffern."}
-        ], 
-        key_prefix="tab2_", expanded=False, reset_label="🔄 Tab 2 Einstellungen zurücksetzen", defaults_to_reset={"ema200_killer": "Aktiv", "rsi_aktiv": "Aktiv", "bollinger_aktiv": "Aktiv", "macd_aktiv": "Aktiv", "volumen_aktiv": "Aktiv", "keltner_aktiv": "Aktiv", "plateau_aktiv": "Inaktiv"}, extra_resets={"tab2_settings": {"tf": "1d", "rsi_buy": 30.0, "rsi_sell": 70.0}}
-    )
-
+    with st.expander("🛠️ AEGIS MIND Engine — Säulen & Konfluenz", expanded=False):
+        st.info("💡 **Poka-Yoke (Fehlervermeidung):** Die Indikator-Aktivierung erfolgt vollautomatisch und dynamisch über die Asset-DNA des jeweiligen Marktes. Ein manuelles Deaktivieren ist zum Schutz der Strategie-Integrität ('Rules Never Bend') ausgeschlossen.")
+        
+        c_pm1, c_pm2, c_pm3, c_pm4 = st.columns(4)
+        with c_pm1:
+            st.metric("EMA 200 (Killerkriterium)", "🟢 Aktiv", help="Prüft den übergeordneten Trend. Kurse unter dem EMA 200 blockieren Reversals bei Aktien (Schutz vor fallenden Messern).")
+            st.metric("Volumen-Validierung", "🟢 Aktiv", help="Prüft überdurchschnittliches Handelsvolumen (> 20er SMA). Neutralisiert sich bei Datenfeeds ohne Volumendaten automatisch.")
+        with c_pm2:
+            st.metric("Wilder's RSI", "🟢 Aktiv", help="Misst extreme Übertreibungen nach Wilder's Glättung (Setup A: <30 bzw. <25 bei Krypto; Setup B: Ruhezone 38–52).")
+            st.metric("Keltner-Kanal", "🟢 Aktiv", help="ATR-basierter Volatilitätskanal (EMA 20 + 2.0x ATR) zur frühzeitigen Identifikation dynamischer Trend-Ausbrüche.")
+        with c_pm3:
+            st.metric("Bollinger Bänder", "🟢 Aktiv", help="Erkennt statistische Überdehnungen anhand von 2 Standardabweichungen vom gleitenden Durchschnitt.")
+            st.metric("Plateau-Check", "🟢 Aktiv", help="Schutzschild 2: Testet Nachbarperioden gegen Curve-Fitting und bestraft isolierte statistische Zufallstreffer.")
+        with c_pm4:
+            st.metric("MACD Momentum", "🟢 Aktiv", help="Bestätigt die Richtungsdynamik und das Einsetzen von neuem Momentum in Trendrichtung.")
     st.subheader("📂 Universen & Listen verwalten")
     col_u1, col_u2 = st.columns(2)
     with col_u1:
@@ -2976,11 +3122,11 @@ with tab_screen:
                             mc_ratio_val = float(row_data.get("MC_Ratio", 0.0))
                             st.markdown(f"**🎲 Monte-Carlo Stresstest:** {row_data.get('Monte-Carlo', 'N/A')}")
                             
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            col_btn1, col_btn2 = st.columns(2)
             fav_cands = st.session_state.scanner_favorite_tickers
             
             with col_btn1:
-                if st.button("💾 In Shortterm-Liste (Tab 2) speichern", use_container_width=True):
+                if st.button("💾 In Swing-Watchlist speichern", use_container_width=True):
                     if fav_cands:
                         added = 0
                         sel_rows = disp_df[disp_df["Ticker"].isin(fav_cands)]
@@ -2988,27 +3134,15 @@ with tab_screen:
                             if not any(t["symbol"] == row["Ticker"] for t in st.session_state.config["screener_tickers"]):
                                 st.session_state.config["screener_tickers"].append({"symbol": row["Ticker"], "name": row["Name"], "sector": row["Kategorie"]})
                                 added += 1
-                        if added > 0: save_config(st.session_state.config); st.success(f"✅ {added} Ticker in Tab 2 gespeichert!")
+                        if added > 0: save_config(st.session_state.config); st.success(f"✅ {added} Ticker in der Watchlist gespeichert!")
                         else: st.info("ℹ️ Ticker waren bereits in der Liste.")
             with col_btn2:
-                if st.button("➡️ In Longterm Watchlist (Tab 1) kopieren", type="primary", use_container_width=True):
-                    if fav_cands:
-                        added = 0
-                        sel_rows = disp_df[disp_df["Ticker"].isin(fav_cands)]
-                        for _, row in sel_rows.iterrows():
-                            if not any(t["symbol"] == row["Ticker"] for t in st.session_state.config["tickers"]):
-                                st.session_state.config["tickers"].append({"symbol": row["Ticker"], "name": row["Name"], "sector": row["Kategorie"], "risk_class": "Wachstum/Aggressiv", "use_custom": False, "custom_rsi_buy": st.session_state.config["global_settings"]["rsi_aggressiv"], "custom_rsi_sell": st.session_state.config["global_settings"]["rsi_sell_aggressiv"]})
-                                added += 1
-                        if added > 0: save_config(st.session_state.config); st.success(f"✅ {added} Ticker nach Tab 1 kopiert!")
-                        else: st.info("ℹ️ Ticker waren bereits in Tab 1.")
-            with col_btn3:
-                if st.button("📤 An Kader-Optimizer senden (Tab 4)", type="primary", use_container_width=True):
+                if st.button("📤 An Kader-Optimizer senden (Strategie-Labor)", type="primary", use_container_width=True):
                     if fav_cands:
                         st.session_state["transfer_candidates"] = list(set(st.session_state.get("transfer_candidates", []) + fav_cands))
-                        st.toast(f"✅ {len(fav_cands)} Kandidaten für den Tab 4 Optimizer vorgemerkt!", icon="📤")
+                        st.toast(f"✅ {len(fav_cands)} Kandidaten für den Optimizer vorgemerkt!", icon="📤")
                     else:
                         st.info("ℹ️ Bitte wähle zuerst Favoriten (📌 Speichern) aus.")
-
     st.markdown("---")
     st.header("📌 Deine gespeicherte Shortterm Watchlist")
     render_search_bar("screener_tickers", is_tab1=False)
@@ -3884,7 +4018,7 @@ with tab_futures:
                             st.success(f"✅ **Sicherer Puffer ({util_pct:.1f}% Auslastung):** Das Portfolio ist vor Klumpenrisiken geschützt und bleibt weit unter der Tagesverlust-Schwelle.")
                             
                         st.write("")
-                        if st.button("📤 Diesen Korb im Strategie-Labor (Tab 4) validieren", type="primary", use_container_width=True):
+                        if st.button("📤 Diesen Korb im Strategie-Labor validieren", type="primary", use_container_width=True):
                             basket_tickers = [item['ticker'] for item in best_basket]
                             lab_accs = st.session_state.config.setdefault("lab_accounts", {})
                             active_id = st.session_state.get("active_lab_account")
@@ -3895,7 +4029,7 @@ with tab_futures:
                                 target_acc = lab_accs[active_id]
                                 target_acc["tickers"] = list(set(target_acc.get("tickers", []) + basket_tickers))
                                 save_config(st.session_state.config)
-                                st.toast(f"✅ {len(basket_tickers)} Ticker erfolgreich an Tab 4 übergeben!", icon="📤")
+                                st.toast(f"✅ {len(basket_tickers)} Ticker erfolgreich an das Strategie-Labor übergeben!", icon="📤")
                                 st.rerun()
                     else:
                         st.info("ℹ️ Keine unkorrelierte Mehrfach-Kombination gefunden. Bitte prüfe die Einzel-Setups in der Tabelle.")
@@ -4657,8 +4791,8 @@ with tab_lab:
                     except Exception as e:
                         st.error(f"Fehler beim Live-Check: {e}")
         else:
-            st.info("ℹ️ **Leerer Kader:** Füge im 'Strategie-Labor' (Tab 4.2) Ticker hinzu, um den Konto-Check und Optimizer zu nutzen.")
-        if st.button("✏️ Kader direkt in Tab 4.2 bearbeiten", use_container_width=True):
+            st.info("ℹ️ **Leerer Kader:** Füge im 'Strategie-Labor' Ticker hinzu, um den Konto-Check und Optimizer zu nutzen.")
+        if st.button("✏️ Kader direkt im Strategie-Labor bearbeiten", use_container_width=True):
             st.info("ℹ️ Bitte wechsle oben auf den Reiter '🧪 Strategie-Labor & Optimizer'.")
         st.markdown("---")
 
@@ -5232,7 +5366,7 @@ with tab_lab:
             return added, skipped
 
         with i1:
-            if st.button("📥 Aus Tab 1 Watchlist importieren", use_container_width=True):
+            if st.button("📥 Aus Longterm-Watchlist importieren", use_container_width=True):
                 new_t = [t["symbol"] for t in st.session_state.config.get("tickers", [])]
                 added, skipped = add_with_sector_limit(curr_tickers, new_t)
                 active_acc["tickers"] = curr_tickers + added
@@ -5240,7 +5374,7 @@ with tab_lab:
                 if added: st.toast(f"✅ {len(added)} Ticker übernommen!", icon="📥")
                 save_config(st.session_state.config); st.rerun()
         with i2:
-            if st.button("📥 Aus Tab 2 Watchlist importieren", use_container_width=True):
+            if st.button("📥 Aus Swing-Watchlist importieren", use_container_width=True):
                 new_t = [t["symbol"] for t in st.session_state.config.get("screener_tickers", [])]
                 added, skipped = add_with_sector_limit(curr_tickers, new_t)
                 active_acc["tickers"] = curr_tickers + added
@@ -5248,17 +5382,17 @@ with tab_lab:
                 if added: st.toast(f"✅ {len(added)} Ticker übernommen!", icon="📥")
                 save_config(st.session_state.config); st.rerun()
         with i3:
-            if st.button("📥 Aus aktuellem Tab 2 Scanner", use_container_width=True):
+            if st.button("📥 Aus aktuellem Swing-Scanner", use_container_width=True):
                 if "scanner_results" in st.session_state and not st.session_state.scanner_results.empty:
                     new_t = st.session_state.scanner_results["Ticker"].tolist()
                     added, skipped = add_with_sector_limit(curr_tickers, new_t)
                     active_acc["tickers"] = curr_tickers + added
-                    if skipped: st.toast(f"⚠️ Übersprungen wegen Sektor-Limit (max. 2): {', '.join(skipped)}", icon="⚠️")
+                    if skipped: st.toast(f"⚠️️ Übersprungen wegen Sektor-Limit (max. 2): {', '.join(skipped)}", icon="⚠️")
                     if added: st.toast(f"✅ {len(added)} Ticker übernommen!", icon="📥")
                     save_config(st.session_state.config); st.rerun()
                 else: st.toast("Keine Scanner-Ergebnisse vorhanden.")
         with i4:
-            if st.button("📥 Aus Tab 3 Prop-Kader importieren", use_container_width=True):
+            if st.button("📥 Aus Prop-Kader importieren", use_container_width=True):
                 new_t = [t["symbol"] for t in st.session_state.config.get("futures_tickers", []) if t.get("active", True)]
                 added, skipped = add_with_sector_limit(curr_tickers, new_t)
                 active_acc["tickers"] = curr_tickers + added
