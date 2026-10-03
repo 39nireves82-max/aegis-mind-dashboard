@@ -29,8 +29,26 @@ _hdr_base = os.path.dirname(os.path.abspath(__file__))
 _icon_path = os.path.join(_hdr_base, "assets", "aegis_icon.png")
 if not os.path.exists(_icon_path):
     _icon_path = os.path.join(_hdr_base, "assets", "aegis_mind_logo.png")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(BASE_DIR)
+env_path = os.path.abspath(os.path.join(PARENT_DIR, "RSI Bot", ".env"))
+load_dotenv(env_path, override=True)
 
-show_header = st.session_state.get("splash_done", False) or st.session_state.get("username") is not None
+if "username" not in st.session_state:
+    st.session_state.username = None
+    st.session_state.role = None
+
+if "splash_done" not in st.session_state:
+    st.session_state.splash_done = False
+
+dev_auto_login = os.getenv('DEV_AUTO_LOGIN', 'false').lower()
+if dev_auto_login == 'true' and st.session_state.username is None:
+    st.session_state['authenticated'] = True
+    st.session_state.username = os.getenv('DEV_USER', 'admin')
+    st.session_state.role = "admin"
+    st.session_state.splash_done = True
+
+show_header = st.session_state.get("username") is not None
 if show_header:
     c_hdr_icon, c_hdr_title = st.columns([0.045, 0.955], vertical_alignment="center")
     with c_hdr_icon:
@@ -47,7 +65,7 @@ st.markdown("""
     div[data-testid="stHeader"] {
         background: transparent !important;
     }
-    #MainMenu, header, footer, .stAppDeployButton {
+    #MainMenu, footer, .stAppDeployButton {
         visibility: hidden !important;
         display: none !important;
     }
@@ -127,8 +145,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(BASE_DIR)
 BOT_DIR = os.path.join(PARENT_DIR, "RSI Bot")
 CONFIG_FILE = os.path.join(BOT_DIR, "ticker_config.json")
 MEGA_LISTS_DIR = os.path.join(BOT_DIR, "mega_lists")
@@ -184,12 +200,6 @@ def init_auth_system():
 
 init_auth_system()
 
-if "username" not in st.session_state:
-    st.session_state.username = None
-    st.session_state.role = None
-
-if "splash_done" not in st.session_state:
-    st.session_state.splash_done = False
 if not st.session_state.splash_done and st.session_state.username is None:
     st.markdown("""
     <style>
@@ -297,8 +307,6 @@ if st.session_state.username is None:
     """, unsafe_allow_html=True)
     c_login, c_hero = st.columns([0.44, 0.56], gap="large", vertical_alignment="center")
     with c_login:
-        env_path = os.path.join(BOT_DIR, ".env")
-        load_dotenv(env_path, override=True)
         REG_CODE = os.getenv("REGISTRATION_CODE", "TRADING_ALPHA_2026")
         MASTER_RESET_KEY = os.getenv("MASTER_RESET_KEY", "").strip()
         
@@ -566,8 +574,6 @@ def get_user_file(filename):
     return target_path
 
 # 🔐 DATA AT-REST: VERSCHLÜSSELUNG FÜR API-KEYS
-env_path = os.path.join(BOT_DIR, ".env")
-load_dotenv(env_path, override=True)
 ENC_KEY = os.getenv("ENCRYPTION_KEY")
 
 if not ENC_KEY:
@@ -600,7 +606,8 @@ if os.path.exists(user_profile_path):
     with open(user_profile_path, "r", encoding="utf-8") as f:
         user_profile_data = json.load(f)
 
-if not user_profile_data.get("tos_accepted_at"):
+dev_auto_login = os.getenv('DEV_AUTO_LOGIN', 'false').lower()
+if not user_profile_data.get("tos_accepted_at") and dev_auto_login != 'true':
     st.markdown("---")
     st.markdown("## ⚖️ Nutzungsbedingungen & Haftungsausschluss")
     st.warning("⚠️ **Wichtiger rechtlicher Hinweis**\n\nDas RSI Trading Management-System AEGIS MIND dient **ausschließlich der Marktbeobachtung und dem persönlichen Risikomanagement**. Es stellt **keine Anlageberatung oder Handelsempfehlung** dar.\n\nDer Betreiber übernimmt **keinerlei Haftung** für finanzielle Verluste, Verzögerungen, API-Ausfälle oder Softwarefehler. Jeder Trade wird vom Nutzer vollständig **eigenverantwortlich** platziert.")
@@ -670,6 +677,7 @@ def load_config():
         "tab3_settings": {"tf": "1h", "rsi_short_entry": 70.0, "rsi_take_profit": 30.0},
         "tickers": [], 
         "screener_tickers": [], 
+        "prop_watchlist": [],
         "futures_tickers": [{"symbol": "NQ=F", "name": "Nasdaq 100"}],
         "lab_accounts": {
             "default": {
@@ -930,6 +938,33 @@ def get_benchmark_data(symbol):
 def fetch_market_data(tickers, period, interval):
     if not tickers: return pd.DataFrame()
     return yf.download(tickers, period=period, interval=interval, group_by="ticker", progress=False)
+def extract_ticker_df(b_df, sym, total_tickers_count):
+    if b_df.empty:
+        return pd.DataFrame()
+    if total_tickers_count == 1:
+        df_single = b_df.copy()
+        if isinstance(df_single.columns, pd.MultiIndex):
+            # Prüfe, ob sym in Level 0 oder Level 1 steht
+            if sym in df_single.columns.get_level_values(0):
+                df_single = df_single[sym].copy()
+            elif sym in df_single.columns.get_level_values(1):
+                df_single = df_single.xs(sym, level=1, axis=1).copy()
+            else:
+                # Fallback: Nimm das Level, das 'Close' enthält
+                if 'Close' in df_single.columns.get_level_values(0):
+                    df_single.columns = df_single.columns.get_level_values(0)
+                else:
+                    df_single.columns = df_single.columns.get_level_values(1)
+        return df_single
+
+    if isinstance(b_df.columns, pd.MultiIndex):
+        if sym in b_df.columns.get_level_values(0):
+            return b_df[sym].copy()
+        elif sym in b_df.columns.get_level_values(1):
+            return b_df.xs(sym, level=1, axis=1).copy()
+    elif "Close" in b_df.columns:
+        return b_df.copy()
+    return pd.DataFrame()
 
 def calc_relative_strength(ticker_symbol, ticker_df, timeframe_days=20):
     if len(ticker_df) < timeframe_days: return None
@@ -3148,13 +3183,6 @@ with tab_screen:
     render_search_bar("screener_tickers", is_tab1=False)
     render_management_panel("screener_tickers", show_sectors=False)
 
-    with st.expander("⚙️ Individuelle Ticker-Einstellungen (Tabelle)", expanded=False):
-        df_st = pd.DataFrame([{"#": i+1, "Ticker": t["symbol"], "Name": t["name"], "Sektor": t.get("sector", "Standard")} for i, t in enumerate(st.session_state.config["screener_tickers"])])
-        if not df_st.empty:
-            edited_st = st.data_editor(df_st, hide_index=True, use_container_width=True, disabled=["#", "Ticker", "Name"])
-            upd_st = [{"symbol": r["Ticker"], "name": r["Name"], "sector": r["Sektor"]} for _, r in edited_st.iterrows()]
-            if upd_st != st.session_state.config["screener_tickers"]: st.session_state.config["screener_tickers"] = upd_st; save_config(st.session_state.config); st.rerun()
-
     t_list_2 = [t["symbol"] for t in st.session_state.config["screener_tickers"]]
     if t_list_2:
         with st.spinner("Lade Shortterm-Daten..."):
@@ -3162,17 +3190,12 @@ with tab_screen:
                 tf = st.session_state.config["tab2_settings"].get("tf", "1d")
                 period = "1y" if tf == "1d" else "5y"
                 b_df2 = fetch_market_data(t_list_2, period, tf)
-                if isinstance(b_df2.columns, pd.MultiIndex) and len(t_list_2) == 1: b_df2.columns = b_df2.columns.get_level_values(0)
                 res_t2, tb_data2 = {}, []
                 t_b2 = st.session_state.config["tab2_settings"].get("rsi_buy", 30.0)
                 t_s2 = st.session_state.config["tab2_settings"].get("rsi_sell", 70.0)
                 for t_dict in st.session_state.config["screener_tickers"]:
                     sym = t_dict["symbol"]
-                    df_t = pd.DataFrame()
-                    if isinstance(b_df2.columns, pd.MultiIndex):
-                        if sym in b_df2.columns.get_level_values(0): df_t = b_df2[sym].copy()
-                        elif sym in b_df2.columns.get_level_values(1): df_t = b_df2.xs(sym, level=1, axis=1).copy()
-                    else: df_t = b_df2.copy()
+                    df_t = extract_ticker_df(b_df2, sym, len(t_list_2))
                     
                     if not df_t.empty and "Close" in df_t:
                         calc = calc_rsi_and_targets(df_t, t_b2, t_s2, strategy_mode="5_saeulen_core", ticker=sym)
@@ -3532,7 +3555,7 @@ with tab_futures:
 
     st.markdown("---")
 
-    # --- 3. SCANNER & BIDIREKTIONALE LOGIK ---
+    # --- BLOCK D (OBEN): 🔍 Prop-Desk Screener ---
     st.subheader("🔍 Prop-Desk Screener")
     if "futures_scan_results" not in st.session_state: 
         st.session_state.futures_scan_results = None
@@ -3668,7 +3691,6 @@ with tab_futures:
                 except Exception as e:
                     st.error(f"Fehler beim Direkt-Laden von {sym_ql}: {e}")
 
-    # On-Demand Detail-Infobox für direkt geladenen Ticker (auch bei Score < 60 / Neutral)
     active_f_sym = st.session_state.get("active_futures_order")
     if active_f_sym and st.session_state.get("futures_scan_results"):
         tb_all_od = st.session_state.futures_scan_results.get("tb_data", [])
@@ -3733,6 +3755,14 @@ with tab_futures:
                     od_typ_info = "Setup B (Trend-Pullback)" if "Trend" in str(od_row.get('Signal', '')) else "Setup A (Reversal/Extremum)"
                     od_dir_info = "Short" if "Short" in str(od_row.get('Signal', '')) else "Long"
                     st.markdown(f"**Typ:** {od_typ_info} ({od_dir_info}) | **Kurs:** {od_row.get('Kurs', 'N/A')} | **SL:** {od_row.get('Stop Loss', 'N/A')} | **TP:** {od_row.get('Take Profit', 'N/A')} | **Abstand:** {od_row.get('Abstand', 'N/A')}")
+                if st.button("➕ Zur Prop-Watchlist hinzufügen", key=f"add_prop_wl_od_{active_f_sym}"):
+                    if "prop_watchlist" not in st.session_state.config: st.session_state.config["prop_watchlist"] = []
+                    if not any(t["symbol"] == active_f_sym for t in st.session_state.config["prop_watchlist"]):
+                        st.session_state.config["prop_watchlist"].append({"symbol": active_f_sym, "name": od_row.get('Name', active_f_sym), "asset_class": od_row.get('Klasse', 'Futures')})
+                        save_config(st.session_state.config)
+                        st.toast(f"✅ {active_f_sym} zur Prop-Watchlist hinzugefügt!")
+                    else:
+                        st.info("Ticker ist bereits in der Prop-Watchlist.")
                 st.markdown(f"**🌍 Makro-Status (EMA 200):** {od_macro_str} | **📊 RSI:** {od_row.get('RSI', 'N/A')} | **⚡ ATR:** {od_atr_pct:.2f}% | **⚖️ CRV:** {float(od_row.get('_crv', 0.0)):.2f}")
                 st.caption(f"🏛️ **Indikatoren-Aufschlüsselung:** {od_row.get('Säulen-Details', 'N/A')} | **Score-Split:** Säulen:{od_pts_saeulen} CRV:{od_pts_crv} RS:{od_pts_rs} Sig:{od_pts_sig} | **🛡️ Stresstest:** {od_row.get('Stresstest', 'N/A')}")
     c_s1, c_s2 = st.columns([1, 2])
@@ -3800,14 +3830,12 @@ with tab_futures:
                                 z_score = details.get("z_score", 0)
                                 kc_upper = plot.get("KC_upper", plot["EMA_20"]).iloc[-1]
                                 
-                                # Bidirektionale Ampel-Logik
                                 signal, is_short = "🟡 Neutral", False
                                 if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
                                 elif r <= cfg["rsi_long_entry"] or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
                                 elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
                                 elif r >= cfg["rsi_short_entry"] or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
                                     
-                                # --- 4. DRAWDOWN-STRESSTEST & KONTRAKT-SIZING ---
                                 sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
                                 
                                 if not is_short:
@@ -3817,13 +3845,12 @@ with tab_futures:
                                 
                                 risk_pts = abs(c_p - sl)
                                 tick_val = 1.0
-                                # Grobes Mapping für Tick/Point Values (Standard Micro/Lot Größen als Referenz)
                                 if "NQ" in sym or "ES" in sym or "YM" in sym or "RTY" in sym: tick_val = 2.0 if "NQ" in sym else (5.0 if "ES" in sym else 0.5)
                                 elif "GC" in sym or "CL" in sym: tick_val = 10.0
                                 elif "SI" in sym: tick_val = 10.0
                                 elif "USD=X" in sym or "JPY=X" in sym: tick_val = 100000.0
                                 
-                                max_risk_amt = dl * 0.10 # Max. 10% vom Tagesverlust-Limit pro Trade
+                                max_risk_amt = dl * 0.10
                                 raw_qty = max_risk_amt / (risk_pts * tick_val) if risk_pts > 0 else 0
                                 
                                 size_str = ""
@@ -3847,7 +3874,6 @@ with tab_futures:
                                     trades_dl = int(dl / actual_risk)
                                     trades_mdd = int(mdd / actual_risk)
                                 
-                                # Korrelations-Gruppe bestimmen (für den Optimizer)
                                 corr_group = "Other"
                                 if a_class == "Futures": corr_group = "US-Indizes"
                                 elif a_class == "Forex" and "USD" in sym: corr_group = "USD-Wetten"
@@ -3902,12 +3928,11 @@ with tab_futures:
         res_t3 = st.session_state.futures_scan_results["res_t3"]
         df_res = pd.DataFrame(tb_data)
         
-        valid_signals = df_res[~df_res["Signal"].str.contains("Neutral") & ~df_res["Empf. Größe"].str.contains("⚠️")]
+        valid_signals = df_res[~df_res["Signal"].str.contains("Neutral") & ~df_res["Empf. Größe"].str.contains("⚠️️")]
         
         if not valid_signals.empty:
             df_sorted = valid_signals.sort_values(by="Sort_Score", ascending=False).copy()
             
-            # --- 1. KACHEL-DASHBOARD (Top-Picks) ---
             st.markdown("### 🏆 Overall Top 3 (Klassenübergreifend)")
             top3 = df_sorted.head(3)
             cols_ov = st.columns(3)
@@ -3928,119 +3953,18 @@ with tab_futures:
                     else:
                         st.metric(label=f"{cls}", value="-", delta="Kein Setup", delta_color="off")
             st.markdown("---")
-            # --- 1.1 DAILY PROP-BASKET OPTIMIZER ---
-            def get_ticker_cluster(sym, a_cls):
-                us_indices = ["NQ=F", "ES=F", "YM=F", "RTY=F"]
-                commodities = ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F"]
-                cryptos = ["BTC-USD", "ETH-USD", "SOL-USD"]
-                if sym in us_indices: return "US-Indizes"
-                if sym in commodities or a_cls == "Rohstoffe": return "Rohstoffe"
-                if sym in cryptos or a_cls == "Krypto": return "Krypto"
-                if "USD" in sym and sym.endswith("=X"): return "USD-Forex"
-                if a_cls == "Forex": return "Forex-Cross"
-                return "Sonstige"
-            # Deaktiviert für v1.0.0 (Fokus auf Asset-spezifische Spezialkonten statt aggregierter Baskets)
-            if bool(False): # ehemals: with st.expander("🎯 Optimaler Tages-Basket...", expanded=True):
-                # Vorbereitung der qualifizierten Kandidaten
-                cands_pool = []
-                for _, r_cand in df_sorted.iterrows():
-                    actual_r = float(r_cand.get("_actual_risk", 0.0))
-                    sort_score = float(r_cand.get("Sort_Score", 0))
-                    if actual_r > 0 and sort_score >= 60:
-                        c_group = get_ticker_cluster(r_cand["Ticker"], r_cand.get("Klasse", ""))
-                        cands_pool.append({
-                            "row": r_cand,
-                            "ticker": r_cand["Ticker"],
-                            "name": r_cand["Name"],
-                            "signal": r_cand["Signal"],
-                            "score": sort_score,
-                            "risk": actual_r,
-                            "cluster": c_group
-                        })
-
-                if not cands_pool:
-                    st.info("ℹ️ Aktuell liegen keine Setups mit ausreichender Qualität (Score ≥ 60) vor. Für Prop-Firm Challenges wird heute kein Korb empfohlen (Kapitalschutz).")
-                else:
-                    best_basket = None
-                    best_basket_score = -1.0
-                    
-                    # Teste 3er-Kombinationen, Fallback auf 2er-Kombinationen
-                    for k_size in [3, 2]:
-                        if len(cands_pool) >= k_size:
-                            import itertools
-                            for comb in itertools.combinations(cands_pool, k_size):
-                                clusters = [c["cluster"] for c in comb]
-                                # Hard Constraint: Max 1 Setup pro Cluster
-                                if len(clusters) == len(set(clusters)):
-                                    total_r = sum(c["risk"] for c in comb)
-                                    if total_r > 0:
-                                        sum_score = sum(c["score"] for c in comb)
-                                        ratio = sum_score / total_r
-                                        if ratio > best_basket_score:
-                                            best_basket_score = ratio
-                                            best_basket = comb
-                        if best_basket is not None and len(best_basket) == 3:
-                            break
-
-                    if not best_basket and len(cands_pool) == 1:
-                        best_basket = [cands_pool[0]]
-
-                    if best_basket:
-                        cum_risk = sum(c["risk"] for c in best_basket)
-                        dl_limit_f = float(dl) if dl > 0 else 1.0
-                        util_pct = (cum_risk / dl_limit_f) * 100.0
-
-                        st.markdown(f"**Empfohlener Korb ({len(best_basket)} unkorrelierte Setups):**")
-                        b_cols = st.columns(len(best_basket))
-                        for i_b, item in enumerate(best_basket):
-                            r_data = item["row"]
-                            with b_cols[i_b]:
-                                with st.container(border=True):
-                                    st.markdown(f"**{item['ticker']}** ({item['name']})")
-                                    st.caption(f"📂 Cluster: **{item['cluster']}**")
-                                    st.write(f"Richtung: **{r_data['Signal']}**")
-                                    st.write(f"Größe: **{r_data['Empf. Größe']}**")
-                                    st.write(f"Risiko: **${item['risk']:.2f}** | Score: **{int(item['score'])}/100**")
-                                    if st.button("🛒 In Order-Desk laden", key=f"btn_load_basket_{item['ticker']}", use_container_width=True):
-                                        st.session_state.active_futures_order = item['ticker']
-                                        st.toast(f"🛒 Order-Desk geladen für: {item['ticker']}", icon="✅")
-                                        st.rerun()
-
-                        st.markdown("---")
-                        mb1, mb2, mb3 = st.columns(3)
-                        mb1.metric("Kumuliertes Risiko (Worst Case)", f"${cum_risk:,.2f}")
-                        mb2.metric("Puffer-Auslastung (Daily Loss)", f"{util_pct:.1f} %", delta=f"{dl_limit_f - cum_risk:,.2f} $ verbleibend")
-                        mb3.metric("Korrelations-Schutz", f"{len(best_basket)} verschiedene Cluster", delta="Diversifiziert", delta_color="off")
-
-                        if util_pct > 30.0:
-                            st.warning(f"⚠️ **Hohe Risiko-Auslastung ({util_pct:.1f}%):** Bei gleichzeitigem Stop-Loss-Treffer aller Positionen wird über 30% deines Tagesverlust-Puffers aufgebraucht!")
-                        else:
-                            st.success(f"✅ **Sicherer Puffer ({util_pct:.1f}% Auslastung):** Das Portfolio ist vor Klumpenrisiken geschützt und bleibt weit unter der Tagesverlust-Schwelle.")
-                            
-                        st.write("")
-                        if st.button("📤 Diesen Korb im Strategie-Labor validieren", type="primary", use_container_width=True):
-                            basket_tickers = [item['ticker'] for item in best_basket]
-                            lab_accs = st.session_state.config.setdefault("lab_accounts", {})
-                            active_id = st.session_state.get("active_lab_account")
-                            if not active_id or active_id not in lab_accs:
-                                active_id = list(lab_accs.keys())[0] if lab_accs else None
-                            
-                            if active_id:
-                                target_acc = lab_accs[active_id]
-                                target_acc["tickers"] = list(set(target_acc.get("tickers", []) + basket_tickers))
-                                save_config(st.session_state.config)
-                                st.toast(f"✅ {len(basket_tickers)} Ticker erfolgreich an das Strategie-Labor übergeben!", icon="📤")
-                                st.rerun()
-                    else:
-                        st.info("ℹ️ Keine unkorrelierte Mehrfach-Kombination gefunden. Bitte prüfe die Einzel-Setups in der Tabelle.")
+            if bool(False): 
+                pass
+            
             st.markdown("---")
 
-            # --- 2. QUIET UI (Data Editor) ---
             if "active_futures_order" not in st.session_state: st.session_state.active_futures_order = None
             if "futures_info_tickers" not in st.session_state: st.session_state.futures_info_tickers = []
             
             df_sorted.insert(0, "🛒 Order", df_sorted["Ticker"] == st.session_state.active_futures_order)
             df_sorted.insert(1, "🔍 Info", df_sorted["Ticker"].isin(st.session_state.futures_info_tickers))
+            if "prop_favorite_tickers" not in st.session_state: st.session_state.prop_favorite_tickers = []
+            df_sorted.insert(2, "Favorit", df_sorted["Ticker"].isin(st.session_state.prop_favorite_tickers))
             
             def color_t3_new(row):
                 s = str(row["Signal"])
@@ -4052,25 +3976,23 @@ with tab_futures:
                 return [""] * len(row)
 
             df_sorted["CRV"] = df_sorted["_crv"].apply(lambda x: f"{x:.2f}")
-            disp_cols_display = ["🛒 Order", "🔍 Info", "Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"]
+            disp_cols_display = ["Favorit", "🛒 Order", "🔍 Info", "Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"]
 
             edited_t3 = st.data_editor(
                 df_sorted[disp_cols_display].style.apply(color_t3_new, axis=1), 
                 hide_index=True, use_container_width=True,
                 disabled=["Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"],
                 column_config={
+                    "Favorit": st.column_config.CheckboxColumn("📌 Speichern", default=False),
                     "🛒 Order": st.column_config.CheckboxColumn("🛒 Order", default=False),
                     "🔍 Info": st.column_config.CheckboxColumn("🔍 Info", default=False)
                 },
                 key="t3_data_editor"
             )
-
-            # State-Handling Info
             new_infos_t3 = edited_t3[edited_t3["🔍 Info"] == True]["Ticker"].tolist()
             if set(new_infos_t3) != set(st.session_state.futures_info_tickers):
                 st.session_state.futures_info_tickers = new_infos_t3
 
-            # Sidebar Broker-Order (Exklusivitäts-Logik mit Toast)
             current_orders_t3 = edited_t3[edited_t3["🛒 Order"] == True]["Ticker"].tolist()
             selected_ticker_t3 = None
             if len(current_orders_t3) > 0:
@@ -4094,10 +4016,29 @@ with tab_futures:
                 st.session_state.active_futures_order = None
                 st.toast("Order-Desk geleert.", icon="ℹ️")
                 st.rerun()
+            new_favs_t3 = edited_t3[edited_t3["Favorit"] == True]["Ticker"].tolist()
+            view_tickers_t3 = df_sorted["Ticker"].tolist()
+            current_favs_t3 = set(st.session_state.prop_favorite_tickers)
+            for t in view_tickers_t3:
+                if t in new_favs_t3: current_favs_t3.add(t)
+                else: current_favs_t3.discard(t)
+            st.session_state.prop_favorite_tickers = list(current_favs_t3)
+            
+            if st.button("💾 In Prop-Watchlist speichern", use_container_width=True):
+                if st.session_state.prop_favorite_tickers:
+                    if "prop_watchlist" not in st.session_state.config: st.session_state.config["prop_watchlist"] = []
+                    added = 0
+                    for sym in st.session_state.prop_favorite_tickers:
+                        if not any(t["symbol"] == sym for t in st.session_state.config["prop_watchlist"]):
+                            r_data = df_sorted[df_sorted["Ticker"] == sym].iloc[0]
+                            st.session_state.config["prop_watchlist"].append({"symbol": sym, "name": r_data["Name"], "asset_class": r_data["Klasse"]})
+                            added += 1
+                    if added > 0:
+                        save_config(st.session_state.config)
+                        st.success(f"✅ {added} Ticker in der Prop-Watchlist gespeichert!")
+                    else:
+                        st.info("ℹ️ Ticker waren bereits in der Liste.")
 
-            # --- 3. DETAIL-BOXEN (🔍 Info) ---
-
-            # --- 3. DETAIL-BOXEN (🔍 Info) ---
             for sym in st.session_state.futures_info_tickers:
                 if sym == st.session_state.get("active_futures_order"):
                     continue
@@ -4145,6 +4086,14 @@ with tab_futures:
                             typ_info = "Setup B (Trend-Pullback)" if "Trend" in row_data['Signal'] else "Setup A (Reversal/Extremum)"
                             dir_info = "Short" if "Short" in row_data['Signal'] else "Long"
                             st.markdown(f"**Typ:** {typ_info} ({dir_info}) | **Kurs:** {row_data['Kurs']} | **SL:** {row_data['Stop Loss']} | **TP:** {row_data['Take Profit']}")
+                        if st.button("➕ Zur Prop-Watchlist hinzufügen", key=f"add_prop_wl_info_{sym}"):
+                            if "prop_watchlist" not in st.session_state.config: st.session_state.config["prop_watchlist"] = []
+                            if not any(t["symbol"] == sym for t in st.session_state.config["prop_watchlist"]):
+                                st.session_state.config["prop_watchlist"].append({"symbol": sym, "name": row_data.get('Name', sym), "asset_class": row_data.get('Klasse', 'Futures')})
+                                save_config(st.session_state.config)
+                                st.toast(f"✅ {sym} zur Prop-Watchlist hinzugefügt!")
+                            else:
+                                st.info("Ticker ist bereits in der Prop-Watchlist.")
                         rec_t3 = get_asset_strategy_recommendation(sym)
                         with st.container(border=True):
                             st.markdown(f"**🧬 Strategie-DNA & Empfehlung**")
@@ -4188,6 +4137,300 @@ with tab_futures:
             st.info("Aktuell keine gültigen Einstiegssignale gefunden.")
             
         render_chart_system(res_t3, "t3")
+
+    st.markdown("---")
+
+    # --- BLOCK E (UNTEN): 📌 Meine Prop-Watchlist ---
+    st.subheader("📌 Meine Prop-Watchlist")
+    if "prop_watchlist" not in st.session_state.config: st.session_state.config["prop_watchlist"] = []
+    
+    c_search_pw, c_btn_pw = st.columns([3, 1])
+    with c_search_pw:
+        sq_pw = st.text_input("Name, Stichwort oder Ticker eingeben:", key="prop_wl_search_query")
+    sug_pw = []
+    if sq_pw and len(sq_pw.strip()) >= 2:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={sq_pw.strip()}&quotesCount=5", headers=headers, timeout=3)
+            if resp.status_code == 200:
+                for q in resp.json().get("quotes", []):
+                    if "symbol" in q: sug_pw.append(f"{q['symbol']} - {q.get('longname', q.get('shortname', ''))}")
+        except: pass
+        
+    chosen_pw = None
+    if sug_pw:
+        chosen_pw_raw = st.selectbox("Treffer:", sug_pw, key="prop_wl_search_select")
+        chosen_pw = chosen_pw_raw.split(" - ")[0]
+        chosen_name_pw = chosen_pw_raw.split(" - ")[1] if " - " in chosen_pw_raw else chosen_pw
+        
+    with c_btn_pw:
+        st.write(""); st.write("")
+        if st.button("➕ Hinzufügen", use_container_width=True, key="prop_wl_btn_confirm_add") and chosen_pw:
+            if not any(t["symbol"] == chosen_pw for t in st.session_state.config["prop_watchlist"]):
+                a_cls = "Forex" if "USD=X" in chosen_pw else ("Krypto" if "BTC" in chosen_pw else "Futures")
+                st.session_state.config["prop_watchlist"].append({"symbol": chosen_pw, "name": chosen_name_pw, "asset_class": a_cls})
+                save_config(st.session_state.config)
+                st.toast("Ticker zu Prop-Watchlist hinzugefügt", icon="✅")
+                st.rerun()
+
+    render_management_panel("prop_watchlist", show_sectors=False)
+
+    pw_list = [t["symbol"] for t in st.session_state.config["prop_watchlist"]]
+    if pw_list:
+        with st.spinner("Lade Prop-Watchlist..."):
+            try:
+                cfg_pw = st.session_state.config["tab3_settings"]
+                tf_fut_pw = cfg_pw.get("tf_futures", cfg_pw.get("tf", "1h"))
+                tf_fx_pw = cfg_pw.get("tf_forex", "4h")
+                
+                def _res_per_tf(tf_val):
+                    if tf_val == "15m": return "60d", "15m"
+                    elif tf_val in ["1h", "4h"]: return "720d", "1h"
+                    else: return "1y", tf_val
+
+                p_fut_pw, f_fut_pw = _res_per_tf(tf_fut_pw)
+                p_fx_pw, f_fx_pw = _res_per_tf(tf_fx_pw)
+                
+                fut_list_pw = [t["symbol"] for t in st.session_state.config["prop_watchlist"] if not (t.get("asset_class") == "Forex" or t["symbol"].endswith("=X") or "DX-Y" in t["symbol"])]
+                fx_list_pw = [t["symbol"] for t in st.session_state.config["prop_watchlist"] if (t.get("asset_class") == "Forex" or t["symbol"].endswith("=X") or "DX-Y" in t["symbol"])]
+                
+                b_df_fut_pw = fetch_market_data(fut_list_pw, p_fut_pw, f_fut_pw) if fut_list_pw else pd.DataFrame()
+                
+                b_df_fx_pw = fetch_market_data(fx_list_pw, p_fx_pw, f_fx_pw) if fx_list_pw else pd.DataFrame()
+                
+                tb_data_pw = []
+                res_pw = {}
+                
+                for t_dict in st.session_state.config["prop_watchlist"]:
+                    sym = t_dict["symbol"]
+                    t_name = t_dict.get("name", sym)
+                    a_class = t_dict.get("asset_class", "Futures")
+                    if a_class not in ["Futures", "Forex", "Rohstoffe", "Krypto"]:
+                        a_class = "Forex" if sym.endswith("=X") else ("Krypto" if "BTC" in sym else "Futures")
+                    c_type = "Lot" if a_class == "Forex" else ("BTC" if a_class == "Krypto" else "Micro")
+                    
+                    is_fx_item = (a_class == "Forex" or sym.endswith("=X") or "DX-Y" in sym)
+                    item_tf = tf_fx_pw if is_fx_item else tf_fut_pw
+                    src_df = b_df_fx_pw if is_fx_item else b_df_fut_pw
+                    src_len = len(fx_list_pw) if is_fx_item else len(fut_list_pw)
+                    
+                    df_t = pd.DataFrame()
+                    if src_len == 1:
+                        df_t = src_df.copy()
+                        if isinstance(df_t.columns, pd.MultiIndex):
+                            if sym in df_t.columns.get_level_values(0):
+                                df_t = df_t[sym].copy()
+                            elif sym in df_t.columns.get_level_values(1):
+                                df_t = df_t.xs(sym, level=1, axis=1).copy()
+                            elif 'Close' in df_t.columns.get_level_values(0):
+                                df_t.columns = df_t.columns.get_level_values(0)
+                            elif 'Close' in df_t.columns.get_level_values(1):
+                                df_t.columns = df_t.columns.get_level_values(1)
+                    else:
+                        if isinstance(src_df.columns, pd.MultiIndex):
+                            if sym in src_df.columns.get_level_values(0):
+                                df_t = src_df[sym].copy()
+                            elif sym in src_df.columns.get_level_values(1):
+                                df_t = src_df.xs(sym, level=1, axis=1).copy()
+                        else:
+                            df_t = src_df.copy()
+                    if item_tf == "4h" and not df_t.empty and "Close" in df_t:
+                        agg_d = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
+                        if 'Volume' in df_t.columns: agg_d['Volume'] = 'sum'
+                        df_t = df_t.resample('4h').agg(agg_d).dropna(subset=['Close'])
+                        
+                    if not df_t.empty and "Close" in df_t:
+                        calc = calc_rsi_and_targets(df_t, cfg_pw["rsi_long_entry"], cfg_pw["rsi_short_entry"], ticker=sym)
+                        if calc:
+                            r, p_b, p_s, plot, details = calc
+                            c_p = plot['Close'].iloc[-1]
+                            ema200, ema20 = plot['EMA_200'].iloc[-1], plot['EMA_20'].iloc[-1]
+                            z_score = details.get("z_score", 0)
+                            kc_upper = plot.get("KC_upper", plot["EMA_20"]).iloc[-1]
+                            
+                            signal, is_short = "🟡 Neutral", False
+                            if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
+                            elif r <= cfg_pw["rsi_long_entry"] or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
+                            elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
+                            elif r >= cfg_pw["rsi_short_entry"] or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
+                                
+                            sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
+                            if not is_short:
+                                sl = plot["Low"].tail(24).min() if "Low" in plot.columns else c_p * 0.98
+                                if sl >= c_p: sl = c_p * 0.98
+                                tp = plot["High"].tail(24).max() if "High" in plot.columns else c_p * 1.02
+                                
+                            risk_pts = abs(c_p - sl)
+                            tick_val = get_point_value(sym, c_type)
+                            max_risk_amt = dl * 0.10
+                            raw_qty = max_risk_amt / (risk_pts * tick_val) if risk_pts > 0 else 0
+                            
+                            if a_class in ["Futures", "Rohstoffe"]:
+                                qty = int(raw_qty)
+                                size_str = f"{qty} {c_type}" if qty >= 1 else "⚠️ SL zu weit"
+                                actual_risk = qty * risk_pts * tick_val
+                            else:
+                                qty = round(raw_qty, 2) if a_class == "Forex" else round(raw_qty, 4)
+                                size_str = f"{qty} {c_type}" if qty > 0 else "⚠️ SL zu weit"
+                                actual_risk = qty * risk_pts * tick_val
+                                
+                            trades_dl = int(dl / actual_risk) if actual_risk > 0 else 0
+                            trades_mdd = int(mdd / actual_risk) if actual_risk > 0 else 0
+                            crv_val = (abs(tp - c_p)/risk_pts) if risk_pts > 0 else 0
+                            
+                            if crv_val >= 2.0: t_crv = f"🟢 Top CRV (1:{crv_val:.1f})"
+                            elif crv_val >= 1.5: t_crv = f"🟡 Passabel (1:{crv_val:.1f})"
+                            else: t_crv = f"🔴 Unattraktiv (1:{crv_val:.1f})"
+
+                            rs_ratio = calc_relative_strength(sym, plot)
+                            details["ampel"] = signal
+                            details["setup_type"] = "B" if "Trend" in signal else "A"
+                            sort_score, m_score_str, m_score_bd = calculate_master_score(details, t_crv, rs_ratio, r, cfg_pw["rsi_long_entry"], direction="Short" if is_short else "Long", is_multi_asset=True)
+
+                            if sym.endswith("=X"): pips = risk_pts * 100 if "JPY" in sym else risk_pts * 10000; abstand_str = f"{pips:.1f} Pips"
+                            else: abstand_str = f"{risk_pts:.4f} Pkt." if risk_pts < 1.0 else f"{risk_pts:.2f} Pkt."
+
+                            tb_data_pw.append({
+                                "Klasse": a_class, "Ticker": sym, "Name": t_name, "Master-Score": m_score_str,
+                                "Signal": signal, "Kurs": f"{c_p:.4f}", "RSI": f"{r:.2f}", "CRV": f"{crv_val:.2f}",
+                                "Risiko ($)": f"${actual_risk:.2f}" if actual_risk > 0 else "N/A", "Empf. Größe": size_str,
+                                "Stop Loss": f"{sl:.4f}", "Take Profit": f"{tp:.4f}", "Abstand": abstand_str,
+                                "Score-Details": m_score_bd, "Säulen-Details": details.get("breakdown", "N/A"),
+                                "Stresstest": f"Tagespuffer: {trades_dl} Fehltrades | Max: {trades_mdd}",
+                                "_raw_cp": c_p, "_raw_sl": sl, "_raw_tp": tp, "_raw_qty": qty, 
+                                "_raw_is_short": is_short, "_raw_name": t_name, "_actual_risk": actual_risk,
+                                "_crv": crv_val, "Sort_Score": sort_score, "_corr_group": "Watchlist",
+                                "_ema200_ok": c_p > ema200, "_atr_pct": details.get("atr_pct", 0.0)
+                            })
+                            res_pw[sym] = (plot, cfg_pw["rsi_long_entry"], cfg_pw["rsi_short_entry"], t_name, a_class)
+            except Exception as e:
+                st.error(f"Fehler bei Prop-Watchlist: {e}")
+            
+            if tb_data_pw:
+                st.subheader("📊 Live-Auswertung (Prop-Watchlist)")
+                df_pw_res = pd.DataFrame(tb_data_pw).sort_values(by="Sort_Score", ascending=False)
+                
+                if "active_futures_order" not in st.session_state: st.session_state.active_futures_order = None
+                if "prop_wl_info_tickers" not in st.session_state: st.session_state.prop_wl_info_tickers = []
+                
+                df_pw_res.insert(0, "🛒 Order", df_pw_res["Ticker"] == st.session_state.active_futures_order)
+                df_pw_res.insert(1, "🔍 Info", df_pw_res["Ticker"].isin(st.session_state.prop_wl_info_tickers))
+                
+                def color_pw(row):
+                    s = str(row["Signal"])
+                    if "⚡ Long" in s: return ["background-color: #cce5ff; color: #004085; font-weight: bold"] * len(row)
+                    if "🔄 Long" in s: return ["background-color: #d1ecf1; color: #0c5460; font-weight: bold"] * len(row)
+                    if "⚡ Short" in s: return ["background-color: #e2d9f3; color: #38187a; font-weight: bold"] * len(row)
+                    if "🔄 Short" in s: return ["background-color: #e8daef; color: #512e5f; font-weight: bold"] * len(row)
+                    if "Blockiert" in s or "Neutral" in s: return ["background-color: #f8d7da; color: #721c24; font-weight: bold"] * len(row)
+                    return [""] * len(row)
+
+                disp_cols_pw = ["🛒 Order", "🔍 Info", "Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"]
+                
+                edited_pw_res = st.data_editor(
+                    df_pw_res[disp_cols_pw].style.apply(color_pw, axis=1), 
+                    hide_index=True, use_container_width=True,
+                    disabled=["Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"],
+                    column_config={
+                        "🛒 Order": st.column_config.CheckboxColumn("🛒 Order", default=False),
+                        "🔍 Info": st.column_config.CheckboxColumn("🔍 Info", default=False)
+                    },
+                    key="pw_data_editor"
+                )
+                
+                new_infos_pw = edited_pw_res[edited_pw_res["🔍 Info"] == True]["Ticker"].tolist()
+                if set(new_infos_pw) != set(st.session_state.prop_wl_info_tickers):
+                    st.session_state.prop_wl_info_tickers = new_infos_pw
+
+                current_orders_pw = edited_pw_res[edited_pw_res["🛒 Order"] == True]["Ticker"].tolist()
+                sel_tick_pw = None
+                if len(current_orders_pw) > 0:
+                    new_ones = [t for t in current_orders_pw if t != st.session_state.active_futures_order]
+                    if new_ones: 
+                        sel_tick_pw = new_ones[0]
+                    else: 
+                        sel_tick_pw = current_orders_pw[0]
+                
+                if sel_tick_pw and sel_tick_pw != st.session_state.active_futures_order:
+                    pw_match = df_pw_res[df_pw_res["Ticker"] == sel_tick_pw].iloc[0]
+                    if not st.session_state.get("futures_scan_results"):
+                        st.session_state.futures_scan_results = {"tb_data": [], "res_t3": {}}
+                    ext_tb = [r for r in st.session_state.futures_scan_results.get("tb_data", []) if r.get("Ticker") != sel_tick_pw]
+                    ext_tb.append(pw_match.to_dict())
+                    st.session_state.futures_scan_results["tb_data"] = ext_tb
+                    if sel_tick_pw in res_pw:
+                        st.session_state.futures_scan_results.setdefault("res_t3", {})[sel_tick_pw] = res_pw[sel_tick_pw]
+                    
+                    st.session_state.active_order_ticker = None
+                    st.session_state.active_futures_order = sel_tick_pw
+                    st.toast(f"🛒 Order-Desk geladen für: {sel_tick_pw}", icon="✅")
+                    st.rerun()
+                elif len(current_orders_pw) == 0 and st.session_state.active_futures_order in df_pw_res["Ticker"].values:
+                    st.session_state.active_futures_order = None
+                    st.toast("Order-Desk geleert.", icon="ℹ️")
+                    st.rerun()
+
+                for sym in st.session_state.prop_wl_info_tickers:
+                    if sym == st.session_state.get("active_futures_order"): continue
+                    if sym in df_pw_res["Ticker"].values:
+                        pw_r = df_pw_res[df_pw_res["Ticker"] == sym].iloc[0]
+                        bd_str = pw_r.get('Score-Details', '')
+                        pts = bd_str.split()
+                        pts_saeulen = int(pts[0].split(":")[1]) if len(pts) > 0 and ":" in pts[0] else 0
+                        pts_crv = int(pts[1].split(":")[1]) if len(pts) > 1 and ":" in pts[1] else 0
+                        pts_rs = int(pts[2].split(":")[1]) if len(pts) > 2 and ":" in pts[2] else 0
+                        pts_signal = int(pts[3].split(":")[1]) if len(pts) > 3 and ":" in pts[3] else 0
+                        
+                        with st.container(border=True):
+                            st.markdown(f"### 🔍 Detail-Analyse: **{pw_r['Ticker']}** ({pw_r['Name']}) | {pw_r['Klasse']}")
+                            sym_u_pw = str(sym).upper().strip()
+                            if sym_u_pw == "NQ=F": r_str = "Ziel-Korridor: 60–65 (Deckel: Werte >= 70 meiden)"
+                            elif sym_u_pw in ["CL=F", "MCL"]: r_str = "Ziel-Korridor: 65–70"
+                            elif sym_u_pw in ["USDJPY=X", "GBPUSD=X"]: r_str = "Ziel-Korridor: 60–70"
+                            elif sym_u_pw == "EURUSD=X": r_str = "Ziel-Korridor: 65–75"
+                            elif any(ext in sym_u_pw for ext in ["-USD", "-EUR", "-GBP", "BTC", "ETH", "SOL"]) or pw_r.get("Klasse") == "Krypto": r_str = "Ziel-Korridor: 65–80"
+                            elif "=F" in sym_u_pw or any(ext in sym_u_pw for ext in ["=X", "DX-Y"]) or pw_r.get("Klasse") in ["Futures", "Rohstoffe", "Forex"]: r_str = "Ziel-Korridor: 60–70"
+                            else: r_str = "Zielwert: >= 70 (Relative Stärke)"
+                            
+                            st.metric(label="🚀 Gesamtwertung", value=f"{pw_r.get('Master-Score', 'N/A')} | {r_str}", delta=pw_r.get("Signal", ""), delta_color="off")
+                            gl_pw = get_action_guideline(sym_u_pw, pw_r.get("Sort_Score", 0), pw_r.get("Klasse", ""))
+                            if "🛑" in gl_pw or "⚠️" in gl_pw: st.warning(f"**🧭 Handlungsanweisung:** {gl_pw}")
+                            else: st.info(f"**🧭 Handlungsanweisung:** {gl_pw}")
+                            
+                            t_min = 65 if sym_u_pw in ["CL=F", "MCL", "EURUSD=X"] or any(ext in sym_u_pw for ext in ["-USD", "-EUR", "-GBP", "BTC", "ETH", "SOL"]) or pw_r.get("Klasse") == "Krypto" else (60 if "=F" in sym_u_pw or any(ext in sym_u_pw for ext in ["=X", "DX-Y"]) or pw_r.get("Klasse") in ["Futures", "Rohstoffe", "Forex"] else 70)
+                            if pw_r.get("Sort_Score", 0) >= t_min:
+                                typ_i = "Setup B (Trend-Pullback)" if "Trend" in pw_r['Signal'] else "Setup A (Reversal/Extremum)"
+                                dir_i = "Short" if "Short" in pw_r['Signal'] else "Long"
+                                st.markdown(f"**Typ:** {typ_i} ({dir_i}) | **Kurs:** {pw_r['Kurs']} | **SL:** {pw_r['Stop Loss']} | **TP:** {pw_r['Take Profit']}")
+                            
+                            rec_pw = get_asset_strategy_recommendation(sym)
+                            with st.container(border=True):
+                                st.markdown(f"**🧬 Strategie-DNA & Empfehlung**")
+                                st.markdown(f"**{rec_pw['label']}**")
+                                st.markdown(f"🎯 **Konto:** {rec_pw['konto_typ']} | ⏱️ **TF:** {rec_pw['timeframe']}\n**Profil:** `{rec_pw['profil']}`")
+                            
+                            st.markdown("""<style>[data-testid="stProgress"] { margin-top: -10px !important; margin-bottom: 25px !important; } [data-testid="stProgress"] > div > div > div, [data-testid="stProgress"] > div > div { height: 28px !important; border-radius: 10px !important; }</style>""", unsafe_allow_html=True)
+                            c_pw1, c_pw2 = st.columns(2)
+                            with c_pw1:
+                                is_sb = "Trend" in str(pw_r.get("Signal", ""))
+                                ms, mc = (35, 20) if is_sb else (45, 30)
+                                st.markdown(f"**🏛 Indikatoren: {pts_saeulen} / {ms} Pkt.**")
+                                st.progress(min(pts_saeulen / float(ms), 1.0))
+                                st.info(f"Details: {pw_r.get('Säulen-Details', 'N/A')}")
+                                st.markdown(f"**⚖️ CRV-Bonus: {pts_crv} / {mc} Pkt.**")
+                                st.progress(min(pts_crv / float(mc), 1.0))
+                                if is_sb:
+                                    st.markdown(f"**📈 Rel. Stärke: {pts_rs} / 30 Pkt.**")
+                                    st.progress(min(pts_rs / 30.0, 1.0))
+                                else:
+                                    st.markdown(f"**📈 Rel. Stärke: 0 / 0 Pkt.** (⚪ N/A)")
+                                    st.progress(0.0)
+                                st.markdown(f"**🛡️ Signal & Trend: {pts_signal} / 15 Pkt.**")
+                                st.progress(min(pts_signal / 15.0, 1.0))
+                            with c_pw2:
+                                st.markdown("**🛡️ Prop-Firm Stresstest**")
+                                st.info(pw_r['Stresstest'])
+                                st.markdown(f"**⚖️ CRV (absolut): {float(pw_r['_crv']):.2f}**\n**📊 RSI:** {pw_r['RSI']}")
 #endregion
 
 #region TAB 4 UI
@@ -4741,35 +4984,58 @@ with tab_lab:
                             
                         check_res = []
                         for sym in kader_tickers:
-                            df_t = b_df_check[sym].copy() if (isinstance(b_df_check.columns, pd.MultiIndex) and sym in b_df_check.columns.get_level_values(0)) else (b_df_check.xs(sym, level=1, axis=1).copy() if isinstance(b_df_check.columns, pd.MultiIndex) else b_df_check.copy())
-                            
-                            if not df_t.empty and "Close" in df_t:
-                                calc = calc_rsi_and_targets(df_t, t_b_check, t_s_check, strategy_mode="5_saeulen_core", ticker=sym)
-                                if calc:
-                                    r, p_b, p_s, plot, details = calc
-                                    c_p = plot['Close'].iloc[-1]
-                                    rs_ratio = calc_relative_strength(sym, plot)
-                                    sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s, "tab2")
-                                    m_score_val, m_score_str, _ = calculate_master_score(details, crv_rating, rs_ratio, r, t_b_check)
+                            try:
+                                df_t = pd.DataFrame()
+                                if isinstance(b_df_check.columns, pd.MultiIndex):
+                                    if sym in b_df_check.columns.get_level_values(0):
+                                        df_t = b_df_check[sym].copy()
+                                    elif sym in b_df_check.columns.get_level_values(1):
+                                        df_t = b_df_check.xs(sym, level=1, axis=1).copy()
+                                else:
+                                    df_t = b_df_check.copy()
                                     
-                                    if m_score_val >= 70 or "Long" in details["ampel"] or "Kauf" in details["ampel"] or "Trend-Kauf" in details["ampel"]:
-                                        diag = "🟢 Kaufzone"
-                                    elif c_p < plot['EMA_200'].iloc[-1] or "Blockiert" in details["ampel"] or "blockiert" in details["ampel"]:
-                                        diag = "🔴 Trend blockiert (unter EMA 200)"
-                                    else:
-                                        diag = "🟡 Neutral"
+                                if not df_t.empty and "Close" in df_t.columns:
+                                    calc = calc_rsi_and_targets(df_t, t_b_check, t_s_check, strategy_mode="5_saeulen_core", ticker=sym)
+                                    if calc:
+                                        r, p_b, p_s, plot, details = calc
                                         
-                                    check_res.append({
-                                        "Ticker": sym, "Kurs": f"{c_p:.2f}", "RSI": f"{r:.2f}",
-                                        "Ampel": details["ampel"], "Master-Score": m_score_val,
-                                        "Diagnose": diag, "Laden": False
-                                    })
+                                        if 'Close' in plot.columns and not plot['Close'].dropna().empty:
+                                            c_p = plot['Close'].iloc[-1]
+                                            rs_ratio = calc_relative_strength(sym, plot)
+                                            sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s, "tab2")
+                                            m_score_val, m_score_str, _ = calculate_master_score(details, crv_rating, rs_ratio, r, t_b_check)
+                                            
+                                            has_ema200 = 'EMA_200' in plot.columns and not plot['EMA_200'].dropna().empty
+                                            e200_val = plot['EMA_200'].iloc[-1] if has_ema200 else c_p
+                                            
+                                            if m_score_val >= 70 or "Long" in details["ampel"] or "Kauf" in details["ampel"] or "Trend-Kauf" in details["ampel"]:
+                                                diag = "🟢 Kaufzone"
+                                            elif c_p < e200_val or "Blockiert" in details["ampel"] or "blockiert" in details["ampel"]:
+                                                diag = "🔴 Trend blockiert (unter EMA 200)"
+                                            else:
+                                                diag = "🟡 Neutral"
+                                                
+                                            check_res.append({
+                                                "Ticker": sym, "Kurs": f"{c_p:.2f}", "RSI": f"{r:.2f}",
+                                                "Ampel": details["ampel"], "Master-Score": m_score_val,
+                                                "Diagnose": diag, "Laden": False
+                                            })
+                                        else:
+                                            check_res.append({"Ticker": sym, "Kurs": "N/A", "RSI": "N/A", "Ampel": "⚪ Keine Daten", "Master-Score": 0, "Diagnose": "⚪ Keine Daten", "Laden": False})
+                                    else:
+                                        check_res.append({"Ticker": sym, "Kurs": "N/A", "RSI": "N/A", "Ampel": "⚪ Keine Daten", "Master-Score": 0, "Diagnose": "⚪ Keine Daten", "Laden": False})
+                                else:
+                                    check_res.append({"Ticker": sym, "Kurs": "N/A", "RSI": "N/A", "Ampel": "⚪ Keine Daten", "Master-Score": 0, "Diagnose": "⚪ Keine Daten", "Laden": False})
+                            except Exception as e:
+                                check_res.append({"Ticker": sym, "Kurs": "N/A", "RSI": "N/A", "Ampel": "⚪ Fehler", "Master-Score": 0, "Diagnose": "⚪ Fehler", "Laden": False})
+
                         if check_res:
                             df_check = pd.DataFrame(check_res).sort_values(by="Master-Score", ascending=False)
                             st.markdown("#### 📡 Status-Report (Konto-Kader)")
                             
                             def color_check(row):
                                 sig = str(row["Diagnose"])
+                                if "Fehler" in sig or "Keine Daten" in sig: return ["color: #6c757d; font-style: italic"] * len(row)
                                 if "Zombie" in sig or "blockiert" in sig: return ["background-color: #f8d7da; color: #721c24"] * len(row)
                                 if "Kaufzone" in sig: return ["background-color: #d4edda; color: #155724; font-weight: bold"] * len(row)
                                 return [""] * len(row)
@@ -4792,8 +5058,8 @@ with tab_lab:
                         st.error(f"Fehler beim Live-Check: {e}")
         else:
             st.info("ℹ️ **Leerer Kader:** Füge im 'Strategie-Labor' Ticker hinzu, um den Konto-Check und Optimizer zu nutzen.")
-        if st.button("✏️ Kader direkt im Strategie-Labor bearbeiten", use_container_width=True):
-            st.info("ℹ️ Bitte wechsle oben auf den Reiter '🧪 Strategie-Labor & Optimizer'.")
+            
+        st.caption("💡 Ticker hinzufügen oder entfernen: Wechsle oben auf den Reiter '🧪 Strategie-Labor & Optimizer'.")
         st.markdown("---")
 
         st.markdown("### 🎛️ Live-Portfolio (Aktuell gehandelt)")
@@ -5785,6 +6051,7 @@ with st.expander("⚠️ Danger Zone (Werkseinstellungen)", expanded=bool(_dz_fe
                 "tab3_settings": {"tf_futures": "1h", "tf_forex": "4h", "rsi_short_entry": 70.0, "rsi_long_entry": 30.0},
                 "tickers": [], 
                 "screener_tickers": [], 
+                "prop_watchlist": [],
                 "futures_tickers": [{"symbol": "NQ=F", "name": "Nasdaq 100"}],
                 "lab_accounts": {
                     "default": {
