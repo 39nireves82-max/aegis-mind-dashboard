@@ -3573,7 +3573,9 @@ with tab_futures:
             t_name_ql = t_dict_ql["name"]
             a_class_ql = t_dict_ql.get("asset_class", "Futures")
             c_type_ql = t_dict_ql.get("contract", "Micro")
-            cfg_ql = st.session_state.config["tab3_settings"]
+            cfg_ql = st.session_state.config.get("tab3_settings", {})
+            rsi_long_ql = float(cfg_ql.get("rsi_long_entry", cfg_ql.get("rsi_buy", cfg_ql.get("rsi_kauf", 30.0))))
+            rsi_short_ql = float(cfg_ql.get("rsi_short_entry", cfg_ql.get("rsi_sell", cfg_ql.get("rsi_verkauf", 70.0))))
             is_fx_ql = (a_class_ql == "Forex") or sym_ql.endswith("=X") or ("DX-Y" in sym_ql)
             tf_ql = cfg_ql.get("tf_forex", "4h") if is_fx_ql else cfg_ql.get("tf_futures", cfg_ql.get("tf", "1h"))
             period_ql = "60d" if tf_ql == "15m" else ("720d" if tf_ql in ["1h", "4h"] else "1y")
@@ -3596,7 +3598,7 @@ with tab_futures:
                         df_ql = df_ql.resample('4h').agg(agg_d).dropna(subset=['Close'])
                     if not df_ql.empty and "Close" in df_ql:
                         df_ql = df_ql.dropna(subset=["Close"])
-                        calc_ql = calc_rsi_and_targets(df_ql, cfg_ql["rsi_long_entry"], cfg_ql["rsi_short_entry"], ticker=sym_ql)
+                        calc_ql = calc_rsi_and_targets(df_ql, rsi_long_ql, rsi_short_ql, ticker=sym_ql)
                         if calc_ql:
                             r_ql, p_b_ql, p_s_ql, plot_ql, details_ql = calc_ql
                             c_p_ql = float(plot_ql['Close'].iloc[-1])
@@ -3606,9 +3608,9 @@ with tab_futures:
                             
                             signal_ql, is_short_ql = "🟡 Neutral", False
                             if c_p_ql > ema200_ql and (38 <= r_ql <= 52) and (abs(c_p_ql - ema20_ql)/ema20_ql <= 0.015): signal_ql = "🟢 ⚡ Long (Trend)"
-                            elif r_ql <= cfg_ql["rsi_long_entry"] or z_score_ql <= -2.0: signal_ql = "🟢 🔄 Long (Reversal)"
+                            elif r_ql <= rsi_long_ql or z_score_ql <= -2.0: signal_ql = "🟢 🔄 Long (Reversal)"
                             elif c_p_ql < ema200_ql and (48 <= r_ql <= 62) and (abs(c_p_ql - ema20_ql)/ema20_ql <= 0.015): signal_ql, is_short_ql = "🟢 ⚡ Short (Trend)", True
-                            elif r_ql >= cfg_ql["rsi_short_entry"] or z_score_ql >= 2.0 or c_p_ql >= kc_upper_ql: signal_ql, is_short_ql = "🟢 🔄 Short (Reversal)", True
+                            elif r_ql >= rsi_short_ql or z_score_ql >= 2.0 or c_p_ql >= kc_upper_ql: signal_ql, is_short_ql = "🟢 🔄 Short (Reversal)", True
                             
                             sl_ql, tp_ql, _ = calculate_sl_tp_crv(plot_ql, c_p_ql, p_s_ql if not is_short_ql else p_b_ql, "tab3")
                             if not is_short_ql:
@@ -3646,7 +3648,7 @@ with tab_futures:
                         rs_ratio_ql = calc_relative_strength(sym_ql, plot_ql)
                         details_ql["ampel"] = signal_ql
                         details_ql["setup_type"] = "B" if "Trend" in signal_ql else "A"
-                        sort_score_ql, m_score_str_ql, m_score_bd_ql = calculate_master_score(details_ql, tab3_crv_ql, rs_ratio_ql, r_ql, cfg_ql["rsi_long_entry"], direction="Short" if is_short_ql else "Long", is_multi_asset=True)
+                        sort_score_ql, m_score_str_ql, m_score_bd_ql = calculate_master_score(details_ql, tab3_crv_ql, rs_ratio_ql, r_ql, rsi_long_ql, direction="Short" if is_short_ql else "Long", is_multi_asset=True)
                         
                         if sym_ql.endswith("=X"):
                             pips_ql = risk_pts_ql * 100 if "JPY" in sym_ql else risk_pts_ql * 10000
@@ -3671,12 +3673,12 @@ with tab_futures:
                             "_ema200_ok": ema200_ok_ql, "_atr_pct": atr_pct_ql
                         }
                         if not st.session_state.get("futures_scan_results") or not isinstance(st.session_state.futures_scan_results, dict):
-                            st.session_state.futures_scan_results = {"tb_data": [ql_row], "res_t3": {sym_ql: (plot_ql, cfg_ql["rsi_long_entry"], cfg_ql["rsi_short_entry"], t_name_ql, a_class_ql)}}
+                            st.session_state.futures_scan_results = {"tb_data": [ql_row], "res_t3": {sym_ql: (plot_ql, rsi_long_ql, rsi_short_ql, t_name_ql, a_class_ql)}}
                         else:
                             existing_tb = [r for r in st.session_state.futures_scan_results.get("tb_data", []) if r.get("Ticker") != sym_ql]
                             existing_tb.append(ql_row)
                             st.session_state.futures_scan_results["tb_data"] = existing_tb
-                            st.session_state.futures_scan_results.setdefault("res_t3", {})[sym_ql] = (plot_ql, cfg_ql["rsi_long_entry"], cfg_ql["rsi_short_entry"], t_name_ql, a_class_ql)
+                            st.session_state.futures_scan_results.setdefault("res_t3", {})[sym_ql] = (plot_ql, rsi_long_ql, rsi_short_ql, t_name_ql, a_class_ql)
                         if "futures_info_tickers" not in st.session_state:
                             st.session_state.futures_info_tickers = []
                         if sym_ql not in st.session_state.futures_info_tickers:
@@ -3775,10 +3777,13 @@ with tab_futures:
         t_list = [t["symbol"] for t in target_list]
         if t_list:
             with st.spinner("Analysiere Märkte & berechne Stresstests..."):
-                cfg = st.session_state.config["tab3_settings"]
+                cfg = st.session_state.config.get("tab3_settings", {})
                 try:
                     tf_fut = cfg.get("tf_futures", cfg.get("tf", "1h"))
                     tf_fx = cfg.get("tf_forex", "4h")
+                    
+                    rsi_long_eval = float(cfg.get("rsi_long_entry", cfg.get("rsi_buy", cfg.get("rsi_kauf", 30.0))))
+                    rsi_short_eval = float(cfg.get("rsi_short_entry", cfg.get("rsi_sell", cfg.get("rsi_verkauf", 70.0))))
                     
                     def _resolve_period_tf(tf_val):
                         if tf_val == "15m": return "60d", "15m"
@@ -3822,7 +3827,7 @@ with tab_futures:
                             df_t = df_t.resample('4h').agg(agg_dict).dropna(subset=['Close'])
                         
                         if not df_t.empty and "Close" in df_t:
-                            calc = calc_rsi_and_targets(df_t, cfg["rsi_long_entry"], cfg["rsi_short_entry"])
+                            calc = calc_rsi_and_targets(df_t, rsi_long_eval, rsi_short_eval)
                             if calc:
                                 r, p_b, p_s, plot, details = calc
                                 c_p = plot['Close'].iloc[-1]
@@ -3832,9 +3837,9 @@ with tab_futures:
                                 
                                 signal, is_short = "🟡 Neutral", False
                                 if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
-                                elif r <= cfg["rsi_long_entry"] or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
+                                elif r <= rsi_long_eval or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
                                 elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
-                                elif r >= cfg["rsi_short_entry"] or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
+                                elif r >= rsi_short_eval or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
                                     
                                 sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
                                 
@@ -3888,7 +3893,7 @@ with tab_futures:
                                 rs_ratio = calc_relative_strength(sym, plot)
                                 details["ampel"] = signal
                                 details["setup_type"] = "B" if "Trend" in signal else "A"
-                                sort_score, m_score_str, m_score_breakdown = calculate_master_score(details, tab3_crv_rating, rs_ratio, r, cfg["rsi_long_entry"], direction="Short" if is_short else "Long", is_multi_asset=True)
+                                sort_score, m_score_str, m_score_breakdown = calculate_master_score(details, tab3_crv_rating, rs_ratio, r, rsi_long_eval, direction="Short" if is_short else "Long", is_multi_asset=True)
 
                                 if sym.endswith("=X"):
                                     if "JPY" in sym:
@@ -3914,7 +3919,7 @@ with tab_futures:
                                     "Säulen-Details": details.get("breakdown", "N/A"),
                                     "Stresstest": f"Tagespuffer: {trades_dl} Fehltrades | Max: {trades_mdd}"
                                 })
-                                res_t3[sym] = (plot, cfg["rsi_long_entry"], cfg["rsi_short_entry"], t_name, a_class)
+                                res_t3[sym] = (plot, rsi_long_eval, rsi_short_eval, t_name, a_class)
                     
                     if tb_data:
                         st.session_state.futures_scan_results = {"tb_data": tb_data, "res_t3": res_t3}
@@ -4179,9 +4184,12 @@ with tab_futures:
     if pw_list:
         with st.spinner("Lade Prop-Watchlist..."):
             try:
-                cfg_pw = st.session_state.config["tab3_settings"]
+                cfg_pw = st.session_state.config.get("tab3_settings", {})
                 tf_fut_pw = cfg_pw.get("tf_futures", cfg_pw.get("tf", "1h"))
                 tf_fx_pw = cfg_pw.get("tf_forex", "4h")
+                
+                rsi_long_pw = float(cfg_pw.get("rsi_long_entry", cfg_pw.get("rsi_buy", cfg_pw.get("rsi_kauf", 30.0))))
+                rsi_short_pw = float(cfg_pw.get("rsi_short_entry", cfg_pw.get("rsi_sell", cfg_pw.get("rsi_verkauf", 70.0))))
                 
                 def _res_per_tf(tf_val):
                     if tf_val == "15m": return "60d", "15m"
@@ -4240,7 +4248,7 @@ with tab_futures:
                         df_t = df_t.resample('4h').agg(agg_d).dropna(subset=['Close'])
                         
                     if not df_t.empty and "Close" in df_t:
-                        calc = calc_rsi_and_targets(df_t, cfg_pw["rsi_long_entry"], cfg_pw["rsi_short_entry"], ticker=sym)
+                        calc = calc_rsi_and_targets(df_t, rsi_long_pw, rsi_short_pw, ticker=sym)
                         if calc:
                             r, p_b, p_s, plot, details = calc
                             c_p = plot['Close'].iloc[-1]
@@ -4250,9 +4258,9 @@ with tab_futures:
                             
                             signal, is_short = "🟡 Neutral", False
                             if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
-                            elif r <= cfg_pw["rsi_long_entry"] or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
+                            elif r <= rsi_long_pw or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
                             elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
-                            elif r >= cfg_pw["rsi_short_entry"] or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
+                            elif r >= rsi_short_pw or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
                                 
                             sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
                             if not is_short:
@@ -4285,7 +4293,7 @@ with tab_futures:
                             rs_ratio = calc_relative_strength(sym, plot)
                             details["ampel"] = signal
                             details["setup_type"] = "B" if "Trend" in signal else "A"
-                            sort_score, m_score_str, m_score_bd = calculate_master_score(details, t_crv, rs_ratio, r, cfg_pw["rsi_long_entry"], direction="Short" if is_short else "Long", is_multi_asset=True)
+                            sort_score, m_score_str, m_score_bd = calculate_master_score(details, t_crv, rs_ratio, r, rsi_long_pw, direction="Short" if is_short else "Long", is_multi_asset=True)
 
                             if sym.endswith("=X"): pips = risk_pts * 100 if "JPY" in sym else risk_pts * 10000; abstand_str = f"{pips:.1f} Pips"
                             else: abstand_str = f"{risk_pts:.4f} Pkt." if risk_pts < 1.0 else f"{risk_pts:.2f} Pkt."
@@ -4302,7 +4310,7 @@ with tab_futures:
                                 "_crv": crv_val, "Sort_Score": sort_score, "_corr_group": "Watchlist",
                                 "_ema200_ok": c_p > ema200, "_atr_pct": details.get("atr_pct", 0.0)
                             })
-                            res_pw[sym] = (plot, cfg_pw["rsi_long_entry"], cfg_pw["rsi_short_entry"], t_name, a_class)
+                            res_pw[sym] = (plot, rsi_long_pw, rsi_short_pw, t_name, a_class)
             except Exception as e:
                 st.error(f"Fehler bei Prop-Watchlist: {e}")
             
