@@ -12,7 +12,7 @@ except ImportError:
     print("❌ Fehler: backtest_engine.py nicht gefunden. Bitte aus dem Ordner 'Trading Dashboard' ausführen.")
     sys.exit(1)
 
-RESULTS_FILE = "matrix_validation_v1_0_0_freeze.csv"
+RESULTS_FILE = "matrix_validation_resono_candidates.csv"
 
 def get_broker_fees(broker_profile):
     profile = broker_profile.lower()
@@ -28,25 +28,16 @@ def get_broker_fees(broker_profile):
 
 SCORE_CORRIDOR = [55, 60, 65, 70, 75]
 
-# 🎯 FINAL VALIDATION FREEZE (Krypto 4h Kontrolllauf: BTC-USD, ETH-USD, SOL-USD)
+# 🎯 MICRO-CAP STRESSTEST (CL=F)
 TEST_MATRIX = [
-    # 1. Apex Prop-Desk: NQ=F (1h, Score 55-60, Target-Lock Intraday)
-    {"ticker": "NQ=F", "interval": "1h", "years": 2, "direction": "both", "broker": "apex", "daily_loss": 1250.0, "exit_profile": "apex_lock", "scores": [55, 60], "risk_pct": 1.0, "account_size": 50000.0},
+    # Block A (Harter 1-Micro-Schutz)
+    {"ticker": "CL=F", "interval": "1h", "years": 2, "direction": "both", "broker": "apex", "daily_loss": 1250.0, "exit_profile": "apex_lock", "scores": [60, 65, 70], "risk_pct": 1.0, "account_size": 50000.0, "max_contracts_cap": 1},
     
-    # 2. Privat Rohstoffe: CL=F Rohöl (4h, Score 65-75, Scale-Out Defensiv Mehrtages-Swing)
-    {"ticker": "CL=F", "interval": "4h", "years": 2, "direction": "both", "broker": "custom", "daily_loss": None, "exit_profile": "apex_commodity_scale", "scores": [65, 70, 75], "risk_pct": 1.0, "account_size": 10000.0},
+    # Block B (Kontrollierte 2-Micro-Skalierung)
+    {"ticker": "CL=F", "interval": "1h", "years": 2, "direction": "both", "broker": "apex", "daily_loss": 1250.0, "exit_profile": "apex_lock", "scores": [60, 65, 70], "risk_pct": 1.0, "account_size": 50000.0, "max_contracts_cap": 2},
     
-    # 3. Privat Rohstoffe: GC=F Gold (1h, Score 55-65, Freier Trendauslauf London/NY)
-    {"ticker": "GC=F", "interval": "1h", "years": 2, "direction": "both", "broker": "custom", "daily_loss": None, "exit_profile": "commodity_alpha", "scores": [55, 60, 65], "risk_pct": 1.0, "account_size": 10000.0},
-    
-    # 4. FTMO Prop-Desk: USDJPY=X (4h, Score 55-70, Forex Swing-Runner mit 5% Sizing)
-    {"ticker": "USDJPY=X", "interval": "4h", "years": 2, "direction": "both", "broker": "ftmo", "daily_loss": 1250.0, "exit_profile": "ftmo_swing", "scores": [55, 60, 65, 70], "risk_pct": 1.0, "account_size": 50000.0},
-    
-    # 5. FTMO Prop-Desk: EURUSD=X (1h, Score 65-70, London/NY Overlap mit 5% Sizing)
-    {"ticker": "EURUSD=X", "interval": "1h", "years": 2, "direction": "both", "broker": "ftmo", "daily_loss": 1250.0, "exit_profile": "ftmo_swing", "scores": [65, 70], "risk_pct": 1.0, "account_size": 50000.0},
-    
-    # 6. Privat Aktien: AAPL (4h, Score 65-70, Defensiv-Swing / Setup B Trend-Pullback)
-    {"ticker": "AAPL", "interval": "4h", "years": 2, "direction": "long", "broker": "aktien", "daily_loss": None, "exit_profile": "prop_guard", "scores": [65, 70], "risk_pct": 1.0, "account_size": 10000.0}
+    # Block C (Aggressiver 3-Micro-Start für frische Konten)
+    {"ticker": "CL=F", "interval": "1h", "years": 2, "direction": "both", "broker": "apex", "daily_loss": 1250.0, "exit_profile": "apex_lock", "scores": [60, 65, 70], "risk_pct": 1.0, "account_size": 50000.0, "max_contracts_cap": 3}
 ]
 def run_matrix():
     print(f"🚀 Starte Matrix-Validierung Engine (Out-of-Sample Walk-Forward)")
@@ -61,9 +52,11 @@ def run_matrix():
         "OOS_Profit_Factor", "OOS_Net_PnL_EUR"
     ]
     
-    with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
+    file_exists = os.path.isfile(RESULTS_FILE)
+    with open(RESULTS_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
 
         for config in TEST_MATRIX:
             ticker = config["ticker"]
@@ -76,19 +69,23 @@ def run_matrix():
             risk_pct = config["risk_pct"]
             account_size = config.get("account_size", 10000.0)
             
+            max_contracts_cap = config.get("max_contracts_cap", None)
             fee_rate, slippage = get_broker_fees(broker)
 
             mode_label = "PROP" if daily_loss is not None else "PRIVAT"
 
             for score in config["scores"]:
                 print(f"⏳ Prüfe [{mode_label:6}] {ticker:8} | {interval:3} | Score: {score:2} | Profil: {exit_profile:20} | Account: {account_size:.0f} €...")
+                if max_contracts_cap is not None:
+                    print(f"   -> Führe Backtest aus mit max_contracts_cap = {max_contracts_cap}")
                 
                 try:
                     all_trades, df_hist = bte.backtest(
                         ticker=ticker, years=years, fee_rate=fee_rate, slippage=slippage,
                         min_score=score, mode="walk_forward", account_size=account_size,
                         risk_pct=risk_pct, trailing_stop_mode="active", exit_profile=exit_profile,
-                        allowed_direction=direction, interval=interval, daily_loss=daily_loss
+                        allowed_direction=direction, interval=interval, daily_loss=daily_loss,
+                        max_contracts_cap=max_contracts_cap
                     )
                     metrics_all = bte.calculate_metrics(all_trades)
                     

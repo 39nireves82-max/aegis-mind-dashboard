@@ -15,9 +15,10 @@ POINT_VALUES = {
     "M2K": 5.0, "RTY=F": 5.0,
     "MGC": 10.0, "GC=F": 10.0,
     "SIL": 10.0, "SI=F": 10.0,
-    "MCL": 10.0, "CL=F": 10.0,
+    "MCL": 100.0, "CL=F": 100.0,
     "QG": 2500.0, "NG=F": 2500.0,
     "MHG": 250.0, "HG=F": 250.0,
+    "M6E": 12500.0, "6E=F": 12500.0,  # Proxy-Sizing als Micro-Future, um Sizing=0 zu verhindern
     "EURUSD=X": 100000.0, "GBPUSD=X": 100000.0, "USDJPY=X": 100000.0,
     "AUDUSD=X": 100000.0, "USDCAD=X": 100000.0, "USDCHF=X": 100000.0,
     "EURJPY=X": 100000.0, "DX-Y.NYB": 1000.0
@@ -67,9 +68,11 @@ def is_rth_bar(timestamp, ticker: str) -> bool:
         if any(m in sym_u for m in metals):
             return 540 <= t_min <= 1080
         elif any(e in sym_u for e in energy):
-            return 870 <= t_min <= 1230
+            return 870 <= t_min <= 1050
         elif any(u in sym_u for u in us_indices):
             return 930 <= t_min <= 1230
+        elif any(f in sym_u for f in ["6E=F", "M6E"]):
+            return 780 <= t_min <= 1080
         else:
             return True
     except Exception as e:
@@ -201,7 +204,7 @@ def calculate_indicators(df, bench_df, vol_proxy="atr_ratio", vol_proxy_mult=1.0
 #endregion
 
 #region TRADE LOGIC
-def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None):
+def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None):
     trades = []
     in_trade = False
     cooldown = 0
@@ -247,8 +250,13 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
                 bar_time = curr_bar.name.tz_convert('Europe/Berlin') if hasattr(curr_bar.name, 'tzinfo') and curr_bar.name.tzinfo else curr_bar.name
                 if hasattr(bar_time, 'time'):
                     h, m = bar_time.hour, bar_time.minute
-                    if h > 22 or (h == 22 and m >= 45):
-                        force_eod_close = True
+                    is_energy = any(e in str(ticker).upper() for e in ["CL=F", "MCL", "NG=F", "QG"])
+                    if is_energy:
+                        if h > 20 or (h == 20 and m >= 15):
+                            force_eod_close = True
+                    else:
+                        if h > 22 or (h == 22 and m >= 45):
+                            force_eod_close = True
             
             if t_exit_mode == "HOME_RUN_TREND" or (t_exit_mode == "FTMO_SWING" and is_setup_b_trade):
                 if dir_m == 1 and curr_bar["High"] > highest_high:
@@ -554,6 +562,11 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
                 raw_qty = target_risk / loss_per_unit
                 if a_type == "future":
                     pos_size = float(int(raw_qty))
+                    # Failsafe: Erzwinge 1 Kontrakt, wenn Risk/Reward-Verhältnis für Micros knapp unterschritten wird
+                    if pos_size == 0.0 and raw_qty >= 0.15:
+                        pos_size = 1.0
+                    if max_contracts_cap is not None:
+                        pos_size = float(min(pos_size, max_contracts_cap))
                 elif a_type == "forex":
                     pos_size = round(raw_qty, 2)
                     if pos_size <= 0.0:
@@ -787,7 +800,7 @@ def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", t
         return (master_score, sl, temp_tp, t_type, direction)
     return None
 
-def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None):
+def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None):
     trades = []
     open_positions = {}
     account_balance = account_size
@@ -828,8 +841,13 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                 bar_time = curr_date.tz_convert('Europe/Berlin') if hasattr(curr_date, 'tzinfo') and curr_date.tzinfo else curr_date
                 if hasattr(bar_time, 'time'):
                     h, m = bar_time.hour, bar_time.minute
-                    if h > 22 or (h == 22 and m >= 45):
-                        force_eod_close = True
+                    is_energy = any(e in str(ticker).upper() for e in ["CL=F", "MCL", "NG=F", "QG"])
+                    if is_energy:
+                        if h > 20 or (h == 20 and m >= 15):
+                            force_eod_close = True
+                    else:
+                        if h > 22 or (h == 22 and m >= 45):
+                            force_eod_close = True
             
             if t_exit_mode == "HOME_RUN_TREND" or (t_exit_mode == "FTMO_SWING" and is_setup_b_trade):
                 if dir_m == 1 and curr_bar["High"] > pos.get("highest_high", 0):
@@ -1187,6 +1205,10 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                 raw_qty = target_risk / loss_per_unit
                 if a_type == "future":
                     pos_size = float(int(raw_qty))
+                    if pos_size == 0.0 and raw_qty >= 0.15:
+                        pos_size = 1.0
+                    if max_contracts_cap is not None:
+                        pos_size = float(min(pos_size, max_contracts_cap))
                 elif a_type == "forex":
                     pos_size = round(raw_qty, 2)
                     if pos_size <= 0.0:
@@ -1243,7 +1265,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                     }
     return trades
 
-def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0):
+def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None):
     end_date = datetime.date.today()
     days_to_sub = int(years*365) 
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1271,7 +1293,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
     
     if mode == "holdout":
         split_idx = int(len(all_dates) * 0.7)
-        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss)
+        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss, max_contracts_cap)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1291,7 +1313,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
             test_end = min(train_end + test_size, len(all_dates))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss)
+            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss, max_contracts_cap)
             all_trades.extend(w_trades)
             
             if test_end == len(all_dates): break
@@ -1466,7 +1488,7 @@ def optimize_basket_pool(candidate_tickers, sector_map, target_size, years, fee_
         "skipped_tickers": skipped_tickers
     }
 
-def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0):
+def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None):
     end_date = datetime.date.today()
     days_to_sub = int(years*365)
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1503,7 +1525,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
     
     if mode == "holdout":
         split_idx = int(len(df) * 0.7)
-        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode, "Holdout", exit_profile, allowed_direction, daily_loss)
+        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name="Holdout", exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1523,7 +1545,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
             test_end = min(train_end + test_size, len(df))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss)
+            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name=window_name, exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap)
             all_trades.extend(w_trades)
             
             if test_end == len(df): break
