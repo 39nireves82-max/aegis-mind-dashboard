@@ -13,6 +13,7 @@ import uuid
 import datetime
 import backtest_engine as bte
 import hashlib
+import resono
 import shutil
 import re
 from cryptography.fernet import Fernet
@@ -26,7 +27,9 @@ except ImportError:
     from backports import zoneinfo  # type: ignore
 st.set_page_config(layout="wide", page_title="AEGIS MIND — Rule-Based Trading Desk")
 _hdr_base = os.path.dirname(os.path.abspath(__file__))
-_icon_path = os.path.join(_hdr_base, "assets", "aegis_icon.png")
+_icon_path = os.path.join(_hdr_base, "assets", "aegis_icon2.png")
+if not os.path.exists(_icon_path):
+    _icon_path = os.path.join(_hdr_base, "assets", "aegis_icon.png")
 if not os.path.exists(_icon_path):
     _icon_path = os.path.join(_hdr_base, "assets", "aegis_mind_logo.png")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,10 +53,10 @@ if dev_auto_login == 'true' and st.session_state.username is None:
 
 show_header = st.session_state.get("username") is not None
 if show_header:
-    c_hdr_icon, c_hdr_title = st.columns([0.045, 0.955], vertical_alignment="center")
+    c_hdr_icon, c_hdr_title = st.columns([0.1, 0.9], vertical_alignment="center")
     with c_hdr_icon:
         if os.path.exists(_icon_path):
-            st.image(_icon_path, width=48)
+            st.image(_icon_path, width=120)
     with c_hdr_title:
         st.markdown("<h2 style='margin: 0; padding: 0; line-height: 1.2;'>AEGIS MIND — Rule-Based Trading Desk</h2>", unsafe_allow_html=True)
 st.markdown("""
@@ -263,7 +266,9 @@ if not st.session_state.splash_done and st.session_state.username is None:
     </style>
     """, unsafe_allow_html=True)
     
-    logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo.png")
+    logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo2.png")
+    if not os.path.exists(logo_path_splash):
+        logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo.png")
     if not os.path.exists(logo_path_splash):
         logo_path_splash = os.path.join(BASE_DIR, "assets", "invarix_logo.jpg")
     
@@ -279,12 +284,13 @@ if not st.session_state.splash_done and st.session_state.username is None:
 if st.session_state.username is None:
     st.markdown("""
     <style>
-        /* Bildgröße rechts maximieren (ohne Scrollen) */
+        /* Bildgröße rechts skalieren (auf ca. 60% der Höhe für dezenteren Look) */
         div[data-testid="stImage"] img {
-            max-height: 75vh !important;
+            max-height: 45vh !important;
             width: auto !important;
             object-fit: contain !important;
             margin: 0 auto;
+        }
         }
         /* Titel an das Formular rücken (kompakteres Layout) */
         .block-container {
@@ -557,7 +563,12 @@ if st.session_state.username is None:
                             
                     st.success("✅ Passwort erfolgreich neu gesetzt! Du kannst dich jetzt im Login-Bereich anmelden.")
     with c_hero:
-        logo_path = os.path.join(BASE_DIR, "assets", "aegis_mind_logo.png")
+        logo_path = os.path.join(BASE_DIR, "assets", "aegis_mind_logo2.png")
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(BASE_DIR, "assets", "aegis_icon2.png")
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(BASE_DIR, "assets", "aegis_mind_logo.png")
+            
         if os.path.exists(logo_path):
             _, c_img_center, _ = st.columns([0.14, 0.72, 0.14])
             with c_img_center:
@@ -747,6 +758,23 @@ def load_config():
             "is_premium": False,
             "tickers": list(tickers_dict.values())
         }
+    dirty_cfg = False
+    for list_key in ["futures_tickers", "prop_watchlist"]:
+        if list_key in config and isinstance(config[list_key], list):
+            for item in config[list_key]:
+                if isinstance(item, dict):
+                    sym_check = str(item.get("symbol", "")).upper().strip()
+                    if sym_check.endswith("=X") or "DX-Y" in sym_check:
+                        if item.get("asset_class") != "Forex" or item.get("contract") != "Lot":
+                            item["asset_class"] = "Forex"
+                            item["contract"] = "Lot"
+                            dirty_cfg = True
+    if dirty_cfg:
+        try:
+            with open(user_config, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+        except Exception:
+            pass
     return config
 
 def save_config(config):
@@ -781,6 +809,9 @@ POINT_VALUES = {
 }
 
 def get_point_value(symbol, contract=""):
+    sym_u = str(symbol).upper().strip()
+    if sym_u.endswith("=X") or "DX-Y" in sym_u or contract == "Lot":
+        return 100000.0
     if contract in POINT_VALUES: return POINT_VALUES[contract]
     if symbol in POINT_VALUES: return POINT_VALUES[symbol]
     return 1.0    
@@ -1575,12 +1606,12 @@ def get_asset_strategy_recommendation(symbol):
     sym = str(symbol).upper().strip()
     if sym == 'NQ=F':
         return {"label": "🟢 Validierter Prop-Leader", "konto_typ": "Apex Prop-Desk (50k)", "profil": "Target-Lock Intraday (Apex)", "valid_profiles": ["apex_lock"], "timeframe": "1h (RTH 15:30–21:30 MEZ)", "hinweis": "Striktes Apex Target-Lock (+2.0 R). EOD-Glattstellung vor 22:00 Uhr MEZ zwingend. Im Privatdepot ab 15.000 € Kontogröße zulässig."}
-    elif sym in ['USDJPY=X', 'GBPUSD=X']:
+    elif sym in ['USDJPY=X', 'GBPUSD=X', 'JPY=X', 'GBP=X']:
         return {"label": "🟢 Validierter Forex-Swing", "konto_typ": "FTMO Prop-Desk (50k)", "profil": "Forex Swing-Runner (FTMO)", "valid_profiles": ["ftmo_swing"], "timeframe": "4h", "hinweis": "Strikte 5% Sizing-Regel vom Daily Loss. Freier Trendauslauf (kein starres Apex-EOD)."}
     elif sym == 'EURUSD=X':
         return {"label": "🟢 Validierter London/NY Overlap", "konto_typ": "FTMO Prop-Desk (50k)", "profil": "Forex Swing-Runner (FTMO)", "valid_profiles": ["ftmo_swing"], "timeframe": "1h (13:00–18:00 MEZ)", "hinweis": "Nur im 1h-Takt während der Überlappung handeln (4h empirisch ungeeignet)."}
-    elif sym == 'CL=F':
-        return {"label": "🟢 Validierter Privater Rohstoff-Bulle (4h)", "konto_typ": "Privates Vermögenskonto (IBKR / Depot)", "profil": "Scale-Out Defensiv (Rohstoff-Swing)", "valid_profiles": ["commodity_scale", "apex_commodity_scale"], "timeframe": "4h (Pit-Session 14:30–20:30 MEZ)", "hinweis": "50% Scale-Out ab +1.0 R, freie Mehrtages-Haltedauer. Für Apex wegen des strikten Overnight-Verbots gesperrt!"}
+    elif sym in ['CL=F', 'MCL']:
+        return {"label": "🟢 Validierter Rohstoff (Dual: Apex Intraday & Privat-Swing)", "konto_typ": "Apex Prop-Desk (MCL) ODER Privates Depot (CL=F)", "profil": "Target-Lock Intraday (Apex) / Scale-Out Defensiv", "valid_profiles": ["apex_lock", "commodity_scale", "apex_commodity_scale"], "timeframe": "1h Intraday (14:30–17:30 MEZ) ODER 4h Swing", "hinweis": "Auf Apex als MCL-Micro via RESONO (EOD-Exit vor 20:15 MEZ zwingend). Im Privatdepot als Mehrtages-Swing handelbar."}
     elif sym == 'GC=F':
         return {"label": "⚖️ Privater Edelmetall-Swing", "konto_typ": "Privates Vermögenskonto", "profil": "Rohstoff-Runner (Privat-Alpha)", "valid_profiles": ["commodity_alpha"], "timeframe": "1h (London-Session 09:00–18:00 MEZ)", "hinweis": "Freier Trendlauf ohne Scale-Out. Für Prop-Challenges ungeeignet."}
     elif any(ext in sym for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF", "BTC", "ETH", "SOL", "NEAR"]):
@@ -1789,45 +1820,6 @@ def render_search_bar(config_key, is_tab1=False):
                     save_config(st.session_state.config)
                     st.rerun()
 
-def render_chart_system(res_dict, uid, selected_sector="Alle", show_trend_box=False):
-    st.subheader("📈 Interaktives Trading-Chart System")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    chart_opts = {f"[{v[4]}] {k} - {v[3]}" if v[4] != "N/A" else f"{k} - {v[3]}": k for k, v in res_dict.items() if selected_sector == "Alle" or v[4] == selected_sector}
-    with c1: sel_sym = chart_opts.get(st.selectbox("Wertpapier auswählen:", list(chart_opts.keys()), key=f"c_sel_{uid}")) if chart_opts else None
-    with c2: chart_type = st.selectbox("Kursdarstellung:", ["Kerzenchart", "Linie"], key=f"c_type_{uid}")
-    with c3: sub_ind = st.selectbox("Indikator:", ["RSI", "MACD", "Volumen"], key=f"c_ind_{uid}")
-
-    if sel_sym:
-        df_p, t_low, t_high, t_name, t_sec = res_dict[sel_sym]
-        if show_trend_box:
-            c_price = df_p["Close"].iloc[-1]
-            c_ema = df_p["EMA_200"].iloc[-1]
-            c_rsi = df_p["RSI"].iloc[-1]
-            if c_rsi <= t_low and c_price <= c_ema:
-                st.warning("🟡 **Trend-Warnung:** RSI signalisiert Kauf, aber Kurs liegt unter dem EMA 200. Vorsicht vor fallenden Messern!")
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.65, 0.35], subplot_titles=(f"{sel_sym} - Kursverlauf", sub_ind))
-        
-        if chart_type == "Kerzenchart" and "Open" in df_p: fig.add_trace(go.Candlestick(x=df_p.index, open=df_p["Open"], high=df_p["High"], low=df_p["Low"], close=df_p["Close"], name="Kurs"), row=1, col=1)
-        else: fig.add_trace(go.Scatter(x=df_p.index, y=df_p["Close"], name="Schlusskurs", line=dict(color="#1f77b4", width=2)), row=1, col=1)
-
-        fig.add_trace(go.Scatter(x=df_p.index, y=df_p["EMA_20"], name="EMA 20", line=dict(color="orange")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_p.index, y=df_p["SMA_50"], name="SMA 50", line=dict(color="purple")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_p.index, y=df_p["EMA_200"], name="EMA 200", line=dict(color="red", dash="dot")), row=1, col=1)
-
-        if sub_ind == "RSI":
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p["RSI"], line=dict(color="#2ca02c")), row=2, col=1)
-            fig.add_hline(y=t_high, line_dash="dash", line_color="red", annotation_text=f"{t_high}", row=2, col=1)
-            fig.update_yaxes(range=[0, 100], row=2, col=1)
-        elif sub_ind == "MACD":
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p["MACD"], line=dict(color="blue")), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p["MACD_Signal"], line=dict(color="orange")), row=2, col=1)
-            fig.add_trace(go.Bar(x=df_p.index, y=df_p["MACD_Hist"], marker_color="gray"), row=2, col=1)
-        elif sub_ind == "Volumen" and "Volume" in df_p:
-            fig.add_trace(go.Bar(x=df_p.index, y=df_p["Volume"], marker_color="teal"), row=2, col=1)
-
-        fig.update_layout(height=600, margin=dict(l=20, r=20, t=40, b=20), hovermode="x unified", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
-
 def render_macro_weather():
     with st.expander("🌍 Globales Marktwetter & Trend-Radar", expanded=False):
         res, b_count, sent, box_type, advice = get_macro_status()
@@ -1836,10 +1828,13 @@ def render_macro_weather():
             st.warning("Marktdaten konnten aktuell nicht geladen werden.")
             return
             
+        # Krypto mit Währung, Indizes mit 'Pkt.'
+        curr_map = {"S&P 500": "Pkt.", "Nasdaq 100": "Pkt.", "SMI": "Pkt.", "DAX": "Pkt.", "Bitcoin": "USD"}
         cols = st.columns(5)
         for idx, (name, data) in enumerate(res.items()):
             with cols[idx]:
-                st.metric(label=name, value=f"{data['price']:,.2f}", delta=data['trend'], delta_color="off")
+                c_str = curr_map.get(name, "")
+                st.metric(label=name, value=f"{data['price']:,.2f} {c_str}".strip(), delta=data['trend'], delta_color="off")
         
         st.write("") # Kleiner Abstand
         has_news, news_title, news_time, news_warn = get_economic_calendar()
@@ -1869,14 +1864,14 @@ with st.expander("📖 Schnellstart-Anleitung & Kader-Spickzettel", expanded=Fal
     ---
     ### 📋 Master-Kader & Profil-Spickzettel (Welches Setup wohin gehört)
     **🏢 Fremdkapital / Prop-Challenges (tax_category: prop_firm):**
-    * **Apex 50k:** Ticker `NQ=F` (1h, RTH 15:30–21:30 MEZ) | Profil: **Target-Lock Intraday (apex_lock)** mit 10% Daily-Loss Sizing.
+    * **Apex 50k:** Ticker `NQ=F` (1h, RTH 15:30–21:30 MEZ) & `MCL` (Micro WTI Crude Oil) (1h, Pit-Session 14:30–17:30 MEZ, EOD-Hard-Exit vor 20:15 MEZ) | Profil: **Target-Lock Intraday (apex_lock)** gesteuert durch RESONO.
     * **FTMO 50k (Majors):** Ticker `USDJPY=X` & `GBPUSD=X` (4h) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing.
-    * **FTMO 50k (EURUSD):** Ticker `EURUSD=X` (1h, London/NY Overlap 13:00–18:00 MEZ) | Setup A (Reversal, Score ≥ 70) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing. (Strikte Kernliquidität beachten!)
+    * **FTMO 50k (EURUSD):** Ticker `EURUSD=X` (1h, London/NY-Overlap 13:00–18:00 MEZ) | Setup A (Reversal, Score ≥ 70) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing. (Strikte Kernliquidität beachten!)
 
     **👤 Privates Cashflow- & Alpha-Depot (tax_category: private):**
     * **High-Beta Tech & Growth (z.B. NVDA, PLTR, AAPL auf 4h, RTH 15:30–22:00 MEZ):** Ausschließlich Setup B Trend-Pullbacks über EMA 200. Profil: **Defensiv-Swing (defensive_swing)** für frühe Gewinnsicherung (+1.0 R) oder **Home-Run Trend (private_alpha)** für freie Mega-Trends.
     * **Träge Dividendentitel & Low-Beta (ATR < 1.8%):** Automatisch gesperrt. Binden totes Kapital und sind für unser Swing-System ungeeignet.
-    * **Rohöl (CL=F auf 4h, Pit-Session 14:30–20:30 MEZ):** Profil **Scale-Out Defensiv (Rohstoff-Swing)** – Exklusiv für das private Depot (Für Apex wegen Overnight-Verbot gesperrt).
+    * **Rohöl (CL=F auf 4h, Pit-Session 14:30–20:30 MEZ):** Profil **Scale-Out Defensiv (Rohstoff-Swing)** – Exklusiv für Mehrtages-Swings im privaten Depot (Apex verbietet Overnight-Positionen).
     * **Gold (GC=F auf 1h, London/NY 09:00–18:00 MEZ):** Profil **Rohstoff-Runner (Privat-Alpha)** (volle Swings, kein TP-Deckel).
 
     ⚠️ **Wichtiger Grundsatz zu Score-Werten (Ziel-Korridor-Disziplin):**
@@ -1896,6 +1891,7 @@ with st.expander("📖 Schnellstart-Anleitung & Kader-Spickzettel", expanded=Fal
 
 #region SIDEBAR (Risk Management & Order Desk)
 with st.sidebar:
+    
     st.markdown(f"👤 **Eingeloggt als:** {st.session_state.username} ({st.session_state.role})")
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state.username = None
@@ -1934,6 +1930,84 @@ with st.sidebar:
                     with open(AUTH_FILE, "w", encoding="utf-8") as f:
                         json.dump(creds, f, indent=4)
                     st.success("✅ Passwort erfolgreich geändert!")
+    with st.expander("📲 Telegram-Benachrichtigungen verknüpfen", expanded=False):
+        pf_path = get_user_file("user_profile.json")
+        u_data = {}
+        if os.path.exists(pf_path):
+            with open(pf_path, "r", encoding="utf-8") as f:
+                u_data = json.load(f)
+                
+        tg_chat_id = str(u_data.get("telegram_chat_id", "")).strip()
+        
+        if tg_chat_id and tg_chat_id != "None":
+            st.markdown(f"**Status:** 🟢 Verknüpft (***{tg_chat_id[-4:]})")
+            if st.button("❌ Verknüpfung trennen", use_container_width=True):
+                u_data["telegram_chat_id"] = ""
+                with open(pf_path, "w", encoding="utf-8") as f:
+                    json.dump(u_data, f, indent=4)
+                st.rerun()
+        else:
+            st.markdown("**Status:** ⚪ Nicht verknüpft")
+            st.markdown("""
+            **Anleitung:**
+            1. Starte den Bot in Telegram mit `/start`.
+            2. Ermittle deine numerische Chat-ID (z. B. via @userinfobot).
+            3. Trage deine ID ein und sende einen Test-Ping.
+            """)
+            
+            with st.form("tg_link_form"):
+                input_tg_chat_id = st.text_input("Deine Telegram Chat-ID", placeholder="z. B. 123456789", key="input_tg_chat_id")
+                if st.form_submit_button("📲 Test-Nachricht senden & verknüpfen", use_container_width=True):
+                    cleaned_id = str(input_tg_chat_id).strip()
+                    if not re.match(r"^-?\d+$", cleaned_id):
+                        st.error("⚠️ Ungültiges Format. Die Chat-ID darf nur aus Ziffern bestehen.")
+                    else:
+                        id_already_used = False
+                        for user_dir_name in os.listdir(USERS_DIR):
+                            if user_dir_name == st.session_state.username:
+                                continue
+                            check_pf_path = os.path.join(USERS_DIR, user_dir_name, "user_profile.json")
+                            if os.path.exists(check_pf_path):
+                                try:
+                                    with open(check_pf_path, "r", encoding="utf-8") as f_check:
+                                        chk_data = json.load(f_check)
+                                        if str(chk_data.get("telegram_chat_id", "")).strip() == cleaned_id:
+                                            id_already_used = True
+                                            break
+                                except Exception:
+                                    pass
+                        
+                        if id_already_used:
+                            st.error("⚠️ Diese Chat-ID ist bereits mit einem anderen Benutzerkonto verknüpft.")
+                        else:
+                            bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
+                            if not bot_token:
+                                st.error("⚠️ Kein Bot-Token auf dem Server konfiguriert.")
+                            else:
+                                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                                payload = {
+                                    "chat_id": cleaned_id, 
+                                    "text": "✅ <b>INVARIX — Verifikation erfolgreich!</b>\nDein Telegram-Kanal ist nun sicher mit deinem Konto verknüpft.", 
+                                    "parse_mode": "HTML"
+                                }
+                                try:
+                                    import requests, time
+                                    resp = requests.post(url, json=payload, timeout=3.0)
+                                    if resp.status_code == 200:
+                                        u_data["telegram_chat_id"] = cleaned_id
+                                        with open(pf_path, "w", encoding="utf-8") as f_save:
+                                            json.dump(u_data, f_save, indent=4)
+                                        st.success("✅ Verifikation erfolgreich! Chat-ID gespeichert.")
+                                        time.sleep(1.5)
+                                        st.rerun()
+                                    elif resp.status_code == 403:
+                                        st.error("🛑 Telegram-Fehler (403 Forbidden): Du hast den Bot noch nicht gestartet! Bitte öffne den Bot zuerst in Telegram und drücke auf 'Start' / sende /start. Wiederhole danach den Test.")
+                                    elif resp.status_code == 400:
+                                        st.error("⚠️ Telegram-Fehler (400 Bad Request): Ungültige Chat-ID oder Chat nicht gefunden.")
+                                    else:
+                                        st.error(f"❌ Unerwarteter Telegram-Fehler (HTTP {resp.status_code}): {resp.text}")
+                                except Exception as ex:
+                                    st.error(f"❌ Verbindungsfehler zu Telegram: {ex}")
     if st.session_state.role == "admin":
         admin_bypass = st.checkbox("🔓 Admin: Poka-Yoke Sperren umgehen", key="admin_poka_bypass", value=st.session_state.get("admin_poka_bypass", False))
         if admin_bypass:
@@ -1963,6 +2037,9 @@ with st.sidebar:
             if st.session_state.get("futures_scan_results"):
                 df = pd.DataFrame(st.session_state.futures_scan_results["tb_data"])
                 if sym in df["Ticker"].values: return sym, df[df["Ticker"] == sym].iloc[0], "prop"
+            if "prop_watchlist_results" in st.session_state and not st.session_state.prop_watchlist_results.empty:
+                df_pw = st.session_state.prop_watchlist_results
+                if sym in df_pw["Ticker"].values: return sym, df_pw[df_pw["Ticker"] == sym].iloc[0], "prop"
         return None, None, None
 
     active_sym, row_data, desk_type = get_global_order_data()
@@ -2245,10 +2322,17 @@ with st.sidebar:
                             
         is_shrt = row_data.get('_raw_is_short', False)
         dir_icon = "🟣 Short" if is_shrt else "🔵 Long"
-        c_type = row_data.get("Empf. Größe", "0 Kontrakt").split(" ")[1] if " " in str(row_data.get("Empf. Größe", "")) else "Kontrakt"
+        active_sym_u = str(active_sym).upper().strip()
+        is_fx_sidebar = active_sym_u.endswith("=X") or "DX-Y" in active_sym_u or row_data.get("Klasse") == "Forex"
+        if is_fx_sidebar:
+            c_type = "Lot"
+            disp_klasse_sb = "Forex"
+        else:
+            c_type = row_data.get("Empf. Größe", "0 Kontrakt").split(" ")[1] if " " in str(row_data.get("Empf. Größe", "")) else "Kontrakt"
+            disp_klasse_sb = row_data.get('Klasse', 'N/A')
         
         st.subheader(f"{active_sym}")
-        st.markdown(f"**{row_data.get('Klasse', 'N/A')} | {row_data.get('Name', 'N/A')}**\n\n**Richtung:** {dir_icon} | **Typ:** {c_type}")
+        st.markdown(f"**{disp_klasse_sb} | {row_data.get('Name', 'N/A')}**\n\n**Richtung:** {dir_icon} | **Typ:** {c_type}")
         
         acc_opts_t3 = {acc["name"]: acc_name for acc_name, acc in st.session_state.config.get("lab_accounts", {}).items()}
         if not acc_opts_t3: acc_opts_t3 = {"Standard Portfolio": "default"}
@@ -2301,27 +2385,150 @@ with st.sidebar:
             
             st.caption(f"🏦 Verfügbares freies Kapital: **{free_cash_pf:,.2f} €** (Konto: {sel_pf_acc_name} | Profil: {get_profile_display_name(prof_name)})")
             
-            pf_risk_pct = st.radio("Risiko pro Trade (% vom Daily Loss):", [5, 10, 15], index=1, horizontal=True, key=f"pf_risk_global_{active_sym}")
-            dyn_max_risk = dl * (pf_risk_pct / 100.0)
+            # --- RESONO ENGINE ---
+        has_open_pos = False
+        if not is_sandbox_prop and not df_j_acc.empty and 'OPEN' in df_j_acc['status'].values:
+            has_open_pos = True
+            
+        c_name = "Kontrakt"
+        if active_sym == "NQ=F": c_name = "MNQ"
+        elif active_sym == "ES=F": c_name = "MES"
+        elif active_sym == "YM=F": c_name = "MYM"
+        elif active_sym == "CL=F": c_name = "MCL"
+        elif active_sym == "GC=F": c_name = "MGC"
+        elif is_fx_sidebar: c_name = "Lot"
+        
+        pt_val_res = 100000.0 if is_fx_sidebar else get_point_value(active_sym, c_name)
+        
+        raw_cp_res = float(row_data.get('_raw_cp', str(row_data.get('Kurs', '0')).split()[0]))
+        raw_sl_res = float(row_data.get('_raw_sl', row_data.get('Stop Loss', 0)))
+        risk_pts_dyn = abs(raw_cp_res - raw_sl_res)
+        eff_risk_pts_sb = (risk_pts_dyn / 100.0) if (is_fx_sidebar and "JPY" in active_sym_u) else risk_pts_dyn
+
+        today_str_sidebar = datetime.datetime.now().strftime("%d/%m/%Y")
+        df_closed_today_sidebar = df_j_closed_pf[df_j_closed_pf['exit_date'].astype(str).str.contains(today_str_sidebar, na=False)] if (not is_sandbox_prop and not df_j_closed_pf.empty) else pd.DataFrame()
+        today_realized_pnl_sidebar = float(df_closed_today_sidebar['pnl_eur'].sum()) if not df_closed_today_sidebar.empty else 0.0
+        
+        open_pnl_sidebar = 0.0
+        if has_open_pos:
+            df_open_sidebar = df_j_acc[df_j_acc['status'] == 'OPEN']
+            for _, r_op in df_open_sidebar.iterrows():
+                if r_op['symbol'] == active_sym:
+                    dir_m_op = 1 if r_op['direction'] == 'Long' else -1
+                    open_pnl_sidebar += (raw_cp_res - float(r_op['entry_price'])) * float(r_op['position_size']) * float(r_op.get('point_value', 1.0)) * dir_m_op
+        
+        daily_pnl_sidebar = float(today_realized_pnl_sidebar + open_pnl_sidebar)
+        cap_for_limit = float(start_cap_pf) if not is_sandbox_prop else float(sandbox_cap_pf)
+        if cap_for_limit <= 0: cap_for_limit = 50000.0
+        daily_loss_limit_sidebar = cap_for_limit * 0.05
+        daily_buffer_sidebar = daily_loss_limit_sidebar + daily_pnl_sidebar
+
+        actual_asset_class = "Forex" if is_fx_sidebar else row_data.get("Klasse", "Futures")
+        if actual_asset_class == "Forex" or (not is_sandbox_prop and "FTMO" in sel_pf_acc_name.upper()):
+            acc_type_sb = 'ftmo'
+        elif not is_sandbox_prop and is_apex_lock and "PA" in sel_pf_acc_name.upper():
+            acc_type_sb = 'funded_pa'
+        else:
+            acc_type_sb = 'evaluation'
+
+        account_dict = {
+            "account_size": cap_for_limit,
+            "current_balance": float(free_cash_pf) if not is_sandbox_prop else float(sandbox_cap_pf),
+            "high_watermark": max(float(free_cash_pf), cap_for_limit),
+            "has_open_position": has_open_pos,
+            "account_type": acc_type_sb,
+            "daily_loss_limit": daily_loss_limit_sidebar,
+            "daily_pnl": daily_pnl_sidebar,
+            "daily_buffer": daily_buffer_sidebar
+        }
+        
+        acc_tax_prop = "private" if is_sandbox_prop else sel_pf_acc_data.get("tax_category", "prop_firm")
+        is_private_prop = (not is_sandbox_prop and acc_tax_prop == "private")
+        
+        if active_sym in ["CL=F", "MCL"]: sig_sym = "MCL"
+        elif active_sym in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
+        else: sig_sym = active_sym if c_name in ["Kontrakt", "Lot", "Lots"] else c_name
+        
+        signal_dict = {
+            "ticker": sig_sym,
+            "asset_class": actual_asset_class,
+            "stop_loss_distance": eff_risk_pts_sb,
+            "point_value": pt_val_res,
+            "score": float(row_data.get("Sort_Score", 0))
+        }
+        
+        if is_sandbox_prop:
+            resono_res = {"allowed": True, "max_contracts": 1, "max_lots": 0.1, "zone": "GREEN", "ui_reason": "⚪ RESONO Sandbox-Bypass", "buffer_to_ko": 500.0, "status_code": "BYPASS"}
+        elif is_private_prop:
+            priv_risk_pct = float(sel_pf_acc_data.get("risk_pct", 1.0))
+            priv_risk_budget = float(free_cash_pf) * (priv_risk_pct / 100.0)
+            loss_per_unit = eff_risk_pts_sb * pt_val_res
+            dyn_pos_size = (priv_risk_budget / loss_per_unit) if loss_per_unit > 0 else 0.0
+            resono_res = {
+                "allowed": True,
+                "max_contracts": max(1, int(dyn_pos_size)) if actual_asset_class in ["Futures", "Rohstoffe"] else 0,
+                "max_lots": round(max(0.01, dyn_pos_size), 2) if actual_asset_class == "Forex" else 0.0,
+                "zone": "GREEN",
+                "ui_badge": "⚪ Privatkonto (Bypass)",
+                "ui_reason": "Privates Depot aktiv: Sizing basiert rein auf eingestelltem Kontorisiko (keine Prop-Firm Restriktionen).",
+                "buffer_to_ko": float(free_cash_pf),
+                "risk_buffer_usd": float(free_cash_pf),
+                "daily_buffer_usd": float(free_cash_pf),
+                "status_code": "PRIVATE_BYPASS"
+            }
+        else:
+            try:
+                if actual_asset_class == "Forex":
+                    resono_res = resono.evaluate_ftmo_risk(account_dict, signal_dict)
+                else:
+                    resono_res = resono.evaluate_account_risk(account_dict, signal_dict)
+            except Exception as e:
+                resono_res = {"allowed": True, "max_contracts": 1, "max_lots": 0.1, "zone": "GREEN", "ui_reason": f"Fallback-Freigabe wegen Fehler: {e}", "buffer_to_ko": 0.0, "status_code": "FALLBACK"}
+        
+        st.session_state.current_resono_res = resono_res
+        st.session_state.current_resono_res["has_open_position"] = has_open_pos
+        
+        r_badge = "⚪" if is_private_prop else ("🟢" if resono_res.get("allowed") else ("🔴" if resono_res.get("zone") == "RED" else "🟡"))
+        r_size = resono_res.get("max_contracts", 0) if actual_asset_class in ["Futures", "Rohstoffe"] else resono_res.get("max_lots", 0.0)
+        
+        # Korrekte Puffer-Werte für die Anzeige auslesen (Sync mit Hauptfenster)
+        if actual_asset_class == "Forex":
+            buf_usd = resono_res.get("daily_buffer_usd")
+            buf_val = float(buf_usd) if buf_usd not in [None, 0, 0.0] else float(account_dict.get("daily_buffer", 2500.0))
+        else:
+            buf_val = float(resono_res.get("risk_buffer_usd", resono_res.get("buffer_to_ko", 0.0)))
+
+        if is_private_prop:
+            st.markdown(f"**RESONO Status:** {r_badge} Privatkonto (Bypass: {r_size} {c_name}) — **Kapital:** {buf_val:,.2f} €")
+        elif resono_res.get("allowed"):
+            st.markdown(f"**RESONO Status:** {r_badge} Freigegeben ({r_size} {c_name}) — **Puffer:** ${buf_val:,.2f}")
+        else:
+            st.markdown(f"**RESONO Status:** {r_badge} Stummgeschaltet")
         profile_conflict_blocked_prop = False
         admin_bypass_prop = st.session_state.get("admin_poka_bypass", False)
-        acc_tax_prop = "private" if is_sandbox_prop else sel_pf_acc_data.get("tax_category", "prop_firm")
-        is_prop_firm_prop = (acc_tax_prop == "prop_firm" or "apex" in sel_pf_acc_name.lower() or "ftmo" in sel_pf_acc_name.lower())
+        is_prop_firm_prop = (not is_private_prop and (acc_tax_prop == "prop_firm" or "apex" in sel_pf_acc_name.lower() or "ftmo" in sel_pf_acc_name.lower()))
 
-        is_apex_acc_prop = not is_sandbox_prop and ("apex" in sel_pf_acc_name.lower() or prof_name == "apex_lock" or (acc_tax_prop == "prop_firm" and "ftmo" not in sel_pf_acc_name.lower() and prof_name != "ftmo_swing"))
+        is_apex_acc_prop = not is_sandbox_prop and not is_private_prop and ("apex" in sel_pf_acc_name.lower() or prof_name == "apex_lock" or (acc_tax_prop == "prop_firm" and "ftmo" not in sel_pf_acc_name.lower() and prof_name != "ftmo_swing"))
 
         empfehlung = get_asset_strategy_recommendation(active_sym)
         with st.container(border=True):
             st.markdown(f"**🔄 Aktive Order: {active_sym} | {empfehlung['label']}**")
             st.markdown(f"🎯 **Bestes Konto:** {empfehlung['konto_typ']} | ⏱️ **{empfehlung['timeframe']}**")
             st.caption(f"_{empfehlung['hinweis']}_")
-            if is_apex_acc_prop:
-                if active_sym == "CL=F":
-                    if admin_bypass_prop:
-                        st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
+            if is_private_prop:
+                st.info(f"👤 **Privatkonto-Bypass aktiv:** Prop-Firm Restriktionen sind aufgehoben (Aktives Profil: '{get_profile_display_name(prof_name)}').")
+                profile_conflict_blocked_prop = False
+            elif is_apex_acc_prop:
+                if active_sym in ["CL=F", "MCL"]:
+                    if prof_name == "apex_lock":
+                        st.success("✅ Apex-Intraday-Impuls: Gesteuert durch RESONO (MCL-Micros, EOD-Exit vor 20:15 MEZ zwingend).")
+                        profile_conflict_blocked_prop = False
                     else:
-                        st.error("🛑 Apex-Guard: Mehrtages-Swings sind auf Apex verboten (Keine Overnight-Positionen). CL=F ist ausschließlich im Privatdepot zugelassen.")
-                        profile_conflict_blocked_prop = True
+                        if admin_bypass_prop:
+                            st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
+                        else:
+                            st.error("🛑 Apex-Guard: Für Rohöl auf Apex ist zwingend das Profil 'Target-Lock Intraday (Apex)' mit EOD-Close erforderlich. Mehrtages-Swings sind verboten.")
+                            profile_conflict_blocked_prop = True
                 elif active_sym == "NQ=F" and prof_name == "apex_lock":
                     st.success("✅ Gewähltes Kontoprofil passt perfekt zum Setup.")
                 else:
@@ -2329,7 +2536,7 @@ with st.sidebar:
                     if admin_bypass_prop:
                         st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
                     else:
-                        st.error(f"🛑 **Prop-Guard:** Profil-Konflikt! Auf Apex-Konten ist ausschließlich 'NQ=F' mit 'Target-Lock Intraday (Apex)' zugelassen (Gewählt: {active_sym} mit '{prof_disp_pf}'). Um Drawdown-Verstöße und Regelbrüche auszuschließen, ist das Einloggen gesperrt.")
+                        st.error(f"🛑 **Prop-Guard:** Profil-Konflikt! Auf Apex-Konten sind ausschließlich die validierten CME-Futures 'NQ=F' (MNQ) und 'CL=F' (MCL) mit 'Target-Lock Intraday (Apex)' zugelassen (Gewählt: {active_sym} mit '{prof_disp_pf}'). Um Drawdown-Verstöße und Regelbrüche auszuschließen, ist das Einloggen gesperrt.")
                         profile_conflict_blocked_prop = True
             elif prof_name in empfehlung.get("valid_profiles", [empfehlung["profil"]]):
                 st.success("✅ Gewähltes Kontoprofil passt perfekt zum Setup.")
@@ -2344,64 +2551,54 @@ with st.sidebar:
                 else:
                     st.warning(f"⚠️ **Profil-Abweichung:** Gewähltes Konto nutzt '{prof_disp_pf}', validiert ist jedoch '{empfehlung['profil']}'!")
 
-        pt_val = get_point_value(active_sym, c_type)
-        
-        raw_cp = float(row_data.get('_raw_cp', str(row_data.get('Kurs', '0')).split()[0]))
-        raw_sl = float(row_data.get('_raw_sl', row_data.get('Stop Loss', 0)))
+        pt_val = pt_val_res
+        raw_cp = raw_cp_res
+        raw_sl = raw_sl_res
         raw_tp = float(row_data.get('_raw_tp', row_data.get('Take Profit', 0)))
-        risk_pts_dyn = abs(raw_cp - raw_sl)
-        if dyn_max_risk > free_cash_pf:
-            st.warning(f"⚠️ **Kapital-Warnung:** Das geplante Risiko (${dyn_max_risk:.2f}) übersteigt das freie Kapital. Sizing wird angepasst.")
-            dyn_max_risk = free_cash_pf
         
-        if is_apex_lock:
-            apex_cap = mdd * 0.10
-            if dyn_max_risk > apex_cap:
-                dyn_max_risk = apex_cap
-                st.warning(f"🛡️ **Apex Lock Aktiv:** Risiko auf max. ${apex_cap:.2f} (10% vom Trailing-DD) gedeckelt.")
-                
-        raw_qty_dyn = dyn_max_risk / (risk_pts_dyn * pt_val) if risk_pts_dyn > 0 else 0
-        is_trade_blocked = False
-        is_apex = "apex" in sel_pf_acc_name.lower() or is_apex_lock
-        a_class = row_data.get('Klasse', 'Futures')
-        is_forex_sym = a_class == "Forex" or active_sym.endswith("=X")
+        res_allowed = st.session_state.current_resono_res.get("allowed", True)
+        a_class = actual_asset_class
+        raw_qty_dyn = st.session_state.current_resono_res.get("max_contracts", 0) if a_class in ["Futures", "Rohstoffe"] else st.session_state.current_resono_res.get("max_lots", 0.0)
+
+        is_trade_blocked = not res_allowed
+        is_apex = (not is_private_prop) and ("apex" in sel_pf_acc_name.lower() or is_apex_lock)
+        is_forex_sym = is_fx_sidebar
         
-        admin_bypass = st.session_state.get("admin_poka_bypass", False)
-        is_ftmo = "ftmo" in sel_pf_acc_name.lower() or prof_name == "ftmo_swing"
+        is_ftmo = (not is_private_prop) and ("ftmo" in sel_pf_acc_name.lower() or prof_name == "ftmo_swing")
         is_crypto_sym = a_class == "Krypto"
 
         if is_apex and not (a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper() or str(active_sym).upper().strip() == "CL=F"):
-            if admin_bypass:
+            if admin_bypass_prop:
                 st.warning("⚠️ **Admin-Bypass aktiv:** Apex-Guard umgangen.")
             else:
                 st.error("🛑 **Apex-Guard:** Erlaubt strikt nur CME-Futures. Forex und Krypto sind gesperrt!")
                 is_trade_blocked, raw_qty_dyn = True, 0
         elif is_ftmo and not (a_class == "Forex" or "=X" in str(active_sym).upper()):
-            if admin_bypass:
+            if admin_bypass_prop:
                 st.warning("⚠️ **Admin-Bypass aktiv:** FTMO-Guard umgangen.")
             else:
                 st.error("🛑 **FTMO-Guard:** Erlaubt strikt nur Forex Majors. Futures und Krypto sind gesperrt!")
                 is_trade_blocked, raw_qty_dyn = True, 0
-        elif is_crypto_sym and not admin_bypass:
+        elif is_crypto_sym and not is_private_prop and not admin_bypass_prop:
             st.error("🛑 **Krypto-Guard:** Krypto ist auf Prop-Firm Challenges gesperrt (Whipsaw-Risiko).")
             is_trade_blocked, raw_qty_dyn = True, 0
+        fallback_qty = float(row_data.get('_raw_qty', 0))
+        if admin_bypass_prop or raw_qty_dyn <= 0:
+            raw_qty_dyn = fallback_qty if fallback_qty > 0 else (1.0 if a_class in ["Futures", "Rohstoffe"] else 0.1)
+
+        if admin_bypass_prop or is_private_prop:
+            is_trade_blocked = False
+            res_allowed = True
+            profile_conflict_blocked_prop = False
 
         if a_class in ["Futures", "Rohstoffe"]:
             qty_dyn = int(raw_qty_dyn)
-            if is_apex_lock and qty_dyn > 5:
-                qty_dyn = 5
-                st.warning("🛡️ **Apex Lock Aktiv:** Harter Cap auf max. 5 Kontrakte.")
-            size_str_dyn = f"{qty_dyn} {c_type}" if qty_dyn >= 1 else "⚠️ SL zu weit"
+            size_str_dyn = f"{qty_dyn} {c_name}" if qty_dyn >= 1 else "⚠️ RESONO Veto"
             actual_risk_dyn = qty_dyn * risk_pts_dyn * pt_val
         else:
             qty_dyn = round(raw_qty_dyn, 2) if a_class == "Forex" else round(raw_qty_dyn, 4)
-            size_str_dyn = f"{qty_dyn} {c_type}" if qty_dyn > 0 else "⚠️ SL zu weit"
-            actual_risk_dyn = qty_dyn * risk_pts_dyn * pt_val
-        if not is_sandbox_prop and acc_tax_prop == "private" and active_sym == "NQ=F":
-            if qty_dyn < 1:
-                if not admin_bypass:
-                    profile_conflict_blocked_prop = True
-                    st.error("🛑 Poka-Yoke Kapitalschutz: Das aktuelle Stop-Loss-Risiko für 1 Micro-Kontrakt (MNQ) übersteigt dein eingestelltes Risikobudget. Um CME-Futures im Privatkonto regeltreu (max. 1.0% Risiko) zu handeln, ist ein Kontokapital ab ca. 15.000 € (oder eine Risikoanpassung) erforderlich.")
+            size_str_dyn = f"{qty_dyn:.2f} {c_name}" if (a_class == "Forex" and qty_dyn > 0) else (f"{qty_dyn} {c_name}" if qty_dyn > 0 else "⚠️ RESONO Veto")
+            actual_risk_dyn = qty_dyn * eff_risk_pts_sb * pt_val
             
         if is_trade_blocked: size_str_dyn, actual_risk_dyn = "🚫 Gesperrt", 0.0
         
@@ -2412,19 +2609,67 @@ with st.sidebar:
         c_b3, c_b4 = st.columns(2)
         c_b3.metric("Stop Loss", f"{raw_sl:.4f}")
         c_b4.metric("Take Profit", f"{raw_tp:.4f}")
-        if is_shrt:
-            max_limit_prop = (raw_tp + 1.25 * raw_sl) / 2.25
-        else:
-            max_limit_prop = (raw_tp + 1.25 * raw_sl) / 2.25
+        
+        max_limit_prop = (raw_tp + 1.25 * raw_sl) / 2.25 if not is_shrt else (raw_tp + 1.25 * raw_sl) / 2.25
         fmt = ".4f" if is_forex_sym else ".2f"
         st.caption(f"🎯 Max. Limit-Preis (CRV ≥ 1.25): {max_limit_prop:{fmt}} | Slippage-Schutz: Limit-Order empfohlen!")
-        st.markdown(f"**Abstand:** {row_data.get('Abstand', 'N/A')}")
-        st.markdown(f"**Punktwert:** ${pt_val:.2f} pro {c_type}")
-        st.markdown(f"**Effektives Risiko:** ${actual_risk_dyn:.2f}" if actual_risk_dyn > 0 else "**Effektives Risiko:** N/A")
         
-        if actual_risk_dyn > 0:
-            risk_per_unit = risk_pts_dyn * pt_val
-            st.caption(f"💡 **Formel:** {risk_pts_dyn:.4f} Abstand × ${pt_val:.2f} Punktwert = **${risk_per_unit:.2f}** Risiko pro {c_type}. Bei ${dyn_max_risk:.2f} Risikolimit ergibt das **{qty_dyn} {c_type}**.")
+        if is_forex_sym:
+            st.markdown(f"**Abstand:** {row_data.get('Abstand', 'N/A')} | **Punktwert:** $10.00 pro Pip (bzw. ${pt_val:,.2f} pro {c_name})")
+        else:
+            st.markdown(f"**Abstand:** {row_data.get('Abstand', 'N/A')} | **Punktwert:** ${pt_val:.2f} pro {c_type}")
+        
+        # --- RISIKO & GEBÜHREN BERECHNUNG ---
+        fx_usd_eur = get_fx_rate("$", "EUR")
+        
+        gs = st.session_state.config.get("global_settings", {})
+        fee_mode_str = gs.get("fee_mode", "Keine Gebühren / Raw")
+        
+        # Gebühren analog Swing-Desk
+        if "1.49% Spread" in fee_mode_str or "Bitpanda Retail" in fee_mode_str: est_fees_usd = max(2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00, (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0199)
+        elif "Bitpanda Fusion" in fee_mode_str or "0.10%" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0010
+        elif "0.25% Gebühr" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0025
+        elif "Bybit" in fee_mode_str or "0.06%" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0006
+        elif "Apex" in fee_mode_str or "Tradovate" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * (0.00005 + 0.0001)
+        elif "FTMO" in fee_mode_str or "MetaTrader" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * (0.00003 + 0.00002)
+        elif "Aktien Broker" in fee_mode_str or "Interactive" in fee_mode_str or "Flatex" in fee_mode_str: est_fees_usd = 2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00
+        else: est_fees_usd = 0.0
+        
+        est_fees_eur = est_fees_usd * fx_usd_eur
+        pure_risk_usd = actual_risk_dyn
+        planned_risk_eur = pure_risk_usd * fx_usd_eur
+        total_risk_usd = pure_risk_usd + est_fees_usd
+        total_risk_eur = planned_risk_eur + est_fees_eur
+
+        # Risiko Kacheln
+        c_r1, c_r2 = st.columns(2)
+        c_r1.metric("Reines Kursrisiko", f"${pure_risk_usd:.2f}", f"≈ {planned_risk_eur:.2f} €", delta_color="off")
+        c_r2.metric("Effektives Gesamtrisiko", f"${total_risk_usd:.2f}", f"≈ {total_risk_eur:.2f} €", delta_color="off")
+        st.caption(f"Geschätzte Gebühren: ${est_fees_usd:.2f} (≈ {est_fees_eur:.2f} €)")
+
+        # Gewinn / TP Fallunterscheidung
+        is_trend_runner = prof_name in ["private_alpha", "commodity_alpha", "ftmo_swing"] or "Trend" in str(row_data.get("Signal", ""))
+        
+        if prof_name in ["apex_lock", "prop_guard", "defensive_swing", "commodity_scale", "apex_commodity_scale"] and not is_trend_runner:
+            pure_reward_usd = qty_dyn * abs(raw_tp - raw_cp) * pt_val
+            net_reward_usd = pure_reward_usd - est_fees_usd
+            net_reward_eur = net_reward_usd * fx_usd_eur
+            c_p1, c_p2 = st.columns(2)
+            c_p1.metric("Möglicher Gewinn (Netto)", f"${net_reward_usd:.2f}", f"≈ {net_reward_eur:.2f} €", delta_color="off")
+            st.caption(f"Brutto-Ziel: ${pure_reward_usd:.2f}")
+        else:
+            st.markdown("🎯 **Alpha-Meilensteine (Orientierung für Runner):**")
+            milestones = [1.0, 2.5, 4.0, 6.0]
+            dir_m = -1 if is_shrt else 1
+            ms_html = "<table style='width:100%; text-align:left; color:#CBD5E1; font-size:0.9em;'><tr><th>R-Multiple</th><th>Kurs-Ziel</th><th>Gewinn ($)</th><th>Gewinn (€)</th></tr>"
+            for m in milestones:
+                t_price = raw_cp + (m * abs(raw_cp - raw_sl) * dir_m)
+                t_prof_usd = m * pure_risk_usd
+                t_prof_eur = t_prof_usd * fx_usd_eur
+                ms_html += f"<tr><td>+{m} R</td><td>{t_price:{fmt}}</td><td>${t_prof_usd:.2f}</td><td>{t_prof_eur:.2f} €</td></tr>"
+            ms_html += "</table><br>"
+            st.markdown(ms_html, unsafe_allow_html=True)
+        
         st.markdown("---")
         is_multi_t3 = active_sym.endswith("=F") or any(ext in active_sym.upper() for ext in ["=X", "DX-Y"])
         if is_multi_t3 or is_apex_lock: exp_days_t3 = 0.5
@@ -2439,9 +2684,66 @@ with st.sidebar:
         
         btn_disabled_prop = is_trade_blocked or is_sandbox_prop or profile_conflict_blocked_prop
         market_open_prop = is_market_open_mez(active_sym, row_data.get('Klasse', 'Futures'))
+        admin_bypass_prop = st.session_state.get("admin_poka_bypass", False)
+        
+        in_session = True
+        try:
+            berlin_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+            now_dt = datetime.datetime.now(berlin_tz)
+        except Exception:
+            now_dt = datetime.datetime.now()
+        
+        wd = now_dt.weekday()
+        t_float = now_dt.hour + now_dt.minute / 60.0
+        sym_u_chk = str(active_sym).upper().strip()
+        
+        if sym_u_chk == "NQ=F" and (wd >= 5 or not (15.5 <= t_float < 21.5)): in_session = False
+        elif sym_u_chk in ["CL=F", "MCL"] and (wd >= 5 or not (14.5 <= t_float < 17.5)): in_session = False
+        elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (13.0 <= t_float < 18.0)): in_session = False
+        
         if not market_open_prop:
             st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
-        btn_help_prop = None if market_open_prop else "Achtung: Ausführung und Fills erfolgen erst zur nächsten Marktöffnung."
+            if not admin_bypass_prop:
+                btn_disabled_prop = True
+        elif not in_session:
+            st.warning("⏸️ Außerhalb des validierten Session-Fensters: Kein Einstieg erlaubt. (NQ: 15:30–21:30 MEZ | Öl: 14:30–17:30 MEZ | EURUSD: 13:00–18:00 MEZ).")
+            if not admin_bypass_prop:
+                btn_disabled_prop = True
+                
+        resono_reason = st.session_state.get("current_resono_res", {}).get("ui_reason", "")
+        
+        sperrgruende = []
+        if has_open_pos and not is_private_prop:
+            sperrgruende.append("Konto belegt (Maximal 1 offener Trade)")
+            
+        if (not market_open_prop or not in_session) and not admin_bypass_prop and not is_private_prop:
+            sperrgruende.append("Außerhalb des validierten Session-Fensters")
+            
+        if profile_conflict_blocked_prop or is_trade_blocked:
+            sperrgruende.append("Profil-/Asset-Konflikt für dieses Konto")
+            
+        if not res_allowed and not has_open_pos and resono_reason and not is_private_prop:
+            sperrgruende.append(resono_reason)
+            
+        if is_sandbox_prop:
+            sperrgruende.append("Sandbox-Modus aktiv")
+        if is_private_prop and not is_sandbox_prop:
+            btn_disabled_prop = False
+            sperrgruende = []
+            btn_help_prop = "Bereit zum Einloggen ins Journal (Privatkonto-Bypass)"
+        elif admin_bypass_prop:
+            btn_disabled_prop = False
+            is_trade_blocked = False
+            res_allowed = True
+            profile_conflict_blocked_prop = False
+            sperrgruende = []
+            btn_help_prop = "Bereit zum Einloggen ins Journal (Admin-Bypass aktiv)"
+        elif sperrgruende:
+            btn_disabled_prop = True
+            btn_help_prop = "Gesperrt: " + " | ".join(sperrgruende)
+        else:
+            btn_help_prop = "Bereit zum Einloggen ins Journal"
+
         step_prop = 0.0001 if is_forex_sym else 0.25
         fmt_prop = "%.4f" if is_forex_sym else "%.2f"
         fmt_prop_str = ".4f" if is_forex_sym else ".2f"
@@ -2462,10 +2764,30 @@ with st.sidebar:
             df_j = load_trade_journal()
             fx_usd_eur = get_fx_rate("$", "EUR")
             
-            if prof_name in ["apex_lock", "prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: determined_exit_mode = "TARGET_LOCKED" if prof_name == "apex_lock" else "PROP_DEFENSIVE"
-            else: determined_exit_mode = "HOME_RUN_TREND" if "Trend" in str(row_data.get("Signal", "")) else "ALPHA_CASHFLOW"
+            if is_private_prop:
+                if prof_name in ["defensive_swing", "prop_guard", "commodity_scale", "apex_commodity_scale"]:
+                    determined_exit_mode = "PROP_DEFENSIVE"
+                else:
+                    determined_exit_mode = "HOME_RUN_TREND" if "Trend" in str(row_data.get("Signal", "")) else "ALPHA_CASHFLOW"
+            elif prof_name in ["apex_lock", "prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]:
+                determined_exit_mode = "TARGET_LOCKED" if prof_name == "apex_lock" else "PROP_DEFENSIVE"
+            else:
+                determined_exit_mode = "HOME_RUN_TREND" if "Trend" in str(row_data.get("Signal", "")) else "ALPHA_CASHFLOW"
 
-            actual_risk_real = qty_dyn * real_risk_prop * pt_val
+            pure_risk_usd_real = qty_dyn * real_risk_prop * pt_val
+            planned_risk_eur_real = pure_risk_usd_real * fx_usd_eur
+            
+            if "1.49% Spread" in fee_mode_str or "Bitpanda Retail" in fee_mode_str: est_fees_usd_real = max(2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00, (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0199)
+            elif "Bitpanda Fusion" in fee_mode_str or "0.10%" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0010
+            elif "0.25% Gebühr" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0025
+            elif "Bybit" in fee_mode_str or "0.06%" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0006
+            elif "Apex" in fee_mode_str or "Tradovate" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * (0.00005 + 0.0001)
+            elif "FTMO" in fee_mode_str or "MetaTrader" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * (0.00003 + 0.00002)
+            elif "Aktien Broker" in fee_mode_str or "Interactive" in fee_mode_str or "Flatex" in fee_mode_str: est_fees_usd_real = 2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00
+            else: est_fees_usd_real = 0.0
+            
+            est_fees_eur_real = est_fees_usd_real * fx_usd_eur
+
             if effective_crv_prop < 1.25 and real_fill_prop != raw_cp:
                 final_exit_mode_prop = "DEFENSIVE_EMERGENCY"
                 trade_notes_prop = f"Prop-Desk ({size_str_dyn}) | Slippage-Alert: Signal {raw_cp:{fmt_prop_str}} vs Fill {real_fill_prop:{fmt_prop_str}} (CRV: {effective_crv_prop:.2f})"
@@ -2482,7 +2804,7 @@ with st.sidebar:
                 'fx_rate': fx_usd_eur, 'position_size': qty_dyn,
                 'contract_type': c_type, 'point_value': pt_val, 'base_currency': "USD",
                 'invest_eur': 0, 'sl_price': raw_sl, 'tp_price': raw_tp, 
-                'planned_risk_eur': actual_risk_real * fx_usd_eur, 'est_fees_eur': 0.0,
+                'planned_risk_eur': planned_risk_eur_real, 'est_fees_eur': est_fees_eur_real,
                 'master_score': row_data.get("Sort_Score", 0), 'setup_type': row_data.get("Signal", ""),
                 'mc_robustness': "Prop-Firm Validated", 'atr_days': exp_days_t3,
                 'exit_mode': final_exit_mode_prop, 'status': 'OPEN', 'exit_price': None, 'pnl_eur': None, 'pnl_pct': None,
@@ -2705,7 +3027,7 @@ with tab_watch:
                         if "Trend-Kauf" in sig: return ["background-color: #cce5ff; color: #004085; font-weight: bold"] * len(row)
                         return [""] * len(row)
                     st.dataframe(f_res.style.apply(highlight_tab1, axis=1), use_container_width=True, hide_index=True)
-                    render_chart_system(res_t1, "t1", sel_sec, show_trend_box=True)
+                    
             except Exception as e: st.error(f"Fehler: {e}")
 '''
 #endregion
@@ -3026,6 +3348,7 @@ with tab_screen:
             if "active_order_ticker" not in st.session_state: st.session_state.active_order_ticker = None
             if "scanner_info_tickers" not in st.session_state: st.session_state.scanner_info_tickers = []
             
+            filtered_df_clean.drop(columns=["🛒 Order", "🔍 Info", "Favorit"], inplace=True, errors='ignore')
             filtered_df_clean["Favorit"] = filtered_df_clean["Ticker"].isin(st.session_state.scanner_favorite_tickers)
             filtered_df_clean.insert(1, "🛒 Order", filtered_df_clean["Ticker"] == st.session_state.active_order_ticker)
             filtered_df_clean.insert(2, "🔍 Info", filtered_df_clean["Ticker"].isin(st.session_state.scanner_info_tickers))
@@ -3249,7 +3572,7 @@ with tab_screen:
                     f_res2_disp = f_res2.copy()
                     if "active_order_ticker" not in st.session_state: st.session_state.active_order_ticker = None
                     if "watchlist_info_tickers" not in st.session_state: st.session_state.watchlist_info_tickers = []
-                    
+                    f_res2_disp.drop(columns=["🛒 Order", "🔍 Info"], inplace=True, errors='ignore')
                     f_res2_disp.insert(0, "🛒 Order", f_res2_disp["Ticker"] == st.session_state.active_order_ticker)
                     f_res2_disp.insert(1, "🔍 Info", f_res2_disp["Ticker"].isin(st.session_state.watchlist_info_tickers))
                     display_cols_w = ["🛒 Order", "🔍 Info", "Ticker", "Name", "Sektor", "DNA", "Kurs", "Master-Score", "RSI", "Ampel"]
@@ -3399,8 +3722,6 @@ with tab_screen:
                                     st.markdown(f"- **🎯 RSI-Extrempreis Hoch (RSI 70):** {fmt_c(w_row.get('Verkauf-Zielpreis', 'N/A'))}")
                                     st.markdown(f"- **🛡️ Stop Loss (SL):** {fmt_c(w_row.get('Stop Loss (SL)', 'N/A'))}")
                                     st.markdown(f"- **💸 Take Profit (TP):** {fmt_c(w_row.get('Take Profit (TP)', 'N/A'))}")
-                    
-                    render_chart_system(res_t2, "t2_chart", sel_sec2)
             except Exception as e: st.error(f"Fehler: {e}")
 #endregion
 
@@ -3525,7 +3846,7 @@ with tab_futures:
             st.write(""); st.write("")
             if st.button("➕ Hinzufügen", use_container_width=True, key="add_t3_btn") and chosen_t3:
                 if not any(t["symbol"] == chosen_t3 for t in st.session_state.config["futures_tickers"]):
-                    a_cls = "Forex" if "USD=X" in chosen_t3 else ("Krypto" if "BTC" in chosen_t3 else "Futures")
+                    a_cls = "Forex" if (chosen_t3.endswith("=X") or chosen_t3 in ["DX-Y", "DX-Y.NYB"]) else ("Krypto" if "BTC" in chosen_t3 else "Futures")
                     c_typ = "Lot" if a_cls == "Forex" else ("BTC" if a_cls == "Krypto" else "Micro")
                     st.session_state.config["futures_tickers"].append({"symbol": chosen_t3, "name": chosen_name, "asset_class": a_cls, "contract": c_typ, "active": True})
                     save_config(st.session_state.config)
@@ -3556,6 +3877,213 @@ with tab_futures:
     st.markdown("---")
 
     # --- BLOCK D (OBEN): 🔍 Prop-Desk Screener ---
+    def render_resono_waechter(row_data, sel_acc_name, is_apex_lock, free_cash_pf, start_cap_pf, has_open_pos):
+        try:
+            sym = str(row_data.get('Ticker', '')).strip()
+            sym_u = sym.upper()
+            a_class = row_data.get('Klasse', 'Futures')
+            
+            raw_cp_str = str(row_data.get('Kurs', '0')).split()[0]
+            raw_cp = float(row_data.get('_raw_cp', raw_cp_str))
+            raw_sl = float(row_data.get('_raw_sl', row_data.get('Stop Loss', 0)))
+            risk_pts = abs(raw_cp - raw_sl)
+            
+            is_fx_sym = sym_u.endswith("=X") or "DX-Y" in sym_u or a_class == "Forex"
+            if is_fx_sym:
+                a_class = "Forex"
+                actual_asset_class = "Forex"
+                c_name = "Lot"
+                pt_val = 100000.0
+            else:
+                c_name = "Kontrakt"
+                if sym_u == "NQ=F": c_name = "MNQ"
+                elif sym_u == "ES=F": c_name = "MES"
+                elif sym_u == "YM=F": c_name = "MYM"
+                elif sym_u == "CL=F": c_name = "MCL"
+                elif sym_u == "GC=F": c_name = "MGC"
+                actual_asset_class = a_class
+                pt_val = get_point_value(sym_u, c_name)
+
+            acc_tax_w = "prop_firm"
+            priv_risk_pct_w = 1.0
+            for _, a_d in st.session_state.config.get("lab_accounts", {}).items():
+                if a_d.get("name") == sel_acc_name:
+                    acc_tax_w = a_d.get("tax_category", "private")
+                    priv_risk_pct_w = float(a_d.get("risk_pct", 1.0))
+                    break
+            is_private_w = (acc_tax_w == "private")
+        
+            if actual_asset_class == "Forex" or "FTMO" in str(sel_acc_name).upper():
+                acc_type = 'ftmo'
+            elif is_apex_lock and "PA" in str(sel_acc_name).upper():
+                acc_type = 'funded_pa'
+            else:
+                acc_type = 'evaluation'
+        
+            today_str_w = datetime.datetime.now().strftime("%d/%m/%Y")
+            df_j_all_w = load_trade_journal()
+            df_j_acc_w = df_j_all_w[df_j_all_w['account_name'] == sel_acc_name] if not df_j_all_w.empty else pd.DataFrame()
+            df_closed_w = df_j_acc_w[df_j_acc_w['status'] == 'CLOSED'] if not df_j_acc_w.empty else pd.DataFrame()
+            df_closed_today_w = df_closed_w[df_closed_w['exit_date'].astype(str).str.contains(today_str_w, na=False)] if not df_closed_w.empty else pd.DataFrame()
+            today_realized_pnl_w = float(df_closed_today_w['pnl_eur'].sum()) if not df_closed_today_w.empty else 0.0
+            
+            open_pnl_w = 0.0
+            if has_open_pos:
+                df_open_w = df_j_acc_w[df_j_acc_w['status'] == 'OPEN']
+                for _, r_op in df_open_w.iterrows():
+                    if r_op['symbol'] == sym:
+                        dir_m_op = 1 if r_op['direction'] == 'Long' else -1
+                        open_pnl_w += (raw_cp - float(r_op['entry_price'])) * float(r_op['position_size']) * float(r_op.get('point_value', 1.0)) * dir_m_op
+
+            daily_pnl_w = float(today_realized_pnl_w + open_pnl_w)
+            base_cap_w = float(start_cap_pf) if float(start_cap_pf) > 0 else 50000.0
+            daily_loss_limit_w = base_cap_w * 0.05
+            daily_buffer_w = daily_loss_limit_w + daily_pnl_w
+
+            account_dict = {
+                "account_size": base_cap_w,
+                "current_balance": float(free_cash_pf) if float(free_cash_pf) > 0 else base_cap_w,
+                "high_watermark": max(float(free_cash_pf), base_cap_w),
+                "has_open_position": has_open_pos,
+                "account_type": acc_type,
+                "daily_loss_limit": daily_loss_limit_w,
+                "daily_pnl": daily_pnl_w,
+                "daily_buffer": daily_buffer_w
+            }
+            
+            if sym_u in ["CL=F", "MCL"]: sig_sym = "MCL"
+            elif sym_u in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
+            else: sig_sym = sym if c_name in ["Kontrakt", "Lot", "Lots"] else c_name
+            
+            eff_risk_pts_w = (risk_pts / 100.0) if (actual_asset_class == "Forex" and "JPY" in sym_u) else risk_pts
+            signal_dict = {
+                "ticker": sig_sym,
+                "asset_class": actual_asset_class,
+                "stop_loss_distance": eff_risk_pts_w,
+                "point_value": pt_val,
+                "score": float(row_data.get("Sort_Score", 0))
+            }
+            
+            if is_private_w:
+                cap_disp_w = float(free_cash_pf) if float(free_cash_pf) > 0 else base_cap_w
+                priv_budget_w = cap_disp_w * (priv_risk_pct_w / 100.0)
+                loss_unit_w = eff_risk_pts_w * pt_val
+                dyn_sz_w = (priv_budget_w / loss_unit_w) if loss_unit_w > 0 else 0.0
+                if actual_asset_class == "Forex":
+                    freigabe_str = f"{round(max(0.01, dyn_sz_w), 2):.2f} Lot"
+                else:
+                    freigabe_str = f"{max(1, int(dyn_sz_w))} {c_name}"
+                buf = cap_disp_w
+                puffer_label = "Verfügbares Kontokapital"
+                puffer_val_str = f"{buf:,.2f} €"
+                z_color = "#94A3B8"
+                z_label = "⚪ Privat (Bypass)"
+                code = "PRIVATE_BYPASS"
+                reason = "Privates Portfolio aktiv. Risikofilter neutralisiert – Sizing nach Kontoregeln."
+            elif actual_asset_class == "Forex":
+                res_data = resono.evaluate_ftmo_risk(account_dict, signal_dict)
+                buf_usd = res_data.get("effective_buffer", res_data.get("daily_buffer_usd"))
+                buf = float(buf_usd) if buf_usd is not None else float(daily_buffer_w)
+                puffer_label = "Effektiver Puffer (FTMO)"
+                puffer_val_str = f"${buf:,.2f}"
+                max_lots_val = float(res_data.get("max_lots", 0.0))
+                freigabe_str = f"{max_lots_val:.2f} Lot"
+                zone = str(res_data.get("zone", "GREEN"))
+                code = str(res_data.get("status_code", ""))
+                reason = res_data.get("ui_reason", "")
+            else:
+                res_data = resono.evaluate_account_risk(account_dict, signal_dict)
+                buf = float(res_data.get("risk_buffer_usd", res_data.get("buffer_to_ko", 0.0)))
+                puffer_label = "Puffer (Trailing)"
+                puffer_val_str = f"${buf:,.2f}"
+                max_c_val = int(res_data.get("max_contracts", 0))
+                freigabe_str = f"{max_c_val} {c_name}"
+                zone = str(res_data.get("zone", "GREEN"))
+                code = str(res_data.get("status_code", ""))
+                reason = res_data.get("ui_reason", "")
+                
+            if not is_private_w:
+                if code in ["SNIPER_REHAB", "RED_SNIPER"]:
+                    z_color = "#EF4444"
+                    z_label = "🎯 Rot / Sniper-Reha"
+                elif "RED" in zone or "MUTED" in code or "RED" in code:
+                    z_color = "#EF4444"
+                    z_label = "🔴 Rot / Stumm"
+                elif "YELLOW" in zone:
+                    z_color = "#F59E0B"
+                    z_label = "🟡 Gelb"
+                else:
+                    z_color = "#10B981"
+                    z_label = "🟢 Grün"
+            
+            icon_b64 = ""
+            icon_path = os.path.join(BASE_DIR, "assets", "resono_icon.png")
+            if os.path.exists(icon_path):
+                try:
+                    with open(icon_path, "rb") as f: icon_b64 = base64.b64encode(f.read()).decode()
+                except: pass
+                
+            word_b64 = ""
+            word_path = os.path.join(BASE_DIR, "assets", "resono_wording.png")
+            if os.path.exists(word_path):
+                try:
+                    with open(word_path, "rb") as f: word_b64 = base64.b64encode(f.read()).decode()
+                except: pass
+
+            html_veto = ""
+            if has_open_pos:
+                if is_private_w:
+                    html_veto = """
+                    <div style="margin-top: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid #3B82F6; padding: 10px; border-radius: 6px;">
+                        <strong style="color: #60A5FA;">ℹ️ Portfolio-Hinweis:</strong> <span style="color: #DBEAFE;">Konto hält bereits eine offene Position (Im Privatdepot sind parallele Positionen zulässig).</span>
+                    </div>
+                    """
+                else:
+                    html_veto = """
+                    <div style="margin-top: 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; padding: 10px; border-radius: 6px;">
+                        <strong style="color: #EF4444;">🚨 Kollisions-Veto aktiv:</strong> <span style="color: #FCA5A5;">Konto besitzt bereits eine offene Position. Kein paralleles Exposure erlaubt.</span>
+                    </div>
+                    """
+
+            html_left = f"""
+            <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                <img src="data:image/png;base64,{icon_b64}" style="height: 28px; margin-right: 10px;" onerror="this.style.display='none'">
+                <h4 style="margin: 0; color: #F59E0B;">RESONO — Cluster-Risikofilter & Phasen-Resonanz</h4>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
+                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid {z_color}; width: 100%;">
+                    <span style="color: #94A3B8; font-size: 0.85em;">Risikozone</span><br>
+                    <strong style="color: #ECE8E1; font-size: 1.1em;">{z_label} ({code})</strong>
+                </div>
+                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #3B82F6; width: 100%;">
+                    <span style="color: #94A3B8; font-size: 0.85em;">{puffer_label}</span><br>
+                    <strong style="color: #ECE8E1; font-size: 1.1em;">{puffer_val_str}</strong>
+                </div>
+                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #8B5CF6; width: 100%;">
+                    <span style="color: #94A3B8; font-size: 0.85em;">Freigabe</span><br>
+                    <strong style="color: #ECE8E1; font-size: 1.1em;">{freigabe_str}</strong>
+                </div>
+            </div>
+            <div style="background: rgba(0,0,0,0.4); padding: 12px 16px; border-radius: 4px; border-left: 2px solid #64748B;">
+                <span style="color: #CBD5E1;"><strong>Anweisung:</strong> {reason}</span>
+            </div>
+            {html_veto}
+            """
+            html_right = f"""
+            <div style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; padding: 10px 0;">
+                <img src="data:image/png;base64,{icon_b64}" style="width: 150px; margin-bottom: 15px;" onerror="this.style.display='none'">
+                <img src="data:image/png;base64,{word_b64}" style="width: 200px;" onerror="this.style.display='none'">
+            </div>
+            """
+
+            with st.container(border=True):
+                col_left, col_right = st.columns([0.72, 0.28], vertical_alignment="center")
+                with col_left:
+                    st.markdown(html_left, unsafe_allow_html=True)
+                with col_right:
+                    st.markdown(html_right, unsafe_allow_html=True)
+        except Exception as e:
+            st.warning(f"🛡 RESONO-Wächter konnte nicht geladen werden. Fehler: {e}")
     st.subheader("🔍 Prop-Desk Screener")
     if "futures_scan_results" not in st.session_state: 
         st.session_state.futures_scan_results = None
@@ -3569,10 +4097,15 @@ with tab_futures:
         st.write("")
         if st.button("Laden", key="t3_direct_load_btn", use_container_width=True, disabled=not bool(ql_opts_t3)):
             t_dict_ql = ql_opts_t3[sel_ql_label]
-            sym_ql = t_dict_ql["symbol"]
+            sym_ql = str(t_dict_ql["symbol"]).strip()
+            sym_ql_u = sym_ql.upper()
             t_name_ql = t_dict_ql["name"]
-            a_class_ql = t_dict_ql.get("asset_class", "Futures")
-            c_type_ql = t_dict_ql.get("contract", "Micro")
+            if sym_ql_u.endswith("=X") or "DX-Y" in sym_ql_u:
+                a_class_ql = "Forex"
+                c_type_ql = "Lot"
+            else:
+                a_class_ql = t_dict_ql.get("asset_class", "Futures")
+                c_type_ql = t_dict_ql.get("contract", "Micro")
             cfg_ql = st.session_state.config.get("tab3_settings", {})
             rsi_long_ql = float(cfg_ql.get("rsi_long_entry", cfg_ql.get("rsi_buy", cfg_ql.get("rsi_kauf", 30.0))))
             rsi_short_ql = float(cfg_ql.get("rsi_short_entry", cfg_ql.get("rsi_sell", cfg_ql.get("rsi_verkauf", 70.0))))
@@ -3582,20 +4115,14 @@ with tab_futures:
             fetch_tf_ql = "1h" if tf_ql in ["1h", "4h"] else tf_ql
             with st.spinner(f"Lade Live-Daten für {sym_ql} in den Order-Desk..."):
                 try:
-                    df_ql = fetch_market_data([sym_ql], period_ql, fetch_tf_ql)
-                    if isinstance(df_ql.columns, pd.MultiIndex):
-                        if sym_ql in df_ql.columns.get_level_values(0):
-                            df_ql = df_ql[sym_ql].copy()
-                        elif sym_ql in df_ql.columns.get_level_values(1):
-                            df_ql = df_ql.xs(sym_ql, level=1, axis=1).copy()
-                        elif "Close" in df_ql.columns.get_level_values(1):
-                            df_ql.columns = df_ql.columns.get_level_values(1)
-                        else:
-                            df_ql.columns = df_ql.columns.get_level_values(0)
+                    df_raw_ql = fetch_market_data([sym_ql], period_ql, fetch_tf_ql)
+                    df_ql = extract_ticker_df(df_raw_ql, sym_ql, 1)
+                    
                     if tf_ql == "4h" and not df_ql.empty and "Close" in df_ql:
                         agg_d = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
                         if 'Volume' in df_ql.columns: agg_d['Volume'] = 'sum'
                         df_ql = df_ql.resample('4h').agg(agg_d).dropna(subset=['Close'])
+                        
                     if not df_ql.empty and "Close" in df_ql:
                         df_ql = df_ql.dropna(subset=["Close"])
                         calc_ql = calc_rsi_and_targets(df_ql, rsi_long_ql, rsi_short_ql, ticker=sym_ql)
@@ -3628,18 +4155,19 @@ with tab_futures:
                             details_ql = {"pts_saeulen": 0, "pts_signal": 0, "setup_type": "A", "asset_class": "FUTURES" if "=F" in sym_ql else "FOREX", "vol_missing": True, "ampel": signal_ql, "breakdown": "N/A"}
                             
                         risk_pts_ql = abs(c_p_ql - sl_ql)
-                        tick_val_ql = get_point_value(sym_ql, c_type_ql)
-                        max_risk_amt_ql = dl * 0.10
-                        raw_qty_ql = max_risk_amt_ql / (risk_pts_ql * tick_val_ql) if risk_pts_ql > 0 else 0
+                        tick_val_ql = 100000.0 if a_class_ql == "Forex" else get_point_value(sym_ql, c_type_ql)
+                        eff_risk_pts_ql = (risk_pts_ql / 100.0) if (a_class_ql == "Forex" and "JPY" in sym_ql_u) else risk_pts_ql
+                        max_risk_amt_ql = dl * (0.05 if a_class_ql == "Forex" else 0.10)
+                        raw_qty_ql = max_risk_amt_ql / (eff_risk_pts_ql * tick_val_ql) if eff_risk_pts_ql > 0 else 0
                         
                         if a_class_ql in ["Futures", "Rohstoffe"]:
                             qty_ql = int(raw_qty_ql)
                             size_str_ql = f"{qty_ql} {c_type_ql}" if qty_ql >= 1 else f"⚠️ SL zu weit ({c_type_ql})"
-                            actual_risk_ql = qty_ql * risk_pts_ql * tick_val_ql
+                            actual_risk_ql = qty_ql * eff_risk_pts_ql * tick_val_ql
                         else:
                             qty_ql = round(raw_qty_ql, 2) if a_class_ql == "Forex" else round(raw_qty_ql, 4)
-                            size_str_ql = f"{qty_ql} {c_type_ql}" if qty_ql > 0 else f"⚠️ SL zu weit ({c_type_ql})"
-                            actual_risk_ql = qty_ql * risk_pts_ql * tick_val_ql
+                            size_str_ql = f"{qty_ql:.2f} {c_type_ql}" if (a_class_ql == "Forex" and qty_ql > 0) else (f"{qty_ql} {c_type_ql}" if qty_ql > 0 else f"⚠️ SL zu weit ({c_type_ql})")
+                            actual_risk_ql = qty_ql * eff_risk_pts_ql * tick_val_ql
                             
                         trades_dl_ql = int(dl / actual_risk_ql) if actual_risk_ql > 0 else 0
                         trades_mdd_ql = int(mdd / actual_risk_ql) if actual_risk_ql > 0 else 0
@@ -3740,6 +4268,33 @@ with tab_futures:
 
             with st.container(border=True):
                 st.markdown(f"### 🎯 On-Demand Detail-Analyse: **{od_row['Ticker']}** ({od_row['Name']}) | {od_row.get('Klasse', 'N/A')}")
+                acc_opts_t3_od = {acc["name"]: acc_name for acc_name, acc in st.session_state.config.get("lab_accounts", {}).items()}
+                if not acc_opts_t3_od: acc_opts_t3_od = {"Standard Portfolio": "default"}
+                def_acc_id_t3_od = st.session_state.get("active_lab_account", list(acc_opts_t3_od.values())[0])
+                def_acc_name_t3_od = next((n for n, idx in acc_opts_t3_od.items() if idx == def_acc_id_t3_od), list(acc_opts_t3_od.keys())[0])
+                konto_options_pf_od = list(acc_opts_t3_od.keys()) + ["[Manuell / Sandbox-Demo]"]
+                if def_acc_name_t3_od not in konto_options_pf_od: def_acc_name_t3_od = konto_options_pf_od[0]
+                
+                sel_pf_acc_id_od = acc_opts_t3_od.get(def_acc_name_t3_od, "default")
+                sel_pf_acc_data_od = st.session_state.config.get("lab_accounts", {}).get(sel_pf_acc_id_od, {})
+                is_apex_lock_od = sel_pf_acc_data_od.get("exit_profile") == "apex_lock"
+                start_cap_pf_od = float(sel_pf_acc_data_od.get("account_size", 50000.0))
+                
+                df_j_all_od = load_trade_journal()
+                df_j_acc_od = df_j_all_od[df_j_all_od['account_name'] == def_acc_name_t3_od] if not df_j_all_od.empty else pd.DataFrame()
+                has_open_pos_od = False
+                if not df_j_acc_od.empty and 'OPEN' in df_j_acc_od['status'].values: has_open_pos_od = True
+                
+                df_j_closed_pf_od = df_j_acc_od[df_j_acc_od['status'] == 'CLOSED'] if not df_j_acc_od.empty else pd.DataFrame()
+                deposits_pf_od = df_j_closed_pf_od[df_j_closed_pf_od['setup_type'] == 'DEPOSIT']['pnl_eur'].sum() if not df_j_closed_pf_od.empty else 0.0
+                withdrawals_pf_od = abs(df_j_closed_pf_od[df_j_closed_pf_od['setup_type'] == 'WITHDRAWAL']['pnl_eur'].sum()) if not df_j_closed_pf_od.empty else 0.0
+                effective_base_pf_od = start_cap_pf_od + deposits_pf_od - withdrawals_pf_od
+                realized_pnl_pf_od = df_j_closed_pf_od[~df_j_closed_pf_od['setup_type'].isin(['DEPOSIT', 'WITHDRAWAL'])]['pnl_eur'].sum() if not df_j_closed_pf_od.empty else 0.0
+                bound_capital_pf_od = df_j_acc_od[df_j_acc_od['status'] == 'OPEN']['invest_eur'].sum() if not df_j_acc_od.empty else 0.0
+                free_cash_pf_od = max(0.0, effective_base_pf_od + realized_pnl_pf_od - bound_capital_pf_od)
+                
+                if od_row.get('Kurs') and od_row.get('Kurs') != 'N/A' and float(od_row.get('_raw_cp', 0)) > 0:
+                    render_resono_waechter(od_row, def_acc_name_t3_od, is_apex_lock_od, free_cash_pf_od, start_cap_pf_od, has_open_pos_od)
                 st.metric(label="🚀 Gesamtwertung", value=f"{od_row.get('Master-Score', 'N/A')} | {od_richtwert}", delta=od_row.get("Signal", ""), delta_color="off")
                 if "🛑" in od_guideline or "⚠️" in od_guideline:
                     st.warning(f"**🧭 Handlungsanweisung:** {od_guideline}")
@@ -3813,12 +4368,21 @@ with tab_futures:
                     tb_data, res_t3 = [], {}
                     
                     for t_dict in target_list:
-                        sym, t_name, a_class, c_type = t_dict["symbol"], t_dict["name"], t_dict.get("asset_class", "Futures"), t_dict.get("contract", "Micro")
-                        is_fx_item = (a_class == "Forex" or sym.endswith("=X") or "DX-Y" in sym)
+                        sym = str(t_dict["symbol"]).strip()
+                        sym_u = sym.upper()
+                        t_name = t_dict["name"]
+                        if sym_u.endswith("=X") or "DX-Y" in sym_u:
+                            a_class = "Forex"
+                            c_type = "Lot"
+                        else:
+                            a_class = t_dict.get("asset_class", "Futures")
+                            c_type = t_dict.get("contract", "Micro")
+                        is_fx_item = (a_class == "Forex")
                         item_tf = tf_fx if is_fx_item else tf_fut
                         src_df = b_df_fx if is_fx_item else b_df_fut
                         src_len = len_fx if is_fx_item else len_fut
-                        df_t = src_df[sym].copy() if src_len > 1 else src_df.copy()
+                        
+                        df_t = extract_ticker_df(src_df, sym, src_len)
                         
                         if item_tf == "4h" and not df_t.empty and "Close" in df_t:
                             agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
@@ -3849,14 +4413,14 @@ with tab_futures:
                                     tp = plot["High"].tail(24).max() if "High" in plot.columns else c_p * 1.02
                                 
                                 risk_pts = abs(c_p - sl)
-                                tick_val = 1.0
-                                if "NQ" in sym or "ES" in sym or "YM" in sym or "RTY" in sym: tick_val = 2.0 if "NQ" in sym else (5.0 if "ES" in sym else 0.5)
-                                elif "GC" in sym or "CL" in sym: tick_val = 10.0
-                                elif "SI" in sym: tick_val = 10.0
-                                elif "USD=X" in sym or "JPY=X" in sym: tick_val = 100000.0
+                                if a_class == "Forex":
+                                    tick_val = 100000.0
+                                else:
+                                    tick_val = get_point_value(sym, c_type)
                                 
-                                max_risk_amt = dl * 0.10
-                                raw_qty = max_risk_amt / (risk_pts * tick_val) if risk_pts > 0 else 0
+                                eff_risk_pts = (risk_pts / 100.0) if (a_class == "Forex" and "JPY" in sym_u) else risk_pts
+                                max_risk_amt = dl * (0.05 if a_class == "Forex" else 0.10)
+                                raw_qty = max_risk_amt / (eff_risk_pts * tick_val) if eff_risk_pts > 0 else 0
                                 
                                 size_str = ""
                                 actual_risk = 0.0
@@ -3867,13 +4431,13 @@ with tab_futures:
                                     if qty < 1: size_str = "⚠️ SL zu weit für Risikolimit"
                                     else:
                                         size_str = f"{qty} {c_type}"
-                                        actual_risk = qty * risk_pts * tick_val
+                                        actual_risk = qty * eff_risk_pts * tick_val
                                 elif a_class == "Forex" or a_class == "Krypto":
                                     qty = round(raw_qty, 2) if a_class == "Forex" else round(raw_qty, 4)
                                     if qty <= 0: size_str = "⚠️ SL zu weit für Risikolimit"
                                     else:
-                                        size_str = f"{qty} {c_type}"
-                                        actual_risk = qty * risk_pts * tick_val
+                                        size_str = f"{qty:.2f} {c_type}" if a_class == "Forex" else f"{qty} {c_type}"
+                                        actual_risk = qty * eff_risk_pts * tick_val
                                         
                                 if actual_risk > 0:
                                     trades_dl = int(dl / actual_risk)
@@ -3966,6 +4530,7 @@ with tab_futures:
             if "active_futures_order" not in st.session_state: st.session_state.active_futures_order = None
             if "futures_info_tickers" not in st.session_state: st.session_state.futures_info_tickers = []
             
+            df_sorted.drop(columns=["🛒 Order", "🔍 Info", "Favorit"], inplace=True, errors='ignore')
             df_sorted.insert(0, "🛒 Order", df_sorted["Ticker"] == st.session_state.active_futures_order)
             df_sorted.insert(1, "🔍 Info", df_sorted["Ticker"].isin(st.session_state.futures_info_tickers))
             if "prop_favorite_tickers" not in st.session_state: st.session_state.prop_favorite_tickers = []
@@ -3999,26 +4564,24 @@ with tab_futures:
                 st.session_state.futures_info_tickers = new_infos_t3
 
             current_orders_t3 = edited_t3[edited_t3["🛒 Order"] == True]["Ticker"].tolist()
-            selected_ticker_t3 = None
-            if len(current_orders_t3) > 0:
-                new_ones = [t for t in current_orders_t3 if t != st.session_state.active_futures_order]
-                if new_ones: selected_ticker_t3 = new_ones[0]
-                elif len(current_orders_t3) == 1 and st.session_state.active_futures_order != current_orders_t3[0]: selected_ticker_t3 = current_orders_t3[0]
             
-            if selected_ticker_t3:
-                if st.session_state.get("active_order_ticker"):
-                    old_asset = st.session_state.active_order_ticker
-                    st.session_state.active_order_ticker = None
-                    st.toast(f"⚠️ Aktive Order für {old_asset} verworfen – {selected_ticker_t3} in den Prop-Desk geladen!", icon="🔄")
-                elif st.session_state.get("active_futures_order"):
-                    old_asset = st.session_state.active_futures_order
-                    st.toast(f"⚠️ Vorherige Order für {old_asset} durch {selected_ticker_t3} ersetzt!", icon="🔄")
-                else:
-                    st.toast(f"🛒 Prop-Desk geladen für: {selected_ticker_t3}", icon="✅")
-                st.session_state.active_futures_order = selected_ticker_t3
+            new_selection = None
+            if current_orders_t3:
+                candidates = [t for t in current_orders_t3 if t != st.session_state.get("active_futures_order")]
+                if candidates:
+                    new_selection = candidates[-1]
+                elif len(current_orders_t3) == 1 and current_orders_t3[0] != st.session_state.get("active_futures_order"):
+                    new_selection = current_orders_t3[0]
+
+            if new_selection and new_selection != st.session_state.get("active_futures_order"):
+                st.session_state.active_order_ticker = None
+                st.session_state.active_futures_order = new_selection
+                st.session_state.pop("t3_data_editor", None)
+                st.toast(f"🛒 Order-Desk geladen für: {new_selection}", icon="✅")
                 st.rerun()
-            elif len(current_orders_t3) == 0 and st.session_state.active_futures_order in df_sorted["Ticker"].values:
+            elif not current_orders_t3 and st.session_state.get("active_futures_order") in df_sorted["Ticker"].values:
                 st.session_state.active_futures_order = None
+                st.session_state.pop("t3_data_editor", None)
                 st.toast("Order-Desk geleert.", icon="ℹ️")
                 st.rerun()
             new_favs_t3 = edited_t3[edited_t3["Favorit"] == True]["Ticker"].tolist()
@@ -4045,8 +4608,6 @@ with tab_futures:
                         st.info("ℹ️ Ticker waren bereits in der Liste.")
 
             for sym in st.session_state.futures_info_tickers:
-                if sym == st.session_state.get("active_futures_order"):
-                    continue
                 if sym in df_sorted["Ticker"].values:
                     row_data = df_sorted[df_sorted["Ticker"] == sym].iloc[0]
                     breakdown_str = row_data.get('Score-Details', '')
@@ -4058,6 +4619,32 @@ with tab_futures:
                     
                     with st.container(border=True):
                         st.markdown(f"### 🔍 Detail-Analyse: **{row_data['Ticker']}** ({row_data['Name']}) | {row_data['Klasse']}")
+                        acc_opts_t3_info = {acc["name"]: acc_name for acc_name, acc in st.session_state.config.get("lab_accounts", {}).items()}
+                        if not acc_opts_t3_info: acc_opts_t3_info = {"Standard Portfolio": "default"}
+                        def_acc_id_t3_info = st.session_state.get("active_lab_account", list(acc_opts_t3_info.values())[0])
+                        def_acc_name_t3_info = next((n for n, idx in acc_opts_t3_info.items() if idx == def_acc_id_t3_info), list(acc_opts_t3_info.keys())[0])
+                        konto_options_pf_info = list(acc_opts_t3_info.keys()) + ["[Manuell / Sandbox-Demo]"]
+                        if def_acc_name_t3_info not in konto_options_pf_info: def_acc_name_t3_info = konto_options_pf_info[0]
+                        
+                        sel_pf_acc_id_info = acc_opts_t3_info.get(def_acc_name_t3_info, "default")
+                        sel_pf_acc_data_info = st.session_state.config.get("lab_accounts", {}).get(sel_pf_acc_id_info, {})
+                        is_apex_lock_info = sel_pf_acc_data_info.get("exit_profile") == "apex_lock"
+                        start_cap_pf_info = float(sel_pf_acc_data_info.get("account_size", 50000.0))
+                        
+                        df_j_all_info = load_trade_journal()
+                        df_j_acc_info = df_j_all_info[df_j_all_info['account_name'] == def_acc_name_t3_info] if not df_j_all_info.empty else pd.DataFrame()
+                        has_open_pos_info = False
+                        if not df_j_acc_info.empty and 'OPEN' in df_j_acc_info['status'].values: has_open_pos_info = True
+                        
+                        df_j_closed_pf_info = df_j_acc_info[df_j_acc_info['status'] == 'CLOSED'] if not df_j_acc_info.empty else pd.DataFrame()
+                        deposits_pf_info = df_j_closed_pf_info[df_j_closed_pf_info['setup_type'] == 'DEPOSIT']['pnl_eur'].sum() if not df_j_closed_pf_info.empty else 0.0
+                        withdrawals_pf_info = abs(df_j_closed_pf_info[df_j_closed_pf_info['setup_type'] == 'WITHDRAWAL']['pnl_eur'].sum()) if not df_j_closed_pf_info.empty else 0.0
+                        effective_base_pf_info = start_cap_pf_info + deposits_pf_info - withdrawals_pf_info
+                        realized_pnl_pf_info = df_j_closed_pf_info[~df_j_closed_pf_info['setup_type'].isin(['DEPOSIT', 'WITHDRAWAL'])]['pnl_eur'].sum() if not df_j_closed_pf_info.empty else 0.0
+                        bound_capital_pf_info = df_j_acc_info[df_j_acc_info['status'] == 'OPEN']['invest_eur'].sum() if not df_j_acc_info.empty else 0.0
+                        free_cash_pf_info = max(0.0, effective_base_pf_info + realized_pnl_pf_info - bound_capital_pf_info)
+                        
+                        render_resono_waechter(row_data, def_acc_name_t3_info, is_apex_lock_info, free_cash_pf_info, start_cap_pf_info, has_open_pos_info)
                         sym_u_t3 = str(sym).upper().strip()
                         if sym_u_t3 == "NQ=F":
                             richtwert_str = "Ziel-Korridor: 60–65 (Deckel: Werte >= 70 meiden)"
@@ -4140,9 +4727,6 @@ with tab_futures:
 
         else:
             st.info("Aktuell keine gültigen Einstiegssignale gefunden.")
-            
-        render_chart_system(res_t3, "t3")
-
     st.markdown("---")
 
     # --- BLOCK E (UNTEN): 📌 Meine Prop-Watchlist ---
@@ -4170,13 +4754,13 @@ with tab_futures:
         
     with c_btn_pw:
         st.write(""); st.write("")
-        if st.button("➕ Hinzufügen", use_container_width=True, key="prop_wl_btn_confirm_add") and chosen_pw:
-            if not any(t["symbol"] == chosen_pw for t in st.session_state.config["prop_watchlist"]):
-                a_cls = "Forex" if "USD=X" in chosen_pw else ("Krypto" if "BTC" in chosen_pw else "Futures")
-                st.session_state.config["prop_watchlist"].append({"symbol": chosen_pw, "name": chosen_name_pw, "asset_class": a_cls})
-                save_config(st.session_state.config)
-                st.toast("Ticker zu Prop-Watchlist hinzugefügt", icon="✅")
-                st.rerun()
+        if st.button("➕ Hinzufügen", use_container_width=True, key="prop_wl_btn_confirm_add"):
+                if chosen_pw and not any(t["symbol"] == chosen_pw for t in st.session_state.config["prop_watchlist"]):
+                    a_cls = "Forex" if (chosen_pw.endswith("=X") or chosen_pw in ["DX-Y", "DX-Y.NYB"]) else ("Krypto" if "BTC" in chosen_pw else "Futures")
+                    st.session_state.config["prop_watchlist"].append({"symbol": chosen_pw, "name": chosen_name_pw, "asset_class": a_cls})
+                    save_config(st.session_state.config)
+                    st.toast(f"Ticker {chosen_pw} zu Prop-Watchlist hinzugefügt", icon="✅")
+                    st.rerun()
 
     render_management_panel("prop_watchlist", show_sectors=False)
 
@@ -4210,14 +4794,21 @@ with tab_futures:
                 res_pw = {}
                 
                 for t_dict in st.session_state.config["prop_watchlist"]:
-                    sym = t_dict["symbol"]
+                    sym = str(t_dict["symbol"]).strip()
+                    sym_u = sym.upper()
                     t_name = t_dict.get("name", sym)
-                    a_class = t_dict.get("asset_class", "Futures")
-                    if a_class not in ["Futures", "Forex", "Rohstoffe", "Krypto"]:
-                        a_class = "Forex" if sym.endswith("=X") else ("Krypto" if "BTC" in sym else "Futures")
-                    c_type = "Lot" if a_class == "Forex" else ("BTC" if a_class == "Krypto" else "Micro")
+                    if sym_u.endswith("=X") or "DX-Y" in sym_u:
+                        a_class = "Forex"
+                        c_type = "Lot"
+                        pt_val = 100000.0
+                    else:
+                        a_class = t_dict.get("asset_class", "Futures")
+                        if a_class not in ["Futures", "Forex", "Rohstoffe", "Krypto"]:
+                            a_class = "Krypto" if "BTC" in sym_u else "Futures"
+                        c_type = "BTC" if a_class == "Krypto" else t_dict.get("contract", "Micro")
+                        pt_val = get_point_value(sym, c_type)
                     
-                    is_fx_item = (a_class == "Forex" or sym.endswith("=X") or "DX-Y" in sym)
+                    is_fx_item = (a_class == "Forex")
                     item_tf = tf_fx_pw if is_fx_item else tf_fut_pw
                     src_df = b_df_fx_pw if is_fx_item else b_df_fut_pw
                     src_len = len(fx_list_pw) if is_fx_item else len(fut_list_pw)
@@ -4269,18 +4860,19 @@ with tab_futures:
                                 tp = plot["High"].tail(24).max() if "High" in plot.columns else c_p * 1.02
                                 
                             risk_pts = abs(c_p - sl)
-                            tick_val = get_point_value(sym, c_type)
-                            max_risk_amt = dl * 0.10
-                            raw_qty = max_risk_amt / (risk_pts * tick_val) if risk_pts > 0 else 0
+                            tick_val = pt_val
+                            eff_risk_pts = (risk_pts / 100.0) if (a_class == "Forex" and "JPY" in sym_u) else risk_pts
+                            max_risk_amt = dl * (0.05 if a_class == "Forex" else 0.10)
+                            raw_qty = max_risk_amt / (eff_risk_pts * tick_val) if eff_risk_pts > 0 else 0
                             
                             if a_class in ["Futures", "Rohstoffe"]:
                                 qty = int(raw_qty)
                                 size_str = f"{qty} {c_type}" if qty >= 1 else "⚠️ SL zu weit"
-                                actual_risk = qty * risk_pts * tick_val
+                                actual_risk = qty * eff_risk_pts * tick_val
                             else:
                                 qty = round(raw_qty, 2) if a_class == "Forex" else round(raw_qty, 4)
-                                size_str = f"{qty} {c_type}" if qty > 0 else "⚠️ SL zu weit"
-                                actual_risk = qty * risk_pts * tick_val
+                                size_str = f"{qty:.2f} {c_type}" if (a_class == "Forex" and qty > 0) else (f"{qty} {c_type}" if qty > 0 else "⚠️ SL zu weit")
+                                actual_risk = qty * eff_risk_pts * tick_val
                                 
                             trades_dl = int(dl / actual_risk) if actual_risk > 0 else 0
                             trades_mdd = int(mdd / actual_risk) if actual_risk > 0 else 0
@@ -4317,10 +4909,12 @@ with tab_futures:
             if tb_data_pw:
                 st.subheader("📊 Live-Auswertung (Prop-Watchlist)")
                 df_pw_res = pd.DataFrame(tb_data_pw).sort_values(by="Sort_Score", ascending=False)
+                st.session_state.prop_watchlist_results = df_pw_res
                 
                 if "active_futures_order" not in st.session_state: st.session_state.active_futures_order = None
                 if "prop_wl_info_tickers" not in st.session_state: st.session_state.prop_wl_info_tickers = []
                 
+                df_pw_res.drop(columns=["🛒 Order", "🔍 Info"], inplace=True, errors='ignore')
                 df_pw_res.insert(0, "🛒 Order", df_pw_res["Ticker"] == st.session_state.active_futures_order)
                 df_pw_res.insert(1, "🔍 Info", df_pw_res["Ticker"].isin(st.session_state.prop_wl_info_tickers))
                 
@@ -4351,35 +4945,28 @@ with tab_futures:
                     st.session_state.prop_wl_info_tickers = new_infos_pw
 
                 current_orders_pw = edited_pw_res[edited_pw_res["🛒 Order"] == True]["Ticker"].tolist()
-                sel_tick_pw = None
-                if len(current_orders_pw) > 0:
-                    new_ones = [t for t in current_orders_pw if t != st.session_state.active_futures_order]
-                    if new_ones: 
-                        sel_tick_pw = new_ones[0]
-                    else: 
-                        sel_tick_pw = current_orders_pw[0]
                 
-                if sel_tick_pw and sel_tick_pw != st.session_state.active_futures_order:
-                    pw_match = df_pw_res[df_pw_res["Ticker"] == sel_tick_pw].iloc[0]
-                    if not st.session_state.get("futures_scan_results"):
-                        st.session_state.futures_scan_results = {"tb_data": [], "res_t3": {}}
-                    ext_tb = [r for r in st.session_state.futures_scan_results.get("tb_data", []) if r.get("Ticker") != sel_tick_pw]
-                    ext_tb.append(pw_match.to_dict())
-                    st.session_state.futures_scan_results["tb_data"] = ext_tb
-                    if sel_tick_pw in res_pw:
-                        st.session_state.futures_scan_results.setdefault("res_t3", {})[sel_tick_pw] = res_pw[sel_tick_pw]
-                    
+                new_selection_pw = None
+                if current_orders_pw:
+                    candidates_pw = [t for t in current_orders_pw if t != st.session_state.get("active_futures_order")]
+                    if candidates_pw:
+                        new_selection_pw = candidates_pw[-1]
+                    elif len(current_orders_pw) == 1 and current_orders_pw[0] != st.session_state.get("active_futures_order"):
+                        new_selection_pw = current_orders_pw[0]
+
+                if new_selection_pw and new_selection_pw != st.session_state.get("active_futures_order"):
                     st.session_state.active_order_ticker = None
-                    st.session_state.active_futures_order = sel_tick_pw
-                    st.toast(f"🛒 Order-Desk geladen für: {sel_tick_pw}", icon="✅")
+                    st.session_state.active_futures_order = new_selection_pw
+                    st.session_state.pop("pw_data_editor", None)
+                    st.toast(f"🛒 Order-Desk geladen für: {new_selection_pw}", icon="✅")
                     st.rerun()
-                elif len(current_orders_pw) == 0 and st.session_state.active_futures_order in df_pw_res["Ticker"].values:
+                elif not current_orders_pw and st.session_state.get("active_futures_order") in df_pw_res["Ticker"].values:
                     st.session_state.active_futures_order = None
+                    st.session_state.pop("pw_data_editor", None)
                     st.toast("Order-Desk geleert.", icon="ℹ️")
                     st.rerun()
 
                 for sym in st.session_state.prop_wl_info_tickers:
-                    if sym == st.session_state.get("active_futures_order"): continue
                     if sym in df_pw_res["Ticker"].values:
                         pw_r = df_pw_res[df_pw_res["Ticker"] == sym].iloc[0]
                         bd_str = pw_r.get('Score-Details', '')
@@ -4391,6 +4978,33 @@ with tab_futures:
                         
                         with st.container(border=True):
                             st.markdown(f"### 🔍 Detail-Analyse: **{pw_r['Ticker']}** ({pw_r['Name']}) | {pw_r['Klasse']}")
+                            acc_opts_t3_pw = {acc["name"]: acc_name for acc_name, acc in st.session_state.config.get("lab_accounts", {}).items()}
+                            if not acc_opts_t3_pw: acc_opts_t3_pw = {"Standard Portfolio": "default"}
+                            def_acc_id_t3_pw = st.session_state.get("active_lab_account", list(acc_opts_t3_pw.values())[0])
+                            def_acc_name_t3_pw = next((n for n, idx in acc_opts_t3_pw.items() if idx == def_acc_id_t3_pw), list(acc_opts_t3_pw.keys())[0])
+                            konto_options_pf_pw = list(acc_opts_t3_pw.keys()) + ["[Manuell / Sandbox-Demo]"]
+                            if def_acc_name_t3_pw not in konto_options_pf_pw: def_acc_name_t3_pw = konto_options_pf_pw[0]
+                            
+                            sel_pf_acc_id_pw = acc_opts_t3_pw.get(def_acc_name_t3_pw, "default")
+                            sel_pf_acc_data_pw = st.session_state.config.get("lab_accounts", {}).get(sel_pf_acc_id_pw, {})
+                            is_apex_lock_pw = sel_pf_acc_data_pw.get("exit_profile") == "apex_lock"
+                            start_cap_pf_pw = float(sel_pf_acc_data_pw.get("account_size", 50000.0))
+                            
+                            df_j_all_pw = load_trade_journal()
+                            df_j_acc_pw = df_j_all_pw[df_j_all_pw['account_name'] == def_acc_name_t3_pw] if not df_j_all_pw.empty else pd.DataFrame()
+                            has_open_pos_pw = False
+                            if not df_j_acc_pw.empty and 'OPEN' in df_j_acc_pw['status'].values: has_open_pos_pw = True
+                            
+                            df_j_closed_pf_pw = df_j_acc_pw[df_j_acc_pw['status'] == 'CLOSED'] if not df_j_acc_pw.empty else pd.DataFrame()
+                            deposits_pf_pw = df_j_closed_pf_pw[df_j_closed_pf_pw['setup_type'] == 'DEPOSIT']['pnl_eur'].sum() if not df_j_closed_pf_pw.empty else 0.0
+                            withdrawals_pf_pw = abs(df_j_closed_pf_pw[df_j_closed_pf_pw['setup_type'] == 'WITHDRAWAL']['pnl_eur'].sum()) if not df_j_closed_pf_pw.empty else 0.0
+                            effective_base_pf_pw = start_cap_pf_pw + deposits_pf_pw - withdrawals_pf_pw
+                            realized_pnl_pf_pw = df_j_closed_pf_pw[~df_j_closed_pf_pw['setup_type'].isin(['DEPOSIT', 'WITHDRAWAL'])]['pnl_eur'].sum() if not df_j_closed_pf_pw.empty else 0.0
+                            bound_capital_pf_pw = df_j_acc_pw[df_j_acc_pw['status'] == 'OPEN']['invest_eur'].sum() if not df_j_acc_pw.empty else 0.0
+                            free_cash_pf_pw = max(0.0, effective_base_pf_pw + realized_pnl_pf_pw - bound_capital_pf_pw)
+                            
+                            if pw_r.get('Kurs') and pw_r.get('Kurs') != 'N/A' and float(pw_r.get('_raw_cp', 0)) > 0:
+                                render_resono_waechter(pw_r, def_acc_name_t3_pw, is_apex_lock_pw, free_cash_pf_pw, start_cap_pf_pw, has_open_pos_pw)
                             sym_u_pw = str(sym).upper().strip()
                             if sym_u_pw == "NQ=F": r_str = "Ziel-Korridor: 60–65 (Deckel: Werte >= 70 meiden)"
                             elif sym_u_pw in ["CL=F", "MCL"]: r_str = "Ziel-Korridor: 65–70"
@@ -4460,6 +5074,18 @@ with tab_lab:
     
     if "active_lab_account" not in st.session_state or st.session_state.active_lab_account not in accounts:
         st.session_state.active_lab_account = list(accounts.keys())[0]
+        
+    current_active_idx = list(acc_opts.values()).index(st.session_state.active_lab_account) if st.session_state.active_lab_account in acc_opts.values() else 0
+    sel_global_acc_name = st.selectbox(
+        "🏦 Aktives Konto (Global):", 
+        list(acc_opts.keys()), 
+        index=current_active_idx,
+        key="global_active_lab_account_select"
+    )
+    
+    if acc_opts[sel_global_acc_name] != st.session_state.active_lab_account:
+        st.session_state.active_lab_account = acc_opts[sel_global_acc_name]
+        st.rerun()
         
     active_acc = accounts[st.session_state.active_lab_account]
 
@@ -4766,10 +5392,7 @@ with tab_lab:
         
         c_acc1, c_acc2, c_acc3 = st.columns([2, 1, 1])
         with c_acc1:
-            sel_acc_name = st.selectbox("Aktives Konto auswählen:", list(acc_opts.keys()), index=list(acc_opts.values()).index(st.session_state.active_lab_account))
-            if acc_opts[sel_acc_name] != st.session_state.active_lab_account:
-                st.session_state.active_lab_account = acc_opts[sel_acc_name]
-                st.rerun()
+            st.info(f"**Aktives Konto:** {active_acc['name']}")
                 
         with c_acc2:
             st.write(""); st.write("")
@@ -5318,6 +5941,7 @@ with tab_lab:
                 tr_row = df_closed_list[(df_closed_list['symbol'] == sym_str) & (df_closed_list['exit_date'] == dt_str)].iloc[0]
                 with st.container(border=True):
                     st.markdown(f"### 🔍 Details: {tr_row['symbol']} ({tr_row['name']})")
+                    st.caption(f"📅 **Entry:** {tr_row.get('entry_date', 'N/A')} &nbsp; | &nbsp; 🏁 **Exit:** {tr_row.get('exit_date', 'N/A')} &nbsp; | &nbsp; ⏳ **Haltedauer:** {tr_row.get('Haltedauer', 'N/A')}")
                     st.markdown("#### 🎯 Ergebnis")
                     c_d1, c_d2, c_d3, c_d4 = st.columns(4)
                     c_d1.metric("Kaufkurs (Einstieg)", f"{float(tr_row['entry_price']):.4f}")
@@ -5327,6 +5951,10 @@ with tab_lab:
                     
                     st.markdown("#### 📏 Plan vs. Realität")
                     c_d5, c_d6, c_d7, c_d8, c_d9 = st.columns(5)
+                    c_dt1, c_dt2 = st.columns(2)
+                    c_dt1.write(f"⏱️ **Entry-Zeitpunkt:** `{tr_row.get('entry_date', 'N/A')}`")
+                    c_dt2.write(f"⏱️ **Exit-Zeitpunkt:** `{tr_row.get('exit_date', 'N/A')}`")
+                    st.write("")
                     sig_p_val = float(tr_row.get('signal_price', tr_row['entry_price'])) if pd.notna(tr_row.get('signal_price')) else float(tr_row['entry_price'])
                     diff_slip = float(tr_row['entry_price']) - sig_p_val
                     if str(tr_row.get('direction', 'Long')) == "Short":
@@ -5584,10 +6212,7 @@ with tab_lab:
     with tab_lab_strat:
         c_strat_acc, _ = st.columns([1, 2])
         with c_strat_acc:
-            sel_acc_name_strat = st.selectbox("Aktives Konto für das Strategie-Labor:", list(acc_opts.keys()), index=list(acc_opts.values()).index(st.session_state.active_lab_account), key="acc_sel_strat")
-            if acc_opts[sel_acc_name_strat] != st.session_state.active_lab_account:
-                st.session_state.active_lab_account = acc_opts[sel_acc_name_strat]
-                st.rerun()
+            st.info(f"**Aktives Konto (Strategie-Labor):** {active_acc['name']}")
         st.markdown("---")
         
         st.subheader("📋 Ticker-Verwaltung")
