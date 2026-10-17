@@ -135,6 +135,18 @@ st.markdown("""
             height: auto !important;
             margin-bottom: 4px !important;
         }
+        /* 3. Reiter (Tabs) flexibel umbrechen, strecken und Abstände minimieren */
+        div[data-baseweb="tab-list"] {
+            flex-wrap: wrap !important;
+            white-space: normal !important;
+        }
+        button[data-baseweb="tab"] {
+            flex: 1 1 auto !important;
+            padding-top: 0.3rem !important;
+            padding-bottom: 0.3rem !important;
+            padding-left: 0.4rem !important;
+            padding-right: 0.4rem !important;
+        }
     }
 </style>
 <script>
@@ -802,7 +814,7 @@ POINT_VALUES = {
     "M2K": 5.0, "RTY=F": 5.0,
     "MGC": 10.0, "GC=F": 10.0,
     "SIL": 10.0, "SI=F": 10.0,
-    "MCL": 10.0, "CL=F": 10.0,
+    "MCL": 100.0, "CL=F": 100.0,
     "QG": 2500.0, "NG=F": 2500.0,
     "MHG": 250.0, "HG=F": 250.0,
     "Lot": 100000.0
@@ -1673,13 +1685,47 @@ def get_action_guideline(sym, score, a_class=""):
 #endregion
 
 #region UI COMPONENTS
-def render_currency_metric(col, label, val, curr, fx, view_mode):
+def format_dynamic_price(val, ticker="", is_invest=False):
+    if val is None or pd.isna(val): return "0.00"
+    abs_val = abs(val)
+    sym_u = str(ticker).upper().strip()
+    is_fx = sym_u.endswith("=X") or "DX-Y" in sym_u
+
+    if is_invest and abs_val >= 1000.0:
+        return f"{int(round(val))}"
+    if abs_val >= 10.0:
+        return f"{val:.2f}"
+    elif abs_val >= 1.0:
+        return f"{val:.4f}" if is_fx else f"{val:.3f}"
+    elif abs_val >= 0.01:
+        return f"{val:.5f}"
+    else:
+        return f"{val:.6f}"
+
+def get_number_input_args(val, ticker=""):
+    if val is None or pd.isna(val): return 0.01, "%.2f"
+    abs_val = abs(val)
+    sym_u = str(ticker).upper().strip()
+    is_fx = sym_u.endswith("=X") or "DX-Y" in sym_u
+    
+    if abs_val >= 10.0: return 0.01, "%.2f"
+    elif abs_val >= 1.0: return (0.0001, "%.4f") if is_fx else (0.001, "%.3f")
+    elif abs_val >= 0.01: return 0.00001, "%.5f"
+    else: return 0.000001, "%.6f"
+
+def render_currency_metric(col, label, val, curr, fx, view_mode, ticker=""):
+    is_inv = "Investition" in label
+    
     if curr == "€" or curr == "EUR":
-        col.metric(label, f"{val:.2f} €")
+        val_str = format_dynamic_price(val, ticker, is_inv)
+        col.metric(label, f"{val_str} €")
         return
 
-    val_orig = f"{val:.2f} {curr}"
-    val_eur = f"{val * fx:.2f} €"
+    val_orig_str = format_dynamic_price(val, ticker, is_inv)
+    val_eur_str = format_dynamic_price(val * fx, ticker, is_inv)
+
+    val_orig = f"{val_orig_str} {curr}"
+    val_eur = f"{val_eur_str} €"
 
     if view_mode == "Nur Bitpanda EUR (€)":
         col.metric(label, val_eur)
@@ -2063,7 +2109,14 @@ with st.sidebar:
         
         konto_options = list(acc_opts_sidebar.keys()) + ["[Manuell / Sandbox-Demo]"]
         if def_acc_name_sb not in konto_options: def_acc_name_sb = konto_options[0]
+        if st.session_state.get("active_lab_account") != st.session_state.get("_last_synced_lab_account"):
+            st.session_state[f"global_acc_swing_{active_sym}"] = def_acc_name_sb
+            st.session_state["_last_synced_lab_account"] = st.session_state.get("active_lab_account")
         sel_acc_name = st.selectbox("Ziel-Konto:", konto_options, index=konto_options.index(def_acc_name_sb), key=f"global_acc_swing_{active_sym}")
+        if sel_acc_name != "[Manuell / Sandbox-Demo]" and sel_acc_name in acc_opts_sidebar:
+            if acc_opts_sidebar[sel_acc_name] != st.session_state.get("active_lab_account"):
+                st.session_state.active_lab_account = acc_opts_sidebar[sel_acc_name]
+                st.session_state["_last_synced_lab_account"] = acc_opts_sidebar[sel_acc_name]
         
         temp_config = json.loads(json.dumps(st.session_state.config))
         is_sandbox_swing = (sel_acc_name == "[Manuell / Sandbox-Demo]")
@@ -2205,12 +2258,15 @@ with st.sidebar:
         curr = get_currency_symbol(active_sym)
         curr_view = st.session_state.config.get("global_settings", {}).get("currency_view", "Duale Ansicht (Original & EUR)")
         max_limit_price = (tp_val + 1.25 * sl_val) / 2.25
-        render_currency_metric(c_order1, "Aktueller Kurs (Signal)", einstieg_val, curr, fx, curr_view)
+        render_currency_metric(c_order1, "Aktueller Kurs (Signal)", einstieg_val, curr, fx, curr_view, active_sym)
         c_order2.metric("Stückzahl", pos_size_str)
-        st.info(f"🎯 Empfohlenes Kauflimit: Maximal bis {max_limit_price:.2f} {curr} | Slippage-Schutz: Limit-Order im Broker platzieren!")
+        
+        limit_str = format_dynamic_price(max_limit_price, active_sym)
+        st.info(f"🎯 Empfohlenes Kauflimit: Maximal bis {limit_str} {curr} | Slippage-Schutz: Limit-Order im Broker platzieren!")
+        
         c_order3, c_order4 = st.columns(2)
-        render_currency_metric(c_order3, "Stop Loss", sl_val, curr, fx, curr_view)
-        render_currency_metric(c_order4, "Take Profit", tp_val, curr, fx, curr_view)
+        render_currency_metric(c_order3, "Stop Loss", sl_val, curr, fx, curr_view, active_sym)
+        render_currency_metric(c_order4, "Take Profit", tp_val, curr, fx, curr_view, active_sym)
         st.markdown(f"**Reines Kursrisiko:** {dyn_max_r:.2f} € | **Geschätzte Gebühren:** {est_fees:.2f} €")
         
         risk_per_share = einstieg_val - sl_val
@@ -2221,9 +2277,11 @@ with st.sidebar:
             net_be = einstieg_val + (fees_per_share / fx) if fx > 0 else einstieg_val
             
             def fmt_trail(v):
-                if curr_view == "Nur Bitpanda EUR (€)": return f"{(v * fx):.2f} €"
-                elif curr_view == "Nur Original": return f"{v:.2f} {curr}"
-                else: return f"{v:.2f} {curr} (≈ {v * fx:.2f} €)"
+                v_str_orig = format_dynamic_price(v, active_sym)
+                v_str_eur = format_dynamic_price(v * fx, active_sym)
+                if curr_view == "Nur Bitpanda EUR (€)": return f"{v_str_eur} €"
+                elif curr_view == "Nur Original": return f"{v_str_orig} {curr}"
+                else: return f"{v_str_orig} {curr} (≈ {v_str_eur} €)"
                 
             sym_str = str(active_sym).upper()
             is_crypto_asset = any(sym_str.endswith(ext) for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF"]) or "KRYPTO" in str(row_data.get('Kategorie', row_data.get('Sektor', ''))).upper()
@@ -2234,10 +2292,10 @@ with st.sidebar:
         
         c_order5, c_order6 = st.columns(2)
         c_order5.metric("Effektives Gesamtrisiko", f"{total_risk_eur:.2f} €")
-        render_currency_metric(c_order6, "Investition", dyn_inv_cap / fx if fx > 0 else dyn_inv_cap, curr, fx, curr_view)
+        render_currency_metric(c_order6, "Investition", dyn_inv_cap / fx if fx > 0 else dyn_inv_cap, curr, fx, curr_view, active_sym)
 
         c_order7, c_order8 = st.columns(2)
-        render_currency_metric(c_order7, "Möglicher Gewinn (Netto)", gewinn_eur_netto / fx if fx > 0 else gewinn_eur_netto, curr, fx, curr_view)
+        render_currency_metric(c_order7, "Möglicher Gewinn (Netto)", gewinn_eur_netto / fx if fx > 0 else gewinn_eur_netto, curr, fx, curr_view, active_sym)
         st.markdown(f"**Reiner Kursgewinn:** {gewinn_eur_brutto:.2f} € | **Gebühren bei TP:** {tp_fees_eur:.2f} €")
                 
         if atr_val > 0:
@@ -2266,7 +2324,10 @@ with st.sidebar:
             if not market_open_swing:
                 st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
             btn_help_swing = None if market_open_swing else "Achtung: Ausführung und Fills erfolgen erst zur nächsten Marktöffnung."
-            real_fill_swing = st.number_input("Tatsächlicher Fill-Preis (Broker)", value=float(einstieg_val), step=0.01, format="%.2f", key=f"fill_swing_{active_sym}", help="Übertrage hier nach der Broker-Ausführung deinen echten Kurs. Standardmäßig mit dem Signal-Kurs vorausgefüllt.")
+            
+            st_step_swing, st_fmt_swing = get_number_input_args(einstieg_val, active_sym)
+            real_fill_swing = st.number_input("Tatsächlicher Fill-Preis (Broker)", value=float(einstieg_val), step=st_step_swing, format=st_fmt_swing, key=f"fill_swing_{active_sym}", help="Übertrage hier nach der Broker-Ausführung deinen echten Kurs. Standardmäßig mit dem Signal-Kurs vorausgefüllt.")
+            
             real_risk_swing = abs(real_fill_swing - sl_val)
             real_reward_swing = abs(tp_val - real_fill_swing)
             effective_crv_swing = (real_reward_swing / real_risk_swing) if real_risk_swing > 0 else 0.0
@@ -2341,7 +2402,14 @@ with st.sidebar:
         
         konto_options_pf = list(acc_opts_t3.keys()) + ["[Manuell / Sandbox-Demo]"]
         if def_acc_name_t3 not in konto_options_pf: def_acc_name_t3 = konto_options_pf[0]
+        if st.session_state.get("active_lab_account") != st.session_state.get("_last_synced_lab_account"):
+            st.session_state[f"pf_acc_global_{active_sym}"] = def_acc_name_t3
+            st.session_state["_last_synced_lab_account"] = st.session_state.get("active_lab_account")
         sel_pf_acc_name = st.selectbox("Ziel-Konto:", konto_options_pf, index=konto_options_pf.index(def_acc_name_t3), key=f"pf_acc_global_{active_sym}")
+        if sel_pf_acc_name != "[Manuell / Sandbox-Demo]" and sel_pf_acc_name in acc_opts_t3:
+            if acc_opts_t3[sel_pf_acc_name] != st.session_state.get("active_lab_account"):
+                st.session_state.active_lab_account = acc_opts_t3[sel_pf_acc_name]
+                st.session_state["_last_synced_lab_account"] = acc_opts_t3[sel_pf_acc_name]
         
         is_sandbox_prop = (sel_pf_acc_name == "[Manuell / Sandbox-Demo]")
         
@@ -2603,16 +2671,16 @@ with st.sidebar:
         if is_trade_blocked: size_str_dyn, actual_risk_dyn = "🚫 Gesperrt", 0.0
         
         c_b1, c_b2 = st.columns(2)
-        c_b1.metric("Einstieg", f"{raw_cp:.4f}")
+        c_b1.metric("Einstieg", format_dynamic_price(raw_cp, active_sym))
         c_b2.metric("Größe", size_str_dyn)
         
         c_b3, c_b4 = st.columns(2)
-        c_b3.metric("Stop Loss", f"{raw_sl:.4f}")
-        c_b4.metric("Take Profit", f"{raw_tp:.4f}")
+        c_b3.metric("Stop Loss", format_dynamic_price(raw_sl, active_sym))
+        c_b4.metric("Take Profit", format_dynamic_price(raw_tp, active_sym))
         
         max_limit_prop = (raw_tp + 1.25 * raw_sl) / 2.25 if not is_shrt else (raw_tp + 1.25 * raw_sl) / 2.25
-        fmt = ".4f" if is_forex_sym else ".2f"
-        st.caption(f"🎯 Max. Limit-Preis (CRV ≥ 1.25): {max_limit_prop:{fmt}} | Slippage-Schutz: Limit-Order empfohlen!")
+        limit_str_prop = format_dynamic_price(max_limit_prop, active_sym)
+        st.caption(f"🎯 Max. Limit-Preis (CRV ≥ 1.25): {limit_str_prop} | Slippage-Schutz: Limit-Order empfohlen!")
         
         if is_forex_sym:
             st.markdown(f"**Abstand:** {row_data.get('Abstand', 'N/A')} | **Punktwert:** $10.00 pro Pip (bzw. ${pt_val:,.2f} pro {c_name})")
@@ -2625,15 +2693,15 @@ with st.sidebar:
         gs = st.session_state.config.get("global_settings", {})
         fee_mode_str = gs.get("fee_mode", "Keine Gebühren / Raw")
         
-        # Gebühren analog Swing-Desk
-        if "1.49% Spread" in fee_mode_str or "Bitpanda Retail" in fee_mode_str: est_fees_usd = max(2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00, (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0199)
-        elif "Bitpanda Fusion" in fee_mode_str or "0.10%" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0010
-        elif "0.25% Gebühr" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0025
-        elif "Bybit" in fee_mode_str or "0.06%" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.0006
-        elif "Apex" in fee_mode_str or "Tradovate" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * (0.00005 + 0.0001)
-        elif "FTMO" in fee_mode_str or "MetaTrader" in fee_mode_str: est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * (0.00003 + 0.00002)
-        elif "Aktien Broker" in fee_mode_str or "Interactive" in fee_mode_str or "Flatex" in fee_mode_str: est_fees_usd = 2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00
-        else: est_fees_usd = 0.0
+        # Poka-Yoke Gebühren-Routing nach Asset-Klasse (Prop-Desk)
+        if "Keine Gebühren / Raw" in fee_mode_str:
+            est_fees_usd = 0.0
+        elif a_class == "Forex" or is_fx_sidebar:
+            est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.00003
+        elif a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper():
+            est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.00005
+        else:
+            est_fees_usd = 0.0
         
         est_fees_eur = est_fees_usd * fx_usd_eur
         pure_risk_usd = actual_risk_dyn
@@ -2666,7 +2734,7 @@ with st.sidebar:
                 t_price = raw_cp + (m * abs(raw_cp - raw_sl) * dir_m)
                 t_prof_usd = m * pure_risk_usd
                 t_prof_eur = t_prof_usd * fx_usd_eur
-                ms_html += f"<tr><td>+{m} R</td><td>{t_price:{fmt}}</td><td>${t_prof_usd:.2f}</td><td>{t_prof_eur:.2f} €</td></tr>"
+                ms_html += f"<tr><td>+{m} R</td><td>{format_dynamic_price(t_price, active_sym)}</td><td>${t_prof_usd:.2f}</td><td>{t_prof_eur:.2f} €</td></tr>"
             ms_html += "</table><br>"
             st.markdown(ms_html, unsafe_allow_html=True)
         
@@ -2744,10 +2812,9 @@ with st.sidebar:
         else:
             btn_help_prop = "Bereit zum Einloggen ins Journal"
 
-        step_prop = 0.0001 if is_forex_sym else 0.25
-        fmt_prop = "%.4f" if is_forex_sym else "%.2f"
-        fmt_prop_str = ".4f" if is_forex_sym else ".2f"
-        real_fill_prop = st.number_input("Tatsächlicher Fill-Preis (Broker)", value=float(raw_cp), step=step_prop, format=fmt_prop, key=f"fill_prop_{active_sym}", help="Übertrage hier nach der Broker-Ausführung deinen echten Kurs. Standardmäßig mit dem Signal-Kurs vorausgefüllt.")
+        st_step_prop, st_fmt_prop = get_number_input_args(raw_cp, active_sym)
+        
+        real_fill_prop = st.number_input("Tatsächlicher Fill-Preis (Broker)", value=float(raw_cp), step=st_step_prop, format=st_fmt_prop, key=f"fill_prop_{active_sym}", help="Übertrage hier nach der Broker-Ausführung deinen echten Kurs. Standardmäßig mit dem Signal-Kurs vorausgefüllt.")
         real_risk_prop = abs(real_fill_prop - raw_sl)
         real_reward_prop = abs(raw_tp - real_fill_prop)
         effective_crv_prop = (real_reward_prop / real_risk_prop) if real_risk_prop > 0 else 0.0
@@ -2777,20 +2844,20 @@ with st.sidebar:
             pure_risk_usd_real = qty_dyn * real_risk_prop * pt_val
             planned_risk_eur_real = pure_risk_usd_real * fx_usd_eur
             
-            if "1.49% Spread" in fee_mode_str or "Bitpanda Retail" in fee_mode_str: est_fees_usd_real = max(2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00, (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0199)
-            elif "Bitpanda Fusion" in fee_mode_str or "0.10%" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0010
-            elif "0.25% Gebühr" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0025
-            elif "Bybit" in fee_mode_str or "0.06%" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.0006
-            elif "Apex" in fee_mode_str or "Tradovate" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * (0.00005 + 0.0001)
-            elif "FTMO" in fee_mode_str or "MetaTrader" in fee_mode_str: est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * (0.00003 + 0.00002)
-            elif "Aktien Broker" in fee_mode_str or "Interactive" in fee_mode_str or "Flatex" in fee_mode_str: est_fees_usd_real = 2.00 / fx_usd_eur if fx_usd_eur > 0 else 2.00
-            else: est_fees_usd_real = 0.0
+            if "Keine Gebühren / Raw" in fee_mode_str:
+                est_fees_usd_real = 0.0
+            elif a_class == "Forex" or is_fx_sidebar:
+                est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.00003
+            elif a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper():
+                est_fees_usd_real = (real_fill_prop + raw_tp) * qty_dyn * pt_val * 0.00005
+            else:
+                est_fees_usd_real = 0.0
             
             est_fees_eur_real = est_fees_usd_real * fx_usd_eur
 
             if effective_crv_prop < 1.25 and real_fill_prop != raw_cp:
                 final_exit_mode_prop = "DEFENSIVE_EMERGENCY"
-                trade_notes_prop = f"Prop-Desk ({size_str_dyn}) | Slippage-Alert: Signal {raw_cp:{fmt_prop_str}} vs Fill {real_fill_prop:{fmt_prop_str}} (CRV: {effective_crv_prop:.2f})"
+                trade_notes_prop = f"Prop-Desk ({size_str_dyn}) | Slippage-Alert: Signal {format_dynamic_price(raw_cp, active_sym)} vs Fill {format_dynamic_price(real_fill_prop, active_sym)} (CRV: {effective_crv_prop:.2f})"
             else:
                 final_exit_mode_prop = determined_exit_mode
                 trade_notes_prop = f"Prop-Desk ({size_str_dyn})"
@@ -2857,7 +2924,7 @@ with st.sidebar:
 #endregion
 
 #region MAIN APP TABS
-tab_screen, tab_futures, tab_lab = st.tabs(["⚡ Swing-Scanner (Aktien & Krypto)", "🎯 Prop-Desk (Futures & Forex)", "🏦 Konten- & Portfolio-Desk"])
+tab_screen, tab_futures, tab_lab = st.tabs(["⚡ Swing-Scanner", "🎯 Prop-Desk", "🏦 Konto/Lab"])
 #endregion
 
 #region TAB 1 UI (DEAKTIVIERT)
@@ -3267,7 +3334,7 @@ with tab_screen:
                                     scan_results_list.append({
                                         "Favorit": False, "Kategorie": source_u, "Ticker": sym, "Name": name, 
                                         "DNA": details.get("dna", "⚪ N/A"), "ATR%": details.get("atr_pct", 0.0),
-                                        "Kurs": f"{c_p:.2f} {warn_icon}".strip(), "RSI": rsi_display, 
+                                        "Kurs": f"{format_dynamic_price(c_p, sym)} {warn_icon}".strip(), "RSI": rsi_display, 
                                         "Master-Score": m_score_str, "Score-Details": m_score_breakdown, 
                                         "Ampel": details["ampel"], "Säulen": f"{details['score']}/{details['score_max']}", 
                                         "Säulen-Details": details["breakdown"], "Plateau": details.get("plateau", "⚪ N/A"), 
@@ -3546,10 +3613,10 @@ with tab_screen:
                             tb_data2.append({
                                 "Sektor": t_dict.get("sector", "Standard"), "Ticker": sym, "Name": t_dict["name"],
                                 "DNA": details.get("dna", "⚪ N/A"), "ATR%": details.get("atr_pct", 0.0), 
-                                "Kurs": f"{c_p:.2f} {warn_icon}".strip(), "RSI": f"{r:.2f}", "Z-Score": f"{details.get('z_score', 0):.2f}",
-                                "Säulen-Details": details["breakdown"], "Kauf-Zielpreis": f"{p_b:.2f}", 
-                                "Verkauf-Zielpreis": f"{p_s:.2f}", "Stop Loss (SL)": f"{sl:.2f}", 
-                                "Take Profit (TP)": f"{tp:.2f}", "CRV Rating": crv_rating, 
+                                "Kurs": f"{format_dynamic_price(c_p, sym)} {warn_icon}".strip(), "RSI": f"{r:.2f}", "Z-Score": f"{details.get('z_score', 0):.2f}",
+                                "Säulen-Details": details["breakdown"], "Kauf-Zielpreis": format_dynamic_price(p_b, sym), 
+                                "Verkauf-Zielpreis": format_dynamic_price(p_s, sym), "Stop Loss (SL)": format_dynamic_price(sl, sym), 
+                                "Take Profit (TP)": format_dynamic_price(tp, sym), "CRV Rating": crv_rating, 
                                 "Ampel": details["ampel"], "Plateau": details.get("plateau", "⚪ N/A"),
                                 "Monte-Carlo": mc_label, "Stückzahl": pos_size_str, "Investition": f"{inv_cap:,.2f} €",
                                 "Master-Score": m_score_str, "Score-Details": m_score_breakdown, "Rel. Stärke": f"{rs_ratio:.2f}" if rs_ratio else "N/A",
@@ -3904,14 +3971,20 @@ with tab_futures:
                 actual_asset_class = a_class
                 pt_val = get_point_value(sym_u, c_name)
 
-            acc_tax_w = "prop_firm"
+            is_sandbox_w = (sel_acc_name == "[Manuell / Sandbox-Demo]")
+            acc_tax_w = "private" if is_sandbox_w else "prop_firm"
+            acc_prof_w = "sandbox" if is_sandbox_w else "prop_guard"
             priv_risk_pct_w = 1.0
-            for _, a_d in st.session_state.config.get("lab_accounts", {}).items():
-                if a_d.get("name") == sel_acc_name:
-                    acc_tax_w = a_d.get("tax_category", "private")
-                    priv_risk_pct_w = float(a_d.get("risk_pct", 1.0))
-                    break
-            is_private_w = (acc_tax_w == "private")
+            if not is_sandbox_w:
+                for _, a_d in st.session_state.config.get("lab_accounts", {}).items():
+                    if a_d.get("name") == sel_acc_name:
+                        acc_tax_w = a_d.get("tax_category", "prop_firm")
+                        acc_prof_w = a_d.get("exit_profile", "prop_guard")
+                        priv_risk_pct_w = float(a_d.get("risk_pct", 1.0))
+                        break
+            is_private_w = is_sandbox_w or (acc_tax_w == "private")
+            if "apex" in str(sel_acc_name).lower() or "ftmo" in str(sel_acc_name).lower() or acc_prof_w in ["apex_lock", "ftmo_swing"]:
+                is_private_w = False
         
             if actual_asset_class == "Forex" or "FTMO" in str(sel_acc_name).upper():
                 acc_type = 'ftmo'
@@ -4188,8 +4261,8 @@ with tab_futures:
                         ema200_ok_ql = c_p_ql > ema200_val_ql
                         atr_pct_ql = float(details_ql.get("atr_pct", 0.0))
                         ql_row = {
-                            "Ticker": sym_ql, "Name": t_name_ql, "Klasse": a_class_ql, "Signal": signal_ql, "Kurs": f"{c_p_ql:.4f}",
-                            "RSI": f"{r_ql:.2f}", "Stop Loss": f"{sl_ql:.4f}", "Take Profit": f"{tp_ql:.4f}", "Abstand": abstand_str_ql,
+                            "Ticker": sym_ql, "Name": t_name_ql, "Klasse": a_class_ql, "Signal": signal_ql, "Kurs": format_dynamic_price(c_p_ql, sym_ql),
+                            "RSI": f"{r_ql:.2f}", "Stop Loss": format_dynamic_price(sl_ql, sym_ql), "Take Profit": format_dynamic_price(tp_ql, sym_ql), "Abstand": abstand_str_ql,
                             "Risiko ($)": f"${actual_risk_ql:.2f}" if actual_risk_ql > 0 else "N/A",
                             "Empf. Größe": size_str_ql,
                             "_raw_cp": c_p_ql, "_raw_sl": sl_ql, "_raw_tp": tp_ql, "_raw_qty": qty_ql,
@@ -4472,8 +4545,8 @@ with tab_futures:
                                         abstand_str = f"{risk_pts:.2f} Pkt."
 
                                 tb_data.append({
-                                    "Ticker": sym, "Name": t_name, "Klasse": a_class, "Signal": signal, "Kurs": f"{c_p:.4f}", 
-                                    "RSI": f"{r:.2f}", "Stop Loss": f"{sl:.4f}", "Take Profit": f"{tp:.4f}", "Abstand": abstand_str,
+                                    "Ticker": sym, "Name": t_name, "Klasse": a_class, "Signal": signal, "Kurs": format_dynamic_price(c_p, sym), 
+                                    "RSI": f"{r:.2f}", "Stop Loss": format_dynamic_price(sl, sym), "Take Profit": format_dynamic_price(tp, sym), "Abstand": abstand_str,
                                     "Risiko ($)": f"${actual_risk:.2f}" if actual_risk > 0 else "N/A",
                                     "Empf. Größe": size_str,
                                     "_raw_cp": c_p, "_raw_sl": sl, "_raw_tp": tp, "_raw_qty": qty if 'qty' in locals() else 0, 
@@ -4892,9 +4965,9 @@ with tab_futures:
 
                             tb_data_pw.append({
                                 "Klasse": a_class, "Ticker": sym, "Name": t_name, "Master-Score": m_score_str,
-                                "Signal": signal, "Kurs": f"{c_p:.4f}", "RSI": f"{r:.2f}", "CRV": f"{crv_val:.2f}",
+                                "Signal": signal, "Kurs": format_dynamic_price(c_p, sym), "RSI": f"{r:.2f}", "CRV": f"{crv_val:.2f}",
                                 "Risiko ($)": f"${actual_risk:.2f}" if actual_risk > 0 else "N/A", "Empf. Größe": size_str,
-                                "Stop Loss": f"{sl:.4f}", "Take Profit": f"{tp:.4f}", "Abstand": abstand_str,
+                                "Stop Loss": format_dynamic_price(sl, sym), "Take Profit": format_dynamic_price(tp, sym), "Abstand": abstand_str,
                                 "Score-Details": m_score_bd, "Säulen-Details": details.get("breakdown", "N/A"),
                                 "Stresstest": f"Tagespuffer: {trades_dl} Fehltrades | Max: {trades_mdd}",
                                 "_raw_cp": c_p, "_raw_sl": sl, "_raw_tp": tp, "_raw_qty": qty, 
@@ -5525,7 +5598,26 @@ with tab_lab:
                     new_broker = st.selectbox("Broker-Profil", broker_options, index=broker_options.index(current_broker), key=f"broker_{active_acc['id']}")
                 c_s5, c_s6, c_s7, c_s8 = st.columns(4)
                 with c_s5: new_years = st.slider("Backtest-Jahre", min_value=1, max_value=6, value=int(active_acc.get("years", 5)), key=f"years_{active_acc['id']}")
-                with c_s6: new_score = st.slider("Min. Score", min_value=60, max_value=85, value=int(active_acc.get("min_score", 70)), step=5, key=f"score_{active_acc['id']}")
+                with c_s6: 
+                    tk_list = active_acc.get("tickers", [])
+                    tk_str = " ".join(tk_list).upper()
+                    if "NQ=F" in tk_str or "MNQ" in tk_str:
+                        def_score = 60
+                    elif "CL=F" in tk_str or "MCL" in tk_str:
+                        if acc_tax_cat == "prop_firm": def_score = 65
+                        else: def_score = 70
+                    elif "EURUSD=X" in tk_str:
+                        def_score = 70
+                    elif "=X" in tk_str or "DX-Y" in tk_str:
+                        def_score = 60
+                    else:
+                        def_score = 70
+                    
+                    saved_score = int(active_acc.get("min_score", def_score))
+                    if saved_score < 50: saved_score = 50
+                    
+                    new_score = st.slider("Min. Score", min_value=50, max_value=80, value=saved_score, step=5, key=f"score_{active_acc['id']}")
+                    
                 with c_s7: new_comp = st.selectbox("Zinseszins", ["active", "inactive"], index=["active", "inactive"].index(active_acc.get("compounding", "inactive")), key=f"comp_{active_acc['id']}")
                 acc_tax_cat = active_acc.get("tax_category", "private")
                 prop_profiles = {
@@ -5647,7 +5739,7 @@ with tab_lab:
                                                 diag = "🟡 Neutral"
                                                 
                                             check_res.append({
-                                                "Ticker": sym, "Kurs": f"{c_p:.2f}", "RSI": f"{r:.2f}",
+                                                "Ticker": sym, "Kurs": format_dynamic_price(c_p, sym), "RSI": f"{r:.2f}",
                                                 "Ampel": details["ampel"], "Master-Score": m_score_val,
                                                 "Diagnose": diag, "Laden": False
                                             })
@@ -6494,12 +6586,30 @@ with tab_lab:
                         st.rerun()
 
         with st.expander("🔬 Portfolio-Backtest & Validierung", expanded=False):
+            acc_tax_lab = active_acc.get("tax_category", "private")
+            if acc_tax_lab == "prop_firm":
+                st.info("🏢 **Modus: Fremdkapital / Prop-Regulativ** (Intraday-Zwang & strikte Session-Filter aktiv)")
+            else:
+                st.info("👤 **Modus: Privates Vermögensdepot** (Overnight-Swings & dynamisches Trailing aktiv)")
+
             if st.button(f"▶️ Backtest für '{active_acc['name']}' ausführen", type="primary", use_container_width=True):
                 if not active_acc.get("tickers"):
                     st.warning("⚠️ Bitte wähle zuerst Ticker aus!")
                 else:
                     with st.spinner(f"Führe Portfolio-Backtest für {len(active_acc['tickers'])} Ticker aus..."):
                         try:
+                            # --- 1. Intervall & Zeitraum ermitteln ---
+                            has_intraday_assets = False
+                            for tk in active_acc["tickers"]:
+                                tk_u = str(tk).upper()
+                                if "=F" in tk_u or "=X" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY"]):
+                                    has_intraday_assets = True
+                                    break
+                            
+                            sim_interval = "1h" if has_intraday_assets else "1d"
+                            sim_years = min(int(active_acc.get("years", 5)), 2) if has_intraday_assets else int(active_acc.get("years", 5))
+
+                            # --- 2. Gebühren ermitteln ---
                             if "Apex" in active_acc["broker_profile"] or "Tradovate" in active_acc["broker_profile"] or "CME" in active_acc["broker_profile"]: f_rate, s_rate = 0.00005, 0.0001
                             elif "FTMO" in active_acc["broker_profile"] or "MetaTrader" in active_acc["broker_profile"] or "Forex" in active_acc["broker_profile"]: f_rate, s_rate = 0.00003, 0.00002
                             elif "Bybit" in active_acc["broker_profile"]: f_rate, s_rate = 0.0006, 0.0002
@@ -6514,35 +6624,66 @@ with tab_lab:
                                 for tag, t_data in st.session_state.config.get("scan_universes", {}).items():
                                     if any(x["symbol"] == t for x in t_data.get("tickers", [])):
                                         sec = tag; break
-                                sec_map[t] = sec
-                                
-                            trades = bte.run_portfolio_backtest(
-                                active_acc["tickers"], sec_map, active_acc["years"], f_rate, s_rate, 
-                                active_acc["min_score"], active_acc["account_size"], active_acc["risk_pct"], 
-                                active_acc["compounding"], active_acc.get("trailing_stop", "active"), active_acc.get("mode", "walk_forward")
-                            )
-                            sec_map = {}
-                            for t in active_acc["tickers"]:
-                                sec = "Standard"
-                                for tag, t_data in st.session_state.config.get("scan_universes", {}).items():
-                                    if any(x["symbol"] == t for x in t_data.get("tickers", [])):
-                                        sec = tag; break
                                 if sec == "Standard":
                                     for t_fut in st.session_state.config.get("futures_tickers", []):
                                         if t_fut["symbol"] == t:
                                             sec = t_fut.get("asset_class", "Futures"); break
                                 sec_map[t] = sec
                                 
-                            acc_direction = active_acc.get("direction", "both" if active_acc.get("exit_profile", "prop_guard") in ["prop_guard", "defensive_swing", "apex_lock"] else "long")
-                            acc_exit_prof = active_acc.get("exit_profile", "prop_guard")
+                            # --- 2.5 Poka-Yoke Gebühren-Schutzschild & Limits für Futures ---
+                            has_futures = False
+                            for tk in active_acc["tickers"]:
+                                tk_u = str(tk).upper()
+                                if "=F" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY"]):
+                                    has_futures = True
+                                    break
+                            
+                            acc_tax_lab = active_acc.get("tax_category", "private")
+                            
+                            if has_futures:
+                                f_rate, s_rate = 0.00005, 0.0001
+                                m_cap = 2
+                                d_loss = 1250.0 if acc_tax_lab == "prop_firm" else None
+                            else:
+                                m_cap = None
+                                d_loss = None
+
+                            # --- 3. Exit-Profil Mapping & Richtung ermitteln ---
+                            stored_prof = active_acc.get("exit_profile", "")
+                            profile_mapping = {
+                                "Target-Lock Intraday (Apex)": "apex_lock",
+                                "Home-Run Trend (Maximal-Alpha)": "private_alpha",
+                                "Scale-Out Defensiv (Rohstoff-Swing)": "commodity_scale",
+                                "Rohstoff-Runner (Privat-Alpha)": "commodity_alpha",
+                                "Prop-Guard (Defensiv)": "prop_guard",
+                                "Defensiv-Swing (Teilgewinn ab +1.0 R)": "defensive_swing",
+                                "Forex Swing-Runner (FTMO)": "ftmo_swing"
+                            }
+                            
+                            valid_internal_keys = ["apex_lock", "private_alpha", "commodity_scale", "commodity_alpha", "prop_guard", "defensive_swing", "ftmo_swing"]
+                            
+                            if stored_prof in valid_internal_keys:
+                                acc_exit_prof = stored_prof
+                            elif stored_prof in profile_mapping:
+                                acc_exit_prof = profile_mapping[stored_prof]
+                            else:
+                                acc_exit_prof = "prop_guard" if acc_tax_lab == "prop_firm" else "private_alpha"
                                 
+                            acc_direction = active_acc.get("direction", "both" if acc_exit_prof in ["prop_guard", "defensive_swing", "apex_lock", "commodity_scale"] else "long")
+                                
+                            # --- 4. Bereinigter Aufruf ---
                             trades = bte.run_portfolio_backtest(
-                                active_acc["tickers"], sec_map, active_acc["years"], f_rate, s_rate, 
-                                active_acc["min_score"], active_acc["account_size"], active_acc["risk_pct"], 
+                                active_acc["tickers"], sec_map, sim_years, f_rate, s_rate, 
+                                active_acc.get("min_score", 60), active_acc["account_size"], active_acc["risk_pct"], 
                                 active_acc.get("compounding", "inactive"), active_acc.get("trailing_stop", "active"), active_acc.get("mode", "walk_forward"),
-                                exit_profile=acc_exit_prof, allowed_direction=acc_direction
+                                exit_profile=acc_exit_prof, allowed_direction=acc_direction, interval=sim_interval,
+                                max_contracts_cap=m_cap, daily_loss=d_loss
                             )
-                            metrics = bte.calculate_metrics(trades)
+                            
+                            if trades and len(trades) > 0:
+                                metrics = bte.calculate_metrics(trades)
+                            else:
+                                metrics = {"Total Trades": 0, "Winrate (%)": 0.0, "Profit Factor": 0.0, "Total Net PnL": 0.0, "Max Drawdown (€)": 0.0, "Ø R-Multiple": 0.0}
                             active_acc["last_backtest"] = {
                                 "timestamp": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
                                 "metrics": metrics,
@@ -6567,12 +6708,13 @@ with tab_lab:
                     is_trades = df_trades[~df_trades["is_oos"]].to_dict('records') if "is_oos" in df_trades else trades
                     oos_trades = df_trades[df_trades["is_oos"]].to_dict('records') if "is_oos" in df_trades else []
                     
-                    metrics_is = bte.calculate_metrics(is_trades) if is_trades else {}
-                    metrics_oos = bte.calculate_metrics(oos_trades) if oos_trades else {}
+                    empty_metrics = {"Total Trades": 0, "Winrate (%)": 0.0, "Profit Factor": 0.0, "Total Net PnL": 0.0, "Max Drawdown (€)": 0.0, "Ø R-Multiple": 0.0}
+                    metrics_is = bte.calculate_metrics(is_trades) if (is_trades and len(is_trades) > 0) else empty_metrics
+                    metrics_oos = bte.calculate_metrics(oos_trades) if (oos_trades and len(oos_trades) > 0) else empty_metrics
                     
-                    st.markdown("### 1. Gesamtergebnisse")
+                    st.markdown("### 1. Gesamtergebnisse (Gesamtzeitraum)")
                     m1_b, m2_b, m3_b, m4_b = st.columns(4)
-                    m1_b.metric("Total Trades", f"{metrics_all.get('Total Trades', 0)}")
+                    m1_b.metric("Total Trades", f"{metrics_all.get('Total Trades', 0)}", "Gesamt (IS + OOS)", delta_color="off")
                     m2_b.metric("Winrate", f"{metrics_all.get('Winrate (%)', 0):.2f} %")
                     m3_b.metric("Profit Factor", f"{metrics_all.get('Profit Factor', 0):.2f}")
                     m4_b.metric("Net PnL", f"{metrics_all.get('Total Net PnL', 0):.2f} €")
@@ -6585,33 +6727,32 @@ with tab_lab:
                     c_is, c_oos = st.columns(2)
                     with c_is:
                         st.markdown("**🔬 In-Sample (Training)**")
+                        st.write(f"- Trades: {metrics_is.get('Total Trades', 0)}")
                         st.write(f"- Winrate: {metrics_is.get('Winrate (%)', 0):.2f} %")
                         st.write(f"- Profit Factor: {metrics_is.get('Profit Factor', 0):.2f}")
                         st.write(f"- Net PnL: {metrics_is.get('Total Net PnL', 0):.2f} €")
                     with c_oos:
                         st.markdown("**🚀 Out-of-Sample (Validierung)**")
+                        st.write(f"- Trades: {metrics_oos.get('Total Trades', 0)}")
                         st.write(f"- Winrate: {metrics_oos.get('Winrate (%)', 0):.2f} %")
                         st.write(f"- Profit Factor: {metrics_oos.get('Profit Factor', 0):.2f}")
                         st.write(f"- Net PnL: {metrics_oos.get('Total Net PnL', 0):.2f} €")
 
-                    st.markdown("### 3. Equity-Kurve & Drawdown")
-                    df_trades['cum_pnl'] = df_trades['net_pnl'].cumsum()
-                    df_trades['equity'] = active_acc["account_size"] + df_trades['cum_pnl']
-                    df_trades['peak'] = df_trades['equity'].cummax()
-                    df_trades['drawdown_pct'] = ((df_trades['equity'] - df_trades['peak']) / df_trades['peak']) * 100
-                    
-                    oos_start_idx = df_trades[df_trades['is_oos']].index.min() if df_trades['is_oos'].any() else None
-                    
-                    fig_eq = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
-                    fig_eq.add_trace(go.Scatter(x=df_trades.index, y=df_trades['equity'], name="Equity (€)", line=dict(color='#2ca02c', width=2)), row=1, col=1)
-                    
-                    if oos_start_idx is not None:
-                        fig_eq.add_vline(x=oos_start_idx, line_dash="dash", line_color="orange", annotation_text="OOS Validierung", row=1, col=1)
-                    
-                    fig_eq.add_trace(go.Scatter(x=df_trades.index, y=df_trades['drawdown_pct'], name="Drawdown (%)", fill='tozeroy', fillcolor='rgba(214, 39, 40, 0.3)', line=dict(color='#d62728', width=1)), row=2, col=1)
-                    
-                    fig_eq.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified", showlegend=False)
-                    st.plotly_chart(fig_eq, use_container_width=True)
+                    st.markdown("### 3. Equity-Kurve & Drawdown (Gesamtverlauf)")
+                    df_all_curve = df_trades.copy()
+                    if not df_all_curve.empty:
+                        df_all_curve['cum_pnl'] = df_all_curve['net_pnl'].cumsum()
+                        df_all_curve['equity'] = active_acc["account_size"] + df_all_curve['cum_pnl']
+                        df_all_curve['peak'] = df_all_curve['equity'].cummax()
+                        df_all_curve['drawdown_pct'] = np.where(df_all_curve['peak'] != 0, ((df_all_curve['equity'] - df_all_curve['peak']) / df_all_curve['peak']) * 100, 0.0)
+                        
+                        fig_eq = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
+                        fig_eq.add_trace(go.Scatter(x=df_all_curve.index, y=df_all_curve['equity'], name="Equity (€)", line=dict(color='#2ca02c', width=2)), row=1, col=1)
+                        
+                        fig_eq.add_trace(go.Scatter(x=df_all_curve.index, y=df_all_curve['drawdown_pct'], name="Drawdown (%)", fill='tozeroy', fillcolor='rgba(214, 39, 40, 0.3)', line=dict(color='#d62728', width=1)), row=2, col=1)
+                        
+                        fig_eq.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified", showlegend=False)
+                        st.plotly_chart(fig_eq, use_container_width=True)
                     if "window" in df_trades and df_trades["window"].nunique() > 1:
 
                         st.markdown("### 4. Walk-Forward-Fenster (Übersicht)")
