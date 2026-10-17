@@ -4,3 +4,5 @@ backgroundColor = "#000000"
 secondaryBackgroundColor = "#111827"
 textColor = "#E2E8F0"
 font = "sans serif"
+[server]
+disconnectedSessionTTL = 3600

@@ -563,7 +563,7 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
                 if a_type == "future":
                     pos_size = float(int(raw_qty))
                     # Failsafe: Erzwinge 1 Kontrakt, wenn Risk/Reward-Verhältnis für Micros knapp unterschritten wird
-                    if pos_size == 0.0 and raw_qty >= 0.15:
+                    if pos_size == 0.0 and raw_qty >= 0.15 and any(e in str(ticker).upper() for e in ["CL=F", "MCL"]):
                         pos_size = 1.0
                     if max_contracts_cap is not None:
                         pos_size = float(min(pos_size, max_contracts_cap))
@@ -588,13 +588,13 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
                 trade_type = t_type
                 is_setup_b_trade = "Trend" in trade_type
                 
-                if exit_profile in ["apex_lock", "commodity_alpha", "apex_commodity"]:
+                if exit_profile in ["apex_lock", "apex_commodity"]:
                     t_exit_mode = "TARGET_LOCKED"
                     tp = entry_price + (2.0 * initial_risk * dir_m) if not is_setup_b_trade else entry_price + (2.5 * initial_risk * dir_m)
                     max_days = b_per_day
                     highest_high = entry_price
                     lowest_low = entry_price
-                elif exit_profile in ["prop_guard", "apex_commodity_scale"]:
+                elif exit_profile in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]:
                     t_exit_mode = "PROP_DEFENSIVE"
                     tp = tp_calc if not is_setup_b_trade else entry_price + (2.5 * initial_risk * dir_m)
                     if is_setup_b_trade:
@@ -907,7 +907,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                     "type": pos["type"], "entry_price": pos["entry"], "exit_price": actual_exit,
                     "reason": exit_reason, "net_pnl": net_pnl, 
                     "r_multiple": net_pnl / pos["planned_risk"] if pos["planned_risk"] > 0 else 0,
-                    "is_oos": pos.get("is_oos", False), "window": window_name, "exit_mode": t_exit_mode
+                    "is_oos": is_oos, "window": window_name, "exit_mode": t_exit_mode
                 })
                 del open_positions[ticker]
                 cooldowns[ticker] = 2
@@ -953,7 +953,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                                 "type": pos["type"] + " (Krypto-Scale 50%)", "entry_price": pos["entry"], "exit_price": actual_exit,
                                 "reason": "Scale-Out +1.5R", "net_pnl": net_pnl_scale, 
                                 "r_multiple": net_pnl_scale / (pos["planned_risk"] * 0.5) if pos["planned_risk"] > 0 else 0,
-                                "is_oos": pos.get("is_oos", False), "window": window_name, "exit_mode": t_exit_mode
+                                "is_oos": is_oos, "window": window_name, "exit_mode": t_exit_mode
                             })
                             pos["size"] -= scale_size
                             pos["scaled_out"] = True
@@ -991,7 +991,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                             "type": pos["type"] + " (Scale-Out 50%)", "entry_price": pos["entry"], "exit_price": actual_exit,
                             "reason": "Scale-Out +1.0R", "net_pnl": net_pnl_scale, 
                             "r_multiple": net_pnl_scale / (pos["planned_risk"] * 0.5) if pos["planned_risk"] > 0 else 0,
-                            "is_oos": pos.get("is_oos", False), "window": window_name, "exit_mode": t_exit_mode
+                            "is_oos": is_oos, "window": window_name, "exit_mode": t_exit_mode
                         })
                         pos["size"] -= scale_size
                         pos["scaled_out"] = True
@@ -1022,7 +1022,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                             "type": pos["type"] + " (Scale-Out 30%)", "entry_price": pos["entry"], "exit_price": actual_exit,
                             "reason": "Scale-Out +1.0R", "net_pnl": net_pnl_scale, 
                             "r_multiple": net_pnl_scale / (pos["planned_risk"] * 0.3) if pos["planned_risk"] > 0 else 0,
-                            "is_oos": pos.get("is_oos", False), "window": window_name, "exit_mode": t_exit_mode
+                            "is_oos": is_oos, "window": window_name, "exit_mode": t_exit_mode
                         })
                         pos["size"] -= scale_size
                         pos["scaled_out"] = True
@@ -1068,7 +1068,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                             "type": pos["type"] + " (Scale-Out 30%)", "entry_price": pos["entry"], "exit_price": actual_exit,
                             "reason": "Scale-Out +1.0R", "net_pnl": net_pnl_scale, 
                             "r_multiple": net_pnl_scale / (pos["planned_risk"] * 0.3) if pos["planned_risk"] > 0 else 0,
-                            "is_oos": pos.get("is_oos", False), "window": window_name, "exit_mode": t_exit_mode
+                            "is_oos": is_oos, "window": window_name, "exit_mode": t_exit_mode
                         })
                         pos["size"] -= scale_size
                         pos["scaled_out"] = True
@@ -1115,9 +1115,6 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                     
         # --- B. SIGNALGENERIERUNG ---
         if len(open_positions) >= 3: continue
-        if daily_loss_tracker >= loss_threshold:
-            continue  # Daily Circuit Breaker aktiv: Keine neuen Trades für den Rest des Tages
-        
         candidates = []
         for ticker, df in dfs.items():
             if ticker in open_positions or prev_date not in df.index or curr_date not in df.index: continue
@@ -1125,6 +1122,8 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
             if cooldowns.get(ticker, 0) > 0:
                 cooldowns[ticker] -= 1
                 continue
+            if daily_loss_tracker >= loss_threshold:
+                continue  # Daily Circuit Breaker aktiv: Keine neuen Trades für den Rest des Tages
             # Zeit- und Session-Filter für CME-Futures
             if ticker.endswith("=F") and is_intraday:
                 curr_bar = df.loc[curr_date]
@@ -1205,7 +1204,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                 raw_qty = target_risk / loss_per_unit
                 if a_type == "future":
                     pos_size = float(int(raw_qty))
-                    if pos_size == 0.0 and raw_qty >= 0.15:
+                    if pos_size == 0.0 and raw_qty >= 0.15 and any(e in str(ticker).upper() for e in ["CL=F", "MCL"]):
                         pos_size = 1.0
                     if max_contracts_cap is not None:
                         pos_size = float(min(pos_size, max_contracts_cap))
@@ -1222,11 +1221,11 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
             
             if is_valid_size:
                     is_setup_b_trade = "Trend" in t_type
-                    if exit_profile in ["apex_lock", "commodity_alpha", "apex_commodity"]:
+                    if exit_profile in ["apex_lock", "apex_commodity"]:
                         t_exit_mode = "TARGET_LOCKED"
                         tp_final = entry_price + (2.0 * abs(entry_price - initial_sl) * dir_m) if not is_setup_b_trade else entry_price + (2.5 * abs(entry_price - initial_sl) * dir_m)
                         max_d = b_per_day
-                    elif exit_profile in ["prop_guard", "apex_commodity_scale"]:
+                    elif exit_profile in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]:
                         t_exit_mode = "PROP_DEFENSIVE"
                         if is_setup_b_trade: tp_final = entry_price + (2.5 * abs(entry_price - initial_sl) * dir_m)
                         else: tp_final = tp_calc
@@ -1601,7 +1600,7 @@ if __name__ == "__main__":
     parser.add_argument("--account_size", type=float, default=10000.0, help="Startkapital des Kontos (Standard: 10000.0)")
     parser.add_argument("--risk_pct", type=float, default=1.0, help="Risiko pro Trade in Prozent (Standard: 1.0%%)")
     parser.add_argument("--trailing_stop", type=str, default="active", choices=["active", "inactive"], help="Dynamischer Trailing-Stop (active/inactive)")
-    parser.add_argument("--exit_profile", type=str, default="prop_guard", choices=["prop_guard", "private_alpha", "apex_lock", "commodity_alpha", "apex_commodity", "apex_commodity_scale", "ftmo_swing"], help="Dual-Exit-Profil")
+    parser.add_argument("--exit_profile", type=str, default="prop_guard", choices=["prop_guard", "private_alpha", "apex_lock", "commodity_alpha", "apex_commodity", "apex_commodity_scale", "defensive_swing", "commodity_scale", "ftmo_swing"], help="Dual-Exit-Profil")
     parser.add_argument("--direction", type=str, default="both", choices=["long", "short", "both"], help="Simulierte Richtung (long/short/both)")
     parser.add_argument("--interval", type=str, default="1d", choices=["1d", "1h", "15m", "4h"], help="Daten-Intervall (Standard: 1d)")
     parser.add_argument("--daily_loss", type=float, default=None, help="Tagesverlust-Limit für Sizing (Überschreibt risk_pct)")
