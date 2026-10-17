@@ -132,3 +132,7 @@ Timestamp,Ticker,Years,Fee Rate,Total Trades,Winrate (%),Profit Factor,Max Drawd
 28/09/2026 15:10:24,SOL-USD,5,1d,70,walk_forward,active,private_alpha,custom,0.005,0.002,10000.0,0.0,1.0,118,21.19,2.15,1439.01,1.14,23.33,2.44,atr_ratio,1.0
 28/09/2026 15:10:31,ETH-USD,5,1d,65,walk_forward,active,private_alpha,standard_crypto,0.0025,0.001,10000.0,0.0,1.0,188,18.62,0.77,4593.3,-0.15,17.5,0.96,atr_ratio,1.0
 28/09/2026 15:10:43,ETH-USD,5,1d,70,walk_forward,active,private_alpha,standard_crypto,0.0025,0.001,10000.0,0.0,1.0,188,18.62,0.77,4593.3,-0.15,17.5,0.96,atr_ratio,1.0
+17/10/2026 16:35:25,GC=F,2,1d,60,holdout,active,defensive_swing,custom,0.0025,0.001,50000.0,0.0,2.0,13,30.77,0.38,3815.28,-0.22,0.0,0.0,atr_ratio,1.0
+17/10/2026 16:35:57,NQ=F,2,1h,60,holdout,active,defensive_swing,apex,5e-05,0.0001,10000.0,1250.0,1.0,13,53.85,1.22,238.73,0.2,0.0,0.0,atr_ratio,1.0
+17/10/2026 16:36:09,AAPL,2,1d,70,holdout,active,defensive_swing,custom,0.0025,0.001,10000.0,0.0,1.0,5,40.0,0.39,179.64,-0.18,100.0,0.0,atr_ratio,1.0
+17/10/2026 16:40:55,NQ=F,2,1h,60,walk_forward,active,apex_lock,apex,5e-05,0.0001,10000.0,1250.0,1.0,34,52.94,1.74,357.72,0.29,60.0,3.28,atr_ratio,1.0

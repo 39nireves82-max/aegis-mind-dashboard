@@ -1,0 +1,23 @@
+ARGON PROMPTS
+
+1. Der "Grenzbereich- & Daten-Stresstest"
+
+Trading-Code bricht oft bei extremen Marktbedingungen oder fehlerhaften API-Daten (z. B. Flash Crashes, fehlende Ticks) zusammen.
+• Argon-Prompt:"Analysiere diesen Codeabschnitt ausschließlich auf logische Schwachstellen bei extremen Input-Daten. Simuliere im Geist folgende Szenarien: 1. Die API liefert NaN oder null für den aktuellen Preis. 2. Die Order-Execution verzögert sich um 5000ms (Slippage). 3. Ein rasanter Preissprung triggert Stop-Loss und Take-Profit im exakt selben Tick. Wo bricht die Logik oder das Error-Handling? Gib mir NUR die Zeilennummern und die mathematische Begründung."
+
+2. Der "Race-Condition- & State-Audit" (Wichtig für asynchrone Tracker)
+
+• Argon-Prompt:"Dieser Code läuft in einer asynchronen Schleife. Untersuche die State-Variablen auf Race Conditions oder Deadlocks. Was passiert, wenn zwei WebSocket-Events zeitgleich den State verändern wollen? Zeige mir die exakte Code-Sequenz, die korrumpiert werden könnte."
+
+3. Der "Vektor- & Performance-Stresstest" (Für Pandas / NumPy / Arrays)
+
+• Argon-Prompt:"Untersuche diesen Algorithmus auf speicherintensive Schleifen oder ineffiziente Datenstrukturen. Wie verhält sich die Laufzeit (O-Notation), wenn das historische Array von 1.000 auf 1.000.000 Kerzen anwächst? Finde versteckte SettingWithCopyWarning-Gefahren im Pandas-Code."
+
+
+
+Schritt 2: Der "Single-Interaction-Prompt" für Argon
+
+Öffnen Sie einen völlig neuen, leeren Chat mit Argon. Geben Sie ihm die Funktion und verbieten Sie ihm, den gesamten Code neu zu schreiben (denn das Neuerzeugen von langem Code frisst Ihre Token-Limits sofort auf).
+Nutzen Sie exakt diesen Prompt:
+*"Ich nutze Python und Streamlit. Analysiere diese spezifische Funktion auf [Fehler / das neue Feature X].
+WICHTIGE ANWEISUNG: Schreibe NICHT die gesamte Funktion neu. Gib mir ausschließlich den konkreten Code-Ausschnitt aus, der verändert, hinzugefügt oder ersetzt werden muss (einen sogenannten 'Diff' oder Patch). Erkläre kurz in 2 Sätzen, warum."*
