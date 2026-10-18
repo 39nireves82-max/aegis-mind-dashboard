@@ -2109,11 +2109,12 @@ with st.sidebar:
         
         konto_options = list(acc_opts_sidebar.keys()) + ["[Manuell / Sandbox-Demo]"]
         if def_acc_name_sb not in konto_options: def_acc_name_sb = konto_options[0]
-        if st.session_state.get("active_lab_account") != st.session_state.get("_last_synced_lab_account"):
-            st.session_state[f"global_acc_swing_{active_sym}"] = def_acc_name_sb
-            st.session_state["_last_synced_lab_account"] = st.session_state.get("active_lab_account")
-        sel_acc_name = st.selectbox("Ziel-Konto:", konto_options, index=konto_options.index(def_acc_name_sb), key=f"global_acc_swing_{active_sym}")
+        
+        sel_acc_name = st.selectbox("Ziel-Konto:", konto_options, index=konto_options.index(def_acc_name_sb), key="sidebar_lab_account_selector")
+        
         if sel_acc_name != "[Manuell / Sandbox-Demo]" and sel_acc_name in acc_opts_sidebar:
+            if st.session_state.get("active_lab_account") != acc_opts_sidebar[sel_acc_name]:
+                st.session_state.active_lab_account = acc_opts_sidebar[sel_acc_name]
             if acc_opts_sidebar[sel_acc_name] != st.session_state.get("active_lab_account"):
                 st.session_state.active_lab_account = acc_opts_sidebar[sel_acc_name]
                 st.session_state["_last_synced_lab_account"] = acc_opts_sidebar[sel_acc_name]
@@ -2402,11 +2403,12 @@ with st.sidebar:
         
         konto_options_pf = list(acc_opts_t3.keys()) + ["[Manuell / Sandbox-Demo]"]
         if def_acc_name_t3 not in konto_options_pf: def_acc_name_t3 = konto_options_pf[0]
-        if st.session_state.get("active_lab_account") != st.session_state.get("_last_synced_lab_account"):
-            st.session_state[f"pf_acc_global_{active_sym}"] = def_acc_name_t3
-            st.session_state["_last_synced_lab_account"] = st.session_state.get("active_lab_account")
-        sel_pf_acc_name = st.selectbox("Ziel-Konto:", konto_options_pf, index=konto_options_pf.index(def_acc_name_t3), key=f"pf_acc_global_{active_sym}")
+        
+        sel_pf_acc_name = st.selectbox("Ziel-Konto:", konto_options_pf, index=konto_options_pf.index(def_acc_name_t3), key="sidebar_lab_account_selector")
+        
         if sel_pf_acc_name != "[Manuell / Sandbox-Demo]" and sel_pf_acc_name in acc_opts_t3:
+            if st.session_state.get("active_lab_account") != acc_opts_t3[sel_pf_acc_name]:
+                st.session_state.active_lab_account = acc_opts_t3[sel_pf_acc_name]
             if acc_opts_t3[sel_pf_acc_name] != st.session_state.get("active_lab_account"):
                 st.session_state.active_lab_account = acc_opts_t3[sel_pf_acc_name]
                 st.session_state["_last_synced_lab_account"] = acc_opts_t3[sel_pf_acc_name]
