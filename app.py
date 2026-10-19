@@ -2139,6 +2139,8 @@ with st.sidebar:
                 temp_config["global_settings"]["fixed_investment"] = sandbox_risk_val
             temp_config["global_settings"]["prop_guard"] = False
             acc_prof_sb = "sandbox"
+            fee_mode_str = st.session_state.config.get("global_settings", {}).get("fee_mode", "Keine Gebühren / Raw")
+            temp_config["global_settings"]["fee_mode"] = fee_mode_str
         else:
             sel_acc_id = acc_opts_sidebar[sel_acc_name]
             sel_acc_data = st.session_state.config.get("lab_accounts", {}).get(sel_acc_id, {})
@@ -2155,11 +2157,13 @@ with st.sidebar:
             bound_capital = df_j_acc[df_j_acc['status'] == 'OPEN']['invest_eur'].sum() if not df_j_acc.empty else 0.0
             free_cash = max(0.0, effective_base_sb + realized_pnl - bound_capital)
             
-            st.caption(f"🏦 Verfügbares freies Kapital: **{free_cash:,.2f} €** (Konto: {sel_acc_name} | Profil: {get_profile_display_name(acc_prof_sb)})")
+            fee_mode_str = sel_acc_data.get("broker_profile") or sel_acc_data.get("fee_mode") or st.session_state.config.get("global_settings", {}).get("fee_mode", "Keine Gebühren / Raw")
+            st.caption(f"🏦 Verfügbares freies Kapital: **{free_cash:,.2f} €** (Konto: {sel_acc_name} | Profil: {get_profile_display_name(acc_prof_sb)} | Broker: {fee_mode_str})")
             
             temp_config["global_settings"]["account_size"] = free_cash
             temp_config["global_settings"]["risk_pct"] = sel_acc_data.get("risk_pct", 1.0)
             temp_config["global_settings"]["prop_guard"] = (acc_prof_sb in ["prop_guard", "defensive_swing", "apex_lock"])
+            temp_config["global_settings"]["fee_mode"] = fee_mode_str
         profile_conflict_blocked_swing = False
         admin_bypass_swing = st.session_state.get("admin_poka_bypass", False)
         acc_tax_swing = "private" if is_sandbox_swing else sel_acc_data.get("tax_category", "private")
@@ -2203,8 +2207,6 @@ with st.sidebar:
         pos_size_str = f"{dyn_pos_size:.2f}"
         gewinn_eur_brutto = (tp_val - einstieg_val) * dyn_pos_size * fx if tp_val > einstieg_val else 0.0
                 
-        gs = st.session_state.config.get("global_settings", {})
-        fee_mode_str = gs.get("fee_mode", "Keine Gebühren / Raw")
         if "1.49% Spread" in fee_mode_str or "Bitpanda Retail" in fee_mode_str: tp_fees_eur = max(2.00, (einstieg_val + tp_val) * dyn_pos_size * fx * 0.0199)
         elif "Bitpanda Fusion" in fee_mode_str or "0.10%" in fee_mode_str: tp_fees_eur = (einstieg_val + tp_val) * dyn_pos_size * fx * 0.0010
         elif "0.25% Gebühr" in fee_mode_str: tp_fees_eur = (einstieg_val + tp_val) * dyn_pos_size * fx * 0.0025
@@ -2453,7 +2455,8 @@ with st.sidebar:
             bound_capital_pf = df_j_acc[df_j_acc['status'] == 'OPEN']['invest_eur'].sum() if not df_j_acc.empty else 0.0
             free_cash_pf = max(0.0, effective_base_pf + realized_pnl_pf - bound_capital_pf)
             
-            st.caption(f"🏦 Verfügbares freies Kapital: **{free_cash_pf:,.2f} €** (Konto: {sel_pf_acc_name} | Profil: {get_profile_display_name(prof_name)})")
+            fee_mode_str = sel_pf_acc_data.get("broker_profile") or sel_pf_acc_data.get("fee_mode") or st.session_state.config.get("global_settings", {}).get("fee_mode", "Keine Gebühren / Raw")
+            st.caption(f"🏦 Verfügbares freies Kapital: **{free_cash_pf:,.2f} €** (Konto: {sel_pf_acc_name} | Profil: {get_profile_display_name(prof_name)} | Broker: {fee_mode_str})")
             
             # --- RESONO ENGINE ---
         has_open_pos = False
@@ -2692,8 +2695,9 @@ with st.sidebar:
         # --- RISIKO & GEBÜHREN BERECHNUNG ---
         fx_usd_eur = get_fx_rate("$", "EUR")
         
-        gs = st.session_state.config.get("global_settings", {})
-        fee_mode_str = gs.get("fee_mode", "Keine Gebühren / Raw")
+        if is_sandbox_prop:
+            fee_mode_str = st.session_state.config.get("global_settings", {}).get("fee_mode", "Keine Gebühren / Raw")
+        # fee_mode_str für reguläre Konten wurde bereits weiter oben gesetzt
         
         # Poka-Yoke Gebühren-Routing nach Asset-Klasse (Prop-Desk)
         if "Keine Gebühren / Raw" in fee_mode_str:
@@ -2884,7 +2888,7 @@ with st.sidebar:
             save_trade_journal(df_j)
             st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
             st.rerun()
-    with st.expander("⚙️ Globale Standardvorgaben (Erweitert)", expanded=False):
+    with st.expander("⚙️ Globale Vorgaben (Standard für Sandbox & Neukonten)", expanded=False):
         with st.form("sidebar_risk_form_advanced"):
             gs = st.session_state.config.get("global_settings", {})
             new_prop_guard = st.checkbox("🛡️ Prop-Firm Modus (Risiko-Limitierung global)", value=bool(gs.get("prop_guard", True)))
@@ -5203,6 +5207,7 @@ with tab_lab:
                 tr_pnl = tr_raw_pnl * fx
                 est_fees = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
                 net_tr_pnl = tr_pnl - est_fees
+                net_tr_raw_pnl = tr_raw_pnl - (est_fees / fx if fx > 0 else 0.0)
                 floating_pnl += net_tr_pnl
                 
                 sec = "Standard"
@@ -5237,7 +5242,7 @@ with tab_lab:
                 
                 open_trades_data.append({
                     "symbol": sym, "sector": sec, "entry": ep, "current": cur_p, 
-                    "pnl_eur": net_tr_pnl, "pnl_raw": tr_raw_pnl, "pnl_pct": net_pnl_pct,
+                    "pnl_eur": net_tr_pnl, "pnl_raw": net_tr_raw_pnl, "pnl_pct": net_pnl_pct,
                     "days": days_str, "fx": fx, "curr": row['currency'],
                     "qty": qty, "contract_type": c_type, "base_currency": str(row.get('base_currency', 'EUR'))
                 })
@@ -5351,11 +5356,12 @@ with tab_lab:
                         net_pnl_pct = (net_pnl_eur / inv_eur) * 100 if inv_eur > 0 else 0.0
 
                         if curr not in ["€", "EUR"]:
-                            pnl_disp = f"**PnL:** {icon} {raw_pnl:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | Netto: {net_pnl_pct:+.1f}%)"
+                            net_pnl_raw = net_pnl_eur / fx if fx > 0 else net_pnl_eur
+                            pnl_disp = f"**PnL:** {icon} {net_pnl_raw:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | Netto: {net_pnl_pct:+.2f}%)"
                         else:
-                            pnl_disp = f"**PnL:** {icon} {net_pnl_eur:+.2f} € (Netto: {net_pnl_pct:+.1f}%)"
+                            pnl_disp = f"**PnL:** {icon} {net_pnl_eur:+.2f} € (Netto: {net_pnl_pct:+.2f}%)"
                         
-                        st.markdown(f"**Kurs:** {cur_p:{fmt}} {curr} (≈ {cur_p_eur:.2f} € | Kurs: {pnl_temp:+.1f}%) | {pnl_disp}")
+                        st.markdown(f"**Kurs:** {cur_p:{fmt}} {curr} (≈ {cur_p_eur:.2f} € | Kurs: {pnl_temp:+.2f}%) | {pnl_disp}")
                         st.caption(f"Entry: {ep:{fmt}} {curr} (≈ {ep * fx:.2f} €) | Inv: {row['invest_eur']:.2f} €")
                         
                     with col2:
@@ -5803,10 +5809,10 @@ with tab_lab:
                         # Dynamische Währungsanzeige (USD vs EUR)
                         if tr.get('base_currency', 'EUR') == 'USD' or tr['curr'] == 'USD':
                             raw_val = tr.get('pnl_raw', tr['pnl_eur'] / tr['fx'] if tr['fx'] > 0 else tr['pnl_eur'])
-                            st.markdown(f"**PnL:** {icon} **${raw_val:,.2f}**")
-                            st.markdown(f"<span style='font-size:0.8em;'>💶 ≈ {tr['pnl_eur']:,.2f} € ({tr['pnl_pct']:+.1f}%)</span>", unsafe_allow_html=True)
+                            st.markdown(f"**PnL (Netto):** {icon} **${raw_val:,.2f}**")
+                            st.markdown(f"<span style='font-size:0.8em;'>💶 ≈ {tr['pnl_eur']:,.2f} € ({tr['pnl_pct']:+.2f}%)</span>", unsafe_allow_html=True)
                         else:
-                            st.markdown(f"**PnL:** {icon} **{tr['pnl_eur']:,.2f} €** ({tr['pnl_pct']:+.1f}%)")
+                            st.markdown(f"**PnL (Netto):** {icon} **{tr['pnl_eur']:,.2f} €** ({tr['pnl_pct']:+.2f}%)")
                         
                         qty_disp = f"{tr.get('qty', 0):g} {tr.get('contract_type', '')}".strip() if tr.get('contract_type', '') else f"{tr.get('qty', 0):.2f} Stk."
                         st.write(f"Size: {qty_disp}")
@@ -6040,7 +6046,19 @@ with tab_lab:
                     c_d1, c_d2, c_d3, c_d4 = st.columns(4)
                     c_d1.metric("Kaufkurs (Einstieg)", f"{float(tr_row['entry_price']):.4f}")
                     c_d2.metric("Exit-Kurs", f"{float(tr_row['exit_price']):.4f}")
-                    c_d3.metric("Realisierter Netto-PnL (€)", f"{float(tr_row['pnl_eur']):.2f} €")
+                    
+                    net_pnl_eur = float(tr_row['pnl_eur'])
+                    net_pnl_pct = float(tr_row.get('pnl_pct', 0.0))
+                    icon = "🟢" if net_pnl_eur >= 0 else "🔴"
+                    
+                    is_usd_asset = str(tr_row.get('base_currency', 'EUR')) == 'USD' or str(tr_row.get('currency', 'EUR')) == 'USD'
+                    if is_usd_asset:
+                        fx_val = float(tr_row.get('fx_rate', 1.0))
+                        net_pnl_raw = net_pnl_eur / fx_val if fx_val > 0 else net_pnl_eur
+                        c_d3.metric("Realisierter Netto-PnL", f"${net_pnl_raw:,.2f}", f"≈ {net_pnl_eur:,.2f} € ({net_pnl_pct:+.2f}%)", delta_color="normal" if net_pnl_eur >= 0 else "inverse")
+                    else:
+                        c_d3.metric("Realisierter Netto-PnL (€)", f"{net_pnl_eur:,.2f} €", f"{net_pnl_pct:+.2f}%", delta_color="normal" if net_pnl_eur >= 0 else "inverse")
+                        
                     c_d4.metric("Erzieltes R-Multiple", f"{float(tr_row['r_multiple']):.2f} R")
                     
                     st.markdown("#### 📏 Plan vs. Realität")
