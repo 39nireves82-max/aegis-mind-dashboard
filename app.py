@@ -648,6 +648,38 @@ if not user_profile_data.get("tos_accepted_at") and dev_auto_login != 'true':
 st.info("👈 **Tipp:** Klappe die linke Seitenleiste auf (Pfeil-Symbol oben links), um zum **Risikomanagement & Broker-Order-Desk** zu gelangen.")
 
 #region DATA MANAGEMENT
+import tempfile
+import time
+from contextlib import contextmanager
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+@contextmanager
+def file_lock(filepath, timeout=5.0):
+    lock_path = filepath + '.lock'
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        if fcntl:
+            start_time = time.time()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.time() - start_time >= timeout:
+                        raise TimeoutError(f"Konnte Lock für {filepath} nicht innerhalb von {timeout}s erhalten.")
+                    time.sleep(0.05)
+        yield
+    finally:
+        if fcntl:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+        os.close(fd)
 def load_trade_journal():
     cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
     user_journal = get_user_file("trade_journal.csv")
@@ -672,16 +704,39 @@ def load_trade_journal():
             return pd.DataFrame(columns=cols)
     return pd.DataFrame(columns=cols)
 
-def save_trade_journal(df):
+def save_trade_journal(df, filepath=None):
     cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
     for c in cols:
         if c not in df.columns:
             if c == 'strategy_version': df[c] = 'v1.0.0'
             elif c == 'execution_type': df[c] = 'COPILOT_MANUAL'
             else: df[c] = None
-    user_dir = os.path.join(USERS_DIR, st.session_state.username)
-    os.makedirs(user_dir, exist_ok=True)
-    df[cols].to_csv(get_user_file("trade_journal.csv"), index=False)
+            
+    target_path = filepath if filepath else get_user_file("trade_journal.csv")
+    target_dir = os.path.dirname(target_path)
+    
+    if not target_dir:
+        user_dir = os.path.join(USERS_DIR, st.session_state.username)
+        os.makedirs(user_dir, exist_ok=True)
+        target_dir = user_dir
+    else:
+        os.makedirs(target_dir, exist_ok=True)
+        
+    with file_lock(target_path):
+        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_journal_", dir=target_dir, suffix=".csv")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
+                df[cols].to_csv(f, index=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, target_path)
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+            raise e
 def push_to_github():
     try:
         subprocess.run(["git", "add", "."], cwd=BOT_DIR, check=True, capture_output=True, text=True)
@@ -5838,25 +5893,28 @@ with tab_lab:
         st.markdown("---")
 
         # --- 3. MANUELL NACHTRAGEN ---
-        with st.expander("➕ Trade manuell nachtragen (Historischer Snapshot)", expanded=False):
-            c_man_search, c_man_acc = st.columns([2, 1])
-            with c_man_search:
-                sq_man = st.text_input("Yahoo-Suche oder Ticker (für manuellen Trade):", key="search_man_acc")
-                sug_man = []
-                if sq_man and len(sq_man.strip()) >= 2:
-                    try:
-                        headers = {"User-Agent": "Mozilla/5.0"}
-                        resp = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={sq_man.strip()}&quotesCount=5", headers=headers, timeout=3)
-                        if resp.status_code == 200:
-                            for q in resp.json().get("quotes", []):
-                                if "symbol" in q: sug_man.append(f"{q['symbol']} - {q.get('longname', q.get('shortname', ''))}")
-                    except: pass
-                chosen_man_raw = st.selectbox("Treffer:", sug_man, key="sel_man_acc") if sug_man else None
+        with st.expander("➕ Trade manuell nachtragen (Historischer Snapshot)", expanded=st.session_state.get('keep_man_trade_open', False)):
+            if st.session_state.get('clear_man_search', False):
+                st.session_state['search_man_acc'] = ""
+                if 'sel_man_acc' in st.session_state:
+                    st.session_state['sel_man_acc'] = None
+                st.session_state['clear_man_search'] = False
                 
-            with c_man_acc:
-                man_acc = st.selectbox("Ziel-Konto", list(acc_opts.keys()), key="man_acc_sel")
-                
+            sq_man = st.text_input("Yahoo-Suche oder Ticker (für manuellen Trade):", key="search_man_acc")
+            sug_man = []
+            if sq_man and len(sq_man.strip()) >= 2:
+                try:
+                    headers = {"User-Agent": "Mozilla/5.0"}
+                    resp = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={sq_man.strip()}&quotesCount=5", headers=headers, timeout=3)
+                    if resp.status_code == 200:
+                        for q in resp.json().get("quotes", []):
+                            if "symbol" in q: sug_man.append(f"{q['symbol']} - {q.get('longname', q.get('shortname', ''))}")
+                except: pass
+            chosen_man_raw = st.selectbox("Treffer:", sug_man, key="sel_man_acc") if sug_man else None
+            
             with st.form("manual_trade_form"):
+                man_acc = st.selectbox("Ziel-Konto", list(acc_opts.keys()), index=current_active_idx, key="man_acc_sel")
+                
                 col_m1, col_m2, col_m3 = st.columns(3)
                 with col_m1:
                     man_date = st.date_input("Kaufdatum", value=datetime.date.today(), format="DD/MM/YYYY")
@@ -5874,6 +5932,8 @@ with tab_lab:
                         man_ticker = chosen_man_raw.split(" - ")[0]
                         man_name = chosen_man_raw.split(" - ")[1] if " - " in chosen_man_raw else man_ticker
                         
+                        fallback_toast_msg = None
+                        
                         if man_price <= 0.0:
                             import datetime as dt
                             end_dt = man_date + dt.timedelta(days=5)
@@ -5882,7 +5942,7 @@ with tab_lab:
                                 if isinstance(df_h_fallback.columns, pd.MultiIndex):
                                     df_h_fallback.columns = df_h_fallback.columns.get_level_values(0)
                                 man_price = float(df_h_fallback["Close"].dropna().iloc[0])
-                                st.toast(f"ℹ️ Kaufkurs 0.00: Historischer Schlusskurs von {man_price:.2f} verwendet.", icon="📈")
+                                fallback_toast_msg = f"ℹ️ Kaufkurs 0.00: Historischer Schlusskurs von {man_price:.2f} verwendet."
                             except Exception:
                                 st.error("Konnte historischen Kurs nicht abrufen.")
                                 st.stop()
@@ -5893,6 +5953,13 @@ with tab_lab:
                             man_size = round(man_invest_input / (man_price * fx_m), 4) if (man_price * fx_m) > 0 else 0
                         else:
                             man_size = man_size_input
+                            
+                        if man_size <= 0:
+                            st.warning("⚠️ Bitte eine gültige Stückzahl oder einen Investitionsbetrag größer als 0 € eingeben.")
+                            st.stop()
+                            
+                        if fallback_toast_msg:
+                            st.toast(fallback_toast_msg, icon="📈")
                             
                         if man_size > 0:
                             with st.spinner("Lade Historie & berechne Setup..."):
@@ -5958,6 +6025,10 @@ with tab_lab:
                                             df_j_temp = load_trade_journal()
                                             df_j_temp = pd.concat([df_j_temp, pd.DataFrame([new_man_trade])], ignore_index=True)
                                             save_trade_journal(df_j_temp)
+                                            st.session_state['clear_man_search'] = True
+                                            st.session_state['keep_man_trade_open'] = True
+                                            
+                                            # Einziger, exklusiver Erfolgs-Hinweis (Original-Logik)
                                             st.success(f"✅ Trade für {man_name} am {man_date} rekonstruiert und eingeloggt!")
                                             st.rerun()
                                 except Exception as e:
