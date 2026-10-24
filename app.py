@@ -441,17 +441,20 @@ if st.session_state.username is None:
                                 "default": {
                                     "id": "default", "name": "Privatkonto (10k)", "account_size": 10000.0, "risk_pct": 1.0, 
                                     "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Bitpanda Fusion (0.10% / 0.05%)", 
-                                    "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha"
+                                    "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha",
+                                    "broker_account_id": "", "execution_mode": "CO_PILOT"
                                 },
                                 "apex": {
                                     "id": "apex", "name": "Apex 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                                     "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Apex / CME Futures (Insti-Rate)", 
-                                    "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock"
+                                    "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock",
+                                    "broker_account_id": "", "execution_mode": "CO_PILOT"
                                 },
                                 "ftmo": {
                                     "id": "ftmo", "name": "FTMO 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                                     "compounding": "inactive", "trailing_stop": "active", "broker_profile": "FTMO / Forex (Raw Spread)", 
-                                    "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing"
+                                    "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing",
+                                    "broker_account_id": "", "execution_mode": "CO_PILOT"
                                 }
                             },
                             "scan_universes": {}
@@ -459,7 +462,7 @@ if st.session_state.username is None:
                         with open(os.path.join(user_dir, "ticker_config.json"), "w", encoding="utf-8") as f:
                             json.dump(default_config, f, indent=4)
                             
-                        cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
+                        cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
                         pd.DataFrame(columns=cols).to_csv(os.path.join(user_dir, "trade_journal.csv"), index=False)
                         
                         with open(os.path.join(user_dir, "alert_state.json"), "w", encoding="utf-8") as f:
@@ -681,7 +684,7 @@ def file_lock(filepath, timeout=5.0):
                 pass
         os.close(fd)
 def load_trade_journal():
-    cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
+    cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
     user_journal = get_user_file("trade_journal.csv")
     if os.path.exists(user_journal):
         try:
@@ -691,6 +694,8 @@ def load_trade_journal():
                     if c == 'point_value': df[c] = 1.0
                     elif c == 'base_currency': df[c] = 'EUR'
                     elif c == 'contract_type': df[c] = ''
+                    elif c == 'current_sl': df[c] = df['sl_price'] if 'sl_price' in df.columns else None
+                    elif c == 'current_risk_eur': df[c] = df['planned_risk_eur'] if 'planned_risk_eur' in df.columns else None
                     elif c == 'strategy_version': df[c] = 'v1.0.0'
                     elif c == 'execution_type': df[c] = 'COPILOT_MANUAL'
                     elif c == 'signal_price': df[c] = df['entry_price'] if 'entry_price' in df.columns else None
@@ -699,16 +704,20 @@ def load_trade_journal():
                     if c == 'strategy_version': df[c] = df[c].fillna('v1.0.0')
                     elif c == 'execution_type': df[c] = df[c].fillna('COPILOT_MANUAL')
                     elif c == 'signal_price' and 'entry_price' in df.columns: df[c] = df[c].fillna(df['entry_price'])
+                    elif c == 'current_sl' and 'sl_price' in df.columns: df[c] = df[c].fillna(df['sl_price'])
+                    elif c == 'current_risk_eur' and 'planned_risk_eur' in df.columns: df[c] = df[c].fillna(df['planned_risk_eur'])
             return df[cols]
         except Exception:
             return pd.DataFrame(columns=cols)
     return pd.DataFrame(columns=cols)
 
 def save_trade_journal(df, filepath=None):
-    cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
+    cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
     for c in cols:
         if c not in df.columns:
-            if c == 'strategy_version': df[c] = 'v1.0.0'
+            if c == 'current_sl' and 'sl_price' in df.columns: df[c] = df['sl_price']
+            elif c == 'current_risk_eur' and 'planned_risk_eur' in df.columns: df[c] = df['planned_risk_eur']
+            elif c == 'strategy_version': df[c] = 'v1.0.0'
             elif c == 'execution_type': df[c] = 'COPILOT_MANUAL'
             else: df[c] = None
             
@@ -761,17 +770,20 @@ def load_config():
             "default": {
                 "id": "default", "name": "Privatkonto (10k)", "account_size": 10000.0, "risk_pct": 1.0, 
                 "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Bitpanda Fusion (0.10% / 0.05%)", 
-                "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha"
+                "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha",
+                "broker_account_id": "", "execution_mode": "CO_PILOT"
             },
             "apex": {
                 "id": "apex", "name": "Apex 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                 "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Apex / CME Futures (Insti-Rate)", 
-                "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock"
+                "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock",
+                "broker_account_id": "", "execution_mode": "LIVE_AUTO"
             },
             "ftmo": {
                 "id": "ftmo", "name": "FTMO 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                 "compounding": "inactive", "trailing_stop": "active", "broker_profile": "FTMO / Forex (Raw Spread)", 
-                "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing"
+                "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing",
+                "broker_account_id": "", "execution_mode": "CO_PILOT"
             }
         },
         "scan_universes": {}
@@ -2168,12 +2180,11 @@ with st.sidebar:
         sel_acc_name = st.selectbox("Ziel-Konto:", konto_options, index=konto_options.index(def_acc_name_sb), key="sidebar_lab_account_selector")
         
         if sel_acc_name != "[Manuell / Sandbox-Demo]" and sel_acc_name in acc_opts_sidebar:
-            if st.session_state.get("active_lab_account") != acc_opts_sidebar[sel_acc_name]:
-                st.session_state.active_lab_account = acc_opts_sidebar[sel_acc_name]
-            if acc_opts_sidebar[sel_acc_name] != st.session_state.get("active_lab_account"):
-                st.session_state.active_lab_account = acc_opts_sidebar[sel_acc_name]
-                st.session_state["_last_synced_lab_account"] = acc_opts_sidebar[sel_acc_name]
-        
+            chosen_acc_id = acc_opts_sidebar[sel_acc_name]
+            if st.session_state.get("active_lab_account") != chosen_acc_id:
+                st.session_state.active_lab_account = chosen_acc_id
+                st.session_state["_last_synced_lab_account"] = chosen_acc_id
+
         temp_config = json.loads(json.dumps(st.session_state.config))
         is_sandbox_swing = (sel_acc_name == "[Manuell / Sandbox-Demo]")
         
@@ -2417,9 +2428,10 @@ with st.sidebar:
                     'entry_date': datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
                     'exit_date': "", 'symbol': active_sym, 'name': row_data.get('Name', active_sym),
                     'direction': 'Long', 'signal_price': einstieg_val, 'entry_price': real_fill_swing, 'currency': curr,
-                    'fx_rate': fx, 'position_size': dyn_pos_size, 'invest_eur': dyn_inv_cap_real,
-                    'sl_price': sl_val, 'tp_price': tp_val, 'planned_risk_eur': dyn_risk_eur_real,
-                    'est_fees_eur': est_fees, 'master_score': sort_score, 'setup_type': row_data.get("Ampel", ""),
+                    'fx_rate': fx, 'position_size': dyn_pos_size, 'contract_type': '', 'point_value': 1.0, 'base_currency': 'EUR',
+                    'invest_eur': dyn_inv_cap_real,
+                    'sl_price': sl_val, 'current_sl': sl_val, 'tp_price': tp_val, 'planned_risk_eur': dyn_risk_eur_real,
+                    'current_risk_eur': dyn_risk_eur_real, 'est_fees_eur': est_fees, 'master_score': sort_score, 'setup_type': row_data.get("Ampel", ""),
                     'mc_robustness': row_data.get("Monte-Carlo", ""), 'atr_days': expected_days,
                     'exit_mode': final_exit_mode_swing, 'status': 'OPEN', 'exit_price': None, 'pnl_eur': None, 'pnl_pct': None,
                     'r_multiple': None, 'exit_reason': "", 'notes': trade_notes_swing,
@@ -2464,11 +2476,12 @@ with st.sidebar:
         sel_pf_acc_name = st.selectbox("Ziel-Konto:", konto_options_pf, index=konto_options_pf.index(def_acc_name_t3), key="sidebar_lab_account_selector")
         
         if sel_pf_acc_name != "[Manuell / Sandbox-Demo]" and sel_pf_acc_name in acc_opts_t3:
-            if st.session_state.get("active_lab_account") != acc_opts_t3[sel_pf_acc_name]:
-                st.session_state.active_lab_account = acc_opts_t3[sel_pf_acc_name]
-            if acc_opts_t3[sel_pf_acc_name] != st.session_state.get("active_lab_account"):
-                st.session_state.active_lab_account = acc_opts_t3[sel_pf_acc_name]
-                st.session_state["_last_synced_lab_account"] = acc_opts_t3[sel_pf_acc_name]
+            chosen_pf_id = acc_opts_t3[sel_pf_acc_name]
+            if st.session_state.get("active_lab_account") != chosen_pf_id:
+                st.session_state.active_lab_account = chosen_pf_id
+                st.session_state["_last_synced_lab_account"] = chosen_pf_id
+
+        is_sandbox_prop = (sel_pf_acc_name == "[Manuell / Sandbox-Demo]")
         
         is_sandbox_prop = (sel_pf_acc_name == "[Manuell / Sandbox-Demo]")
         
@@ -2931,8 +2944,8 @@ with st.sidebar:
                 'signal_price': raw_cp, 'entry_price': real_fill_prop, 'currency': get_currency_symbol(active_sym),
                 'fx_rate': fx_usd_eur, 'position_size': qty_dyn,
                 'contract_type': c_type, 'point_value': pt_val, 'base_currency': "USD",
-                'invest_eur': 0, 'sl_price': raw_sl, 'tp_price': raw_tp, 
-                'planned_risk_eur': planned_risk_eur_real, 'est_fees_eur': est_fees_eur_real,
+                'invest_eur': 0, 'sl_price': raw_sl, 'current_sl': raw_sl, 'tp_price': raw_tp, 
+                'planned_risk_eur': planned_risk_eur_real, 'current_risk_eur': planned_risk_eur_real, 'est_fees_eur': est_fees_eur_real,
                 'master_score': row_data.get("Sort_Score", 0), 'setup_type': row_data.get("Signal", ""),
                 'mc_robustness': "Prop-Firm Validated", 'atr_days': exp_days_t3,
                 'exit_mode': final_exit_mode_prop, 'status': 'OPEN', 'exit_price': None, 'pnl_eur': None, 'pnl_pct': None,
@@ -5191,14 +5204,19 @@ with tab_futures:
 
 #region TAB 4 UI
 with tab_lab:
-    st.header("🏦 Operativer Konten- & Portfolio-Desk")
+    tab_lab_ops, tab_lab_strat = st.tabs(["🏦 Live-Desk & Journal", "🧪 Strategie-Labor & Optimizer"])
+    
+    _acc_toast = st.session_state.pop("account_created_toast", None)
+    if _acc_toast:
+        st.toast(_acc_toast, icon="✅")
     
     if "lab_accounts" not in st.session_state.config or not st.session_state.config["lab_accounts"]:
         st.session_state.config["lab_accounts"] = {
             "default": {
                 "id": "default", "name": "Standard Portfolio", "account_size": 10000.0, "risk_pct": 1.0, 
                 "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Fusion (0.10% / 0.05%)", 
-                "min_score": 70, "years": 5, "tickers": [], "last_backtest": None
+                "min_score": 70, "years": 5, "tickers": [], "last_backtest": None,
+                "broker_account_id": "", "execution_mode": "CO_PILOT"
             }
         }
         save_config(st.session_state.config)
@@ -5209,21 +5227,36 @@ with tab_lab:
     if "active_lab_account" not in st.session_state or st.session_state.active_lab_account not in accounts:
         st.session_state.active_lab_account = list(accounts.keys())[0]
         
-    current_active_idx = list(acc_opts.values()).index(st.session_state.active_lab_account) if st.session_state.active_lab_account in acc_opts.values() else 0
-    sel_global_acc_name = st.selectbox(
-        "🏦 Aktives Konto (Global):", 
-        list(acc_opts.keys()), 
-        index=current_active_idx,
-        key="global_active_lab_account_select"
-    )
-    
-    if acc_opts[sel_global_acc_name] != st.session_state.active_lab_account:
-        st.session_state.active_lab_account = acc_opts[sel_global_acc_name]
-        st.rerun()
-        
     active_acc = accounts[st.session_state.active_lab_account]
-
-    tab_lab_ops, tab_lab_strat = st.tabs(["🏦 Live-Desk & Journal", "🧪 Strategie-Labor & Optimizer"])
+    cur_mode = active_acc.get("execution_mode", "CO_PILOT")
+    if st.session_state.get("role") != "admin" and cur_mode == "LIVE_AUTO":
+        cur_mode = "CO_PILOT"
+        
+    if cur_mode == "LIVE_AUTO":
+        glow_color, glow_shadow = "#EF4444", "0 0 16px rgba(239, 68, 68, 0.8), 0 0 32px rgba(239, 68, 68, 0.4)"
+        status_text = "🔴 LIVE DESK [SCHARF — VOLLAUTOMATIK]"
+    elif cur_mode == "CO_PILOT":
+        glow_color, glow_shadow = "#3B82F6", "0 0 14px rgba(59, 130, 246, 0.7)"
+        status_text = "🔵 CO-PILOT [MANUELLE AUSFÜHRUNG]"
+    else:
+        glow_color, glow_shadow = "#8B5CF6", "0 0 14px rgba(139, 92, 246, 0.7)"
+        status_text = "🧪 LABOR [SANDBOX — QUEUE PHYSISCH GESPERRT]"
+        
+    st.markdown(f"""
+    <style>
+        .ambiente-leiste {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 3px;
+            background-color: {glow_color};
+            box-shadow: {glow_shadow};
+            z-index: 99999;
+        }}
+    </style>
+    <div class="ambiente-leiste"></div>
+    """, unsafe_allow_html=True)
     
     # --- KPIs & Journal Data laden (Vorab-Berechnung für das aktive Konto) ---
     df_j = load_trade_journal()
@@ -5315,6 +5348,78 @@ with tab_lab:
     # ==========================================
     with tab_lab_ops:
         
+        st.header("🏦 Operativer Konten- & Portfolio-Desk")
+        
+        # --- COCKPIT-MODUS-BANNER ---
+        cur_mode = active_acc.get("execution_mode", "CO_PILOT")
+        if st.session_state.get("role") != "admin" and cur_mode == "LIVE_AUTO":
+            cur_mode = "CO_PILOT"
+            active_acc["execution_mode"] = "CO_PILOT"
+            st.session_state.config["lab_accounts"][st.session_state.active_lab_account]["execution_mode"] = "CO_PILOT"
+            save_config(st.session_state.config)
+            
+        if cur_mode == "LIVE_AUTO":
+            bg_col, border_col = "rgba(239, 68, 68, 0.15)", "#EF4444"
+            mode_text = "🔴 LIVE DESK — SCHARF (VOLLAUTOMATIK)"
+            glow_color, glow_shadow = "#EF4444", "0 0 16px rgba(239, 68, 68, 0.8), 0 0 32px rgba(239, 68, 68, 0.4)"
+        elif cur_mode == "CO_PILOT":
+            bg_col, border_col = "rgba(59, 130, 246, 0.15)", "#3B82F6"
+            mode_text = "🔵 CO-PILOT — MANUELLE AUSFÜHRUNG"
+            glow_color, glow_shadow = "#3B82F6", "0 0 14px rgba(59, 130, 246, 0.7)"
+        else:
+            bg_col, border_col = "rgba(139, 92, 246, 0.15)", "#8B5CF6"
+            mode_text = "🧪 LABOR — TESTKONTO (QUEUE PHYSISCH GESPERRT)"
+            glow_color, glow_shadow = "#8B5CF6", "0 0 14px rgba(139, 92, 246, 0.7)"
+
+        st.markdown(f'''
+        <style>
+            .ambiente-leiste {{
+                position: fixed;
+                top: 0; left: 0; width: 100vw; height: 3px;
+                background-color: {glow_color};
+                box-shadow: {glow_shadow};
+                z-index: 99999;
+            }}
+        </style>
+        <div class="ambiente-leiste"></div>
+        ''', unsafe_allow_html=True)
+        
+        logo_html = ""
+        if cur_mode == "LIVE_AUTO":
+            logo_path_exec = os.path.join(BASE_DIR, "assets", "executor_logo.png")
+            if not os.path.exists(logo_path_exec): logo_path_exec = os.path.join(BASE_DIR, "assets", "aegis_icon2.png")
+            if os.path.exists(logo_path_exec):
+                try:
+                    with open(logo_path_exec, "rb") as f:
+                        exec_b64 = base64.b64encode(f.read()).decode()
+                    logo_html = f'<img src="data:image/png;base64,{exec_b64}" style="max-height: 180px; width: 100%; object-fit: contain; filter: drop-shadow(0px 0px 20px rgba(239,68,68,0.5));">'
+                except: pass
+                
+        c_banner, c_logo = st.columns([2.5, 1], vertical_alignment="center")
+        
+        with c_banner:
+            st.markdown(f'''
+            <div style="background-color: {bg_col}; border: 2px solid {border_col}; border-radius: 8px; padding: 18px 24px; margin-bottom: 20px;">
+                <span style="color: {border_col}; font-size: 1.45rem; font-weight: 800; letter-spacing: 0.5px;">{mode_text}</span>
+            </div>
+            ''', unsafe_allow_html=True)
+            
+        with c_logo:
+            if logo_html:
+                st.markdown(f'<div style="display: flex; justify-content: flex-end; align-items: center; padding-right: 15px; margin-bottom: 20px;">{logo_html}</div>', unsafe_allow_html=True)
+        
+        current_active_idx = list(acc_opts.values()).index(st.session_state.active_lab_account) if st.session_state.active_lab_account in acc_opts.values() else 0
+        
+        sel_global_acc_name = st.selectbox(
+            "🏦 Aktives Konto (Global):", 
+            list(acc_opts.keys()), 
+            index=current_active_idx
+        )
+        
+        if acc_opts[sel_global_acc_name] != st.session_state.active_lab_account:
+            st.session_state.active_lab_account = acc_opts[sel_global_acc_name]
+            st.rerun()
+
         # --- 1. LIVE JOURNAL (OFFENE TRADES) ---
         st.header("📓 Live-Performance & Trade-Journal")
         
@@ -5410,11 +5515,14 @@ with tab_lab:
                             inv_eur = ep * qty * point_val * fx
                         net_pnl_pct = (net_pnl_eur / inv_eur) * 100 if inv_eur > 0 else 0.0
 
+                        open_risk_eur = float(row.get("planned_risk_eur", 0.0))
+                        current_r = (net_pnl_eur / open_risk_eur) if open_risk_eur > 0 else 0.0
+
                         if curr not in ["€", "EUR"]:
                             net_pnl_raw = net_pnl_eur / fx if fx > 0 else net_pnl_eur
-                            pnl_disp = f"**PnL:** {icon} {net_pnl_raw:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | Netto: {net_pnl_pct:+.2f}%)"
+                            pnl_disp = f"**PnL:** {icon} {net_pnl_raw:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | Netto: {net_pnl_pct:+.2f}% | {current_r:+.2f} R)"
                         else:
-                            pnl_disp = f"**PnL:** {icon} {net_pnl_eur:+.2f} € (Netto: {net_pnl_pct:+.2f}%)"
+                            pnl_disp = f"**PnL:** {icon} {net_pnl_eur:+.2f} € (Netto: {net_pnl_pct:+.2f}% | {current_r:+.2f} R)"
                         
                         st.markdown(f"**Kurs:** {cur_p:{fmt}} {curr} (≈ {cur_p_eur:.2f} € | Kurs: {pnl_temp:+.2f}%) | {pnl_disp}")
                         st.caption(f"Entry: {ep:{fmt}} {curr} (≈ {ep * fx:.2f} €) | Inv: {row['invest_eur']:.2f} €")
@@ -5422,7 +5530,12 @@ with tab_lab:
                     with col2:
                         sl = float(row['sl_price'])
                         tp = float(row['tp_price'])
+                        current_sl = float(row.get('current_sl', sl))
+                        if pd.isna(current_sl): current_sl = sl
+                        
                         st.write(f"Initial-SL: {sl:{fmt}} {curr} (≈ {sl * fx:.2f} €)")
+                        if current_sl != sl:
+                            st.markdown(f"🛡️ **Aktueller SL:** `{current_sl:{fmt}} {curr}`")
                         st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
                         
                         if tp > ep and ep > sl:
@@ -5440,16 +5553,57 @@ with tab_lab:
 
                             sym_str = str(row['symbol']).upper()
                             is_crypto_asset = any(sym_str.endswith(ext) for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF"])
+                            
+                            # Trailing-Stop Kalkulation basiert weiterhin auf dem Original-Einstieg/SL!
                             rec_sl, sl_status = calculate_trailing_stop(cur_p, ep, sl, tp, atr_proxy, exit_mode=exit_mode_val, is_crypto=is_crypto_asset, direction=row['direction'])
                             st.write("")
-                            is_improved = (rec_sl > sl) if row['direction'] == 'Long' else (rec_sl < sl)
+                            is_improved = (rec_sl > current_sl) if row['direction'] == 'Long' else (rec_sl < current_sl)
                             if is_improved:
                                 st.success(f"🎯 **Empf. Trail-SL: {rec_sl:{fmt}} {curr}**\n\n{sl_status}")
+                                if st.button("🎯 SL übernehmen", key=f"btn_apply_sl_{row['id']}_{idx}", use_container_width=True):
+                                    full_journal = load_trade_journal()
+                                    t_idx = full_journal[full_journal['id'] == row['id']].index[0]
+                                    
+                                    full_journal.at[t_idx, 'current_sl'] = rec_sl
+                                    
+                                    t_entry = float(full_journal.at[t_idx, 'entry_price'])
+                                    t_dir = str(full_journal.at[t_idx, 'direction'])
+                                    dist = (t_entry - rec_sl) if t_dir == 'Long' else (rec_sl - t_entry)
+                                    
+                                    t_sym_u = str(full_journal.at[t_idx, 'symbol']).upper()
+                                    if "=X" in t_sym_u and "JPY" in t_sym_u:
+                                        dist = dist / 100.0
+                                        
+                                    t_qty = float(full_journal.at[t_idx, 'position_size'])
+                                    t_pv_raw = full_journal.at[t_idx, 'point_value']
+                                    t_pv = float(t_pv_raw) if pd.notna(t_pv_raw) else 1.0
+                                    t_fx_raw = full_journal.at[t_idx, 'fx_rate']
+                                    t_fx = float(t_fx_raw) if pd.notna(t_fx_raw) and float(t_fx_raw) > 0 else 1.0
+                                    
+                                    new_risk = dist * t_qty * t_pv * t_fx
+                                    if new_risk <= 0.0:
+                                        new_risk = 0.0
+                                        
+                                    full_journal.at[t_idx, 'current_risk_eur'] = new_risk
+                                        
+                                    save_trade_journal(full_journal)
+                                    st.toast(f"✅ Stop-Loss für {row['symbol']} auf {rec_sl:{fmt}} nachgezogen!", icon="🎯")
+                                    st.rerun()
                             else:
                                 st.markdown(f"🛡️ **Status:** {sl_status}")
                                 
                     with col3:
-                        st.write(f"Risk: {row['planned_risk_eur']:.2f} €")
+                        p_val = row.get('planned_risk_eur')
+                        p_risk = float(p_val) if pd.notna(p_val) else 0.0
+                        c_val = row.get('current_risk_eur')
+                        c_risk = float(c_val) if pd.notna(c_val) else p_risk
+
+                        st.write(f"Initial-Risk: {p_risk:.2f} €")
+                        if c_risk < p_risk:
+                            if c_risk <= 0.0:
+                                st.markdown("🛡️ **Aktuelles Risk: 0.00 € (Risk-Free)**")
+                            else:
+                                st.markdown(f"🛡️ **Aktuelles Risk: {c_risk:.2f} €**")
                         st.write(f"Score: {row['master_score']}")
                         
                     with col4:
@@ -5457,7 +5611,7 @@ with tab_lab:
                         
                         def_price = ep
                         if "Take Profit" in close_reason: def_price = tp
-                        elif "Stop Loss" in close_reason or "Trailing" in close_reason: def_price = sl
+                        elif "Stop Loss" in close_reason or "Trailing" in close_reason: def_price = current_sl
                         
                         c_ex1, c_ex2 = st.columns([2, 1])
                         with c_ex1:
@@ -5534,23 +5688,32 @@ with tab_lab:
             st.write(""); st.write("")
             if st.button("➕ Neues Konto", use_container_width=True):
                 new_id = str(uuid.uuid4())[:8]
+                new_name = f"Konto {len(accounts)+1}"
                 accounts[new_id] = {
-                    "id": new_id, "name": f"Konto {len(accounts)+1}", "account_size": 10000.0, "risk_pct": 1.0, 
+                    "id": new_id, "name": new_name, "account_size": 10000.0, "risk_pct": 1.0, 
                     "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Fusion (0.10% / 0.05%)", 
-                    "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private"
+                    "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private",
+                    "broker_account_id": "", "execution_mode": "CO_PILOT"
                 }
                 st.session_state.active_lab_account = new_id
                 save_config(st.session_state.config)
+                st.session_state["account_created_toast"] = f"✅ Neues Konto '{new_name}' erfolgreich angelegt und aktiviert!"
                 st.rerun()
-                
         with c_acc3:
             st.write(""); st.write("")
             if len(accounts) > 1:
-                if st.button("🗑️ Konto löschen", use_container_width=True):
-                    del accounts[st.session_state.active_lab_account]
-                    st.session_state.active_lab_account = list(accounts.keys())[0]
-                    save_config(st.session_state.config)
-                    st.rerun()
+                if "acc_del_nonce" not in st.session_state: st.session_state.acc_del_nonce = 0
+                with st.popover("🗑️ Konto löschen", use_container_width=True, key=f"pop_del_acc_{st.session_state.active_lab_account}_{st.session_state.acc_del_nonce}"):
+                    st.error(f"⚠️ Konto **{active_acc['name']}** wirklich unwiderruflich löschen?\n\nEinstellungen und Kader-Zuordnungen dieses Kontos gehen verloren.")
+                    confirm_check = st.checkbox(f"Ja, ich möchte das Konto '{active_acc['name']}' unwiderruflich löschen.", key=f"chk_del_confirm_{active_acc['id']}")
+                    if st.button("💥 Ja, Konto endgültig löschen", type="primary", use_container_width=True, disabled=not confirm_check, key=f"btn_del_acc_confirm_{active_acc['id']}"):
+                        deleted_name = active_acc['name']
+                        del accounts[st.session_state.active_lab_account]
+                        st.session_state.acc_del_nonce += 1
+                        st.session_state.active_lab_account = list(accounts.keys())[0]
+                        save_config(st.session_state.config)
+                        st.toast(f"🗑️ Konto '{deleted_name}' erfolgreich gelöscht!", icon="✅")
+                        st.rerun()
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Basis-Kapital", f"{effective_base_cap:,.2f} €", delta=f"{total_deposits - total_withdrawals:+,.2f} € Netto-Zufluss" if (total_deposits or total_withdrawals) else None)
@@ -5592,8 +5755,10 @@ with tab_lab:
                         'base_currency': 'EUR',
                         'invest_eur': abs(signed_amount) if is_deposit else 0.0,
                         'sl_price': 0.0,
+                        'current_sl': 0.0,
                         'tp_price': 0.0,
                         'planned_risk_eur': 0.0,
+                        'current_risk_eur': 0.0,
                         'est_fees_eur': 0.0,
                         'master_score': 0,
                         'setup_type': 'DEPOSIT' if is_deposit else 'WITHDRAWAL',
@@ -5616,19 +5781,6 @@ with tab_lab:
                     st.rerun()
 
         with st.expander(f"⚙️ Kontodaten bearbeiten: {active_acc['name']}", expanded=False):
-            acc_tax_cat = active_acc.get("tax_category", "private")
-            cat_map = {"prop_firm": "🏢 Fremdkapital / Prop-Challenge", "private": "👤 Privates Vermögensdepot"}
-            cat_rev_map = {v: k for k, v in cat_map.items()}
-            
-            new_cat_label = st.selectbox("Konto-Kategorie (Zweck)", list(cat_map.values()), index=list(cat_map.keys()).index(acc_tax_cat), key=f"tax_out_{active_acc['id']}")
-            new_tax_cat_val = cat_rev_map[new_cat_label]
-            
-            if new_tax_cat_val != acc_tax_cat:
-                active_acc["tax_category"] = new_tax_cat_val
-                st.session_state.config["lab_accounts"][active_acc["id"]] = active_acc
-                save_config(st.session_state.config)
-                st.rerun()
-
             with st.form(f"form_acc_{active_acc['id']}"):
                 c_s1, c_s2, c_s3, c_s4 = st.columns(4)
                 with c_s1: new_name = st.text_input("Kontoname", value=active_acc.get("name", ""), key=f"name_{active_acc['id']}")
@@ -5645,7 +5797,6 @@ with tab_lab:
                     ]
                     current_broker = active_acc.get("broker_profile", "Bitpanda Fusion (0.10% / 0.05%)")
                     
-                    # Abwärtskompatibilität gewährleisten
                     if current_broker == "Apex / CME Futures (Insti-Rate)": current_broker = "Apex / Tradovate (Futures Insti-Rate)"
                     elif current_broker == "FTMO / Forex (Raw Spread)": current_broker = "FTMO / MetaTrader 5 (Forex Raw Spread)"
                     elif current_broker == "Aktien Broker (1.00 € Flat)": current_broker = "Interactive Brokers / Flatex (Aktien Flat)"
@@ -5659,30 +5810,25 @@ with tab_lab:
                         elif "Bybit" in current_broker: current_broker = "Bybit / Krypto-Börse (0.06% / 0.02%)"
                         else: current_broker = "Bitpanda Fusion (0.10% / 0.05%)"
                     new_broker = st.selectbox("Broker-Profil", broker_options, index=broker_options.index(current_broker), key=f"broker_{active_acc['id']}")
+
                 c_s5, c_s6, c_s7, c_s8 = st.columns(4)
                 with c_s5: new_years = st.slider("Backtest-Jahre", min_value=1, max_value=6, value=int(active_acc.get("years", 5)), key=f"years_{active_acc['id']}")
                 with c_s6: 
+                    acc_tax_cat = active_acc.get("tax_category", "private")
                     tk_list = active_acc.get("tickers", [])
                     tk_str = " ".join(tk_list).upper()
-                    if "NQ=F" in tk_str or "MNQ" in tk_str:
-                        def_score = 60
-                    elif "CL=F" in tk_str or "MCL" in tk_str:
-                        if acc_tax_cat == "prop_firm": def_score = 65
-                        else: def_score = 70
-                    elif "EURUSD=X" in tk_str:
-                        def_score = 70
-                    elif "=X" in tk_str or "DX-Y" in tk_str:
-                        def_score = 60
-                    else:
-                        def_score = 70
+                    if "NQ=F" in tk_str or "MNQ" in tk_str: def_score = 60
+                    elif "CL=F" in tk_str or "MCL" in tk_str: def_score = 65 if acc_tax_cat == "prop_firm" else 70
+                    elif "EURUSD=X" in tk_str: def_score = 70
+                    elif "=X" in tk_str or "DX-Y" in tk_str: def_score = 60
+                    else: def_score = 70
                     
                     saved_score = int(active_acc.get("min_score", def_score))
                     if saved_score < 50: saved_score = 50
-                    
                     new_score = st.slider("Min. Score", min_value=50, max_value=80, value=saved_score, step=5, key=f"score_{active_acc['id']}")
                     
                 with c_s7: new_comp = st.selectbox("Zinseszins", ["active", "inactive"], index=["active", "inactive"].index(active_acc.get("compounding", "inactive")), key=f"comp_{active_acc['id']}")
-                acc_tax_cat = active_acc.get("tax_category", "private")
+                
                 prop_profiles = {
                     "Target-Lock Intraday (Apex)": "apex_lock",
                     "Forex Swing-Runner (FTMO)": "ftmo_swing"
@@ -5693,7 +5839,6 @@ with tab_lab:
                     "Scale-Out Defensiv (Rohstoff-Swing)": "commodity_scale",
                     "Defensiv-Swing (Teilgewinn ab +1.0 R)": "defensive_swing"
                 }
-                
                 cur_prof = active_acc.get("exit_profile", "prop_guard")
                 if cur_prof == "prop_guard": cur_prof = "defensive_swing"
                 elif cur_prof == "apex_commodity_scale": cur_prof = "commodity_scale"
@@ -5710,8 +5855,29 @@ with tab_lab:
                     selected_label = st.selectbox("Exit-Profil", labels, index=labels.index(default_label), key=f"prof_{active_acc['id']}")
                     chosen_exit_profile = available_profiles[selected_label]
                 
-                def_dir = "both" if chosen_exit_profile in ["prop_guard", "defensive_swing", "apex_lock"] else "long"
-                new_direction = st.selectbox("Handelsrichtung: Bidirektional (Both) / Long-Only / Short-Only", ["both", "long", "short"], index=["both", "long", "short"].index(active_acc.get("direction", def_dir)), key=f"dir_{active_acc['id']}")
+                c_s9, c_s10, c_s11, c_s12 = st.columns(4)
+                with c_s9:
+                    cat_map = {"prop_firm": "🏢 Fremdkapital / Prop-Challenge", "private": "👤 Privates Vermögensdepot"}
+                    cat_rev_map = {v: k for k, v in cat_map.items()}
+                    new_cat_label = st.selectbox("Konto-Kategorie (Zweck)", list(cat_map.values()), index=list(cat_map.keys()).index(acc_tax_cat), key=f"tax_in_{active_acc['id']}")
+                    new_tax_cat_val = cat_rev_map[new_cat_label]
+                with c_s10:
+                    def_dir = "both" if chosen_exit_profile in ["prop_guard", "defensive_swing", "apex_lock"] else "long"
+                    new_direction = st.selectbox("Handelsrichtung", ["both", "long", "short"], index=["both", "long", "short"].index(active_acc.get("direction", def_dir)), key=f"dir_{active_acc['id']}")
+                with c_s11:
+                    new_broker_id = st.text_input("Broker-ID / Kontonummer", value=active_acc.get("broker_account_id", ""), placeholder="DEMO9530978", help="Leer lassen für automatische Erkennung AUTO_ROUTED", key=f"brk_id_{active_acc['id']}")
+                with c_s12:
+                    if st.session_state.get("role") == "admin":
+                        exec_opts = ["LIVE_AUTO", "CO_PILOT", "EXPERIMENT"]
+                    else:
+                        exec_opts = ["CO_PILOT", "EXPERIMENT"]
+                        
+                    cur_exec = active_acc.get("execution_mode", "CO_PILOT")
+                    if cur_exec not in exec_opts:
+                        cur_exec = "CO_PILOT"
+                        
+                    new_exec_mode = st.selectbox("Ausführungs-Modus", exec_opts, index=exec_opts.index(cur_exec), key=f"exec_{active_acc['id']}")
+
                 if st.form_submit_button("💾 Kontodaten speichern", use_container_width=True):
                     active_acc.update({
                         "name": new_name, 
@@ -5722,7 +5888,10 @@ with tab_lab:
                         "min_score": new_score, 
                         "compounding": new_comp, 
                         "exit_profile": chosen_exit_profile, 
-                        "direction": new_direction, 
+                        "direction": new_direction,
+                        "tax_category": new_tax_cat_val,
+                        "broker_account_id": str(new_broker_id).strip(),
+                        "execution_mode": new_exec_mode,
                         "mode": active_acc.get("mode", "walk_forward"), 
                         "trailing_stop": active_acc.get("trailing_stop", "active")
                     })
@@ -6012,9 +6181,10 @@ with tab_lab:
                                                 'entry_date': dt_str, 'exit_date': "", 'symbol': man_ticker,
                                                 'name': man_name, 'direction': man_dir,
                                                 'signal_price': man_price, 'entry_price': man_price, 'currency': get_currency_symbol(man_ticker),
-                                                'fx_rate': fx_m, 'position_size': man_size, 'invest_eur': inv_eur,
-                                                'sl_price': sl_m, 'tp_price': tp_m, 'planned_risk_eur': risk_eur,
-                                                'est_fees_eur': est_fees, 'master_score': m_score,
+                                                'fx_rate': fx_m, 'position_size': man_size, 'contract_type': '', 'point_value': 1.0, 'base_currency': 'EUR',
+                                                'invest_eur': inv_eur,
+                                                'sl_price': sl_m, 'current_sl': sl_m, 'tp_price': tp_m, 'planned_risk_eur': risk_eur,
+                                                'current_risk_eur': risk_eur, 'est_fees_eur': est_fees, 'master_score': m_score,
                                                 'setup_type': details_h.get("ampel", "Manuell"),
                                                 'mc_robustness': "N/A", 'atr_days': exp_days,
                                                 'exit_mode': determined_exit_mode,
@@ -6076,7 +6246,7 @@ with tab_lab:
 
             df_closed_list['Haltedauer'] = df_closed_list.apply(calc_hd, axis=1)
 
-            display_cols = ['account_name', 'entry_date', 'exit_date', 'Haltedauer', 'symbol', 'name', 'direction', 'exit_reason', 'pnl_eur', 'pnl_pct', 'r_multiple']
+            display_cols = ['account_name', 'entry_date', 'exit_date', 'Haltedauer', 'symbol', 'name', 'direction', 'position_size', 'invest_eur', 'exit_reason', 'pnl_eur', 'pnl_pct', 'r_multiple']
             df_disp = df_closed_list[display_cols].copy()
             df_disp.rename(columns={
                 'account_name': 'Konto',
@@ -6085,11 +6255,16 @@ with tab_lab:
                 'symbol': 'Ticker',
                 'name': 'Name',
                 'direction': 'Richtung',
+                'position_size': 'Größe',
+                'invest_eur': 'Investition (€)',
                 'exit_reason': 'Exit-Grund',
                 'pnl_eur': 'PnL (€)',
                 'pnl_pct': 'PnL (%)',
                 'r_multiple': 'R-Multiple'
             }, inplace=True)
+            
+            df_disp['Investition (€)'] = df_disp['Investition (€)'].apply(lambda x: f"{x:,.2f} €" if pd.notna(x) else "0.00 €")
+            df_disp['Größe'] = df_disp['Größe'].apply(lambda x: f"{int(x)} Stk." if isinstance(x, (int, float)) and x % 1 == 0 else (f"{x:.4f}" if pd.notna(x) else "0"))
             
             df_disp['PnL (€)'] = df_disp['PnL (€)'].apply(lambda x: f"{x:.2f} €")
             df_disp['PnL (%)'] = df_disp['PnL (%)'].apply(lambda x: f"{x:.2f} %")
@@ -6133,6 +6308,15 @@ with tab_lab:
                     c_d4.metric("Erzieltes R-Multiple", f"{float(tr_row['r_multiple']):.2f} R")
                     
                     st.markdown("#### 📏 Plan vs. Realität")
+                    
+                    c_dx1, c_dx2 = st.columns(2)
+                    sz = float(tr_row['position_size']) if pd.notna(tr_row.get('position_size')) else 0
+                    sz_str = f"{int(sz)}" if sz.is_integer() else f"{sz:.4f}"
+                    c_dx1.metric("Positionsgröße", sz_str)
+                    
+                    inv_e = float(tr_row['invest_eur']) if pd.notna(tr_row.get('invest_eur')) else 0
+                    c_dx2.metric("Investiertes Kapital (€)", f"{inv_e:,.2f} €")
+
                     c_d5, c_d6, c_d7, c_d8, c_d9 = st.columns(5)
                     c_dt1, c_dt2 = st.columns(2)
                     c_dt1.write(f"⏱️ **Entry-Zeitpunkt:** `{tr_row.get('entry_date', 'N/A')}`")
@@ -6883,7 +7067,7 @@ with st.expander("⚠️ Danger Zone (Werkseinstellungen)", expanded=bool(_dz_fe
     with st.popover("🧹 V1.0.0 Clean Slate: Mein Trade-Journal leeren", disabled=not clean_slate_check, use_container_width=True):
         st.error("🚨 ACHTUNG: Dies tilgt sämtliche offenen und geschlossenen Trades in deinem persönlichen Konto restlos (deine Ticker-Listen und Einstellungen bleiben erhalten). Andere Benutzer bleiben unberührt!")
         if st.button("💥 Ja, mein Trade-Journal jetzt endgültig leeren", type="primary", use_container_width=True, key="btn_clean_slate_final"):
-            cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
+            cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
             user_j_path = get_user_file("trade_journal.csv")
             os.makedirs(os.path.dirname(user_j_path), exist_ok=True)
             prev_count = 0
@@ -6922,17 +7106,20 @@ with st.expander("⚠️ Danger Zone (Werkseinstellungen)", expanded=bool(_dz_fe
                     "default": {
                         "id": "default", "name": "Privatkonto (10k)", "account_size": 10000.0, "risk_pct": 1.0, 
                         "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Bitpanda Fusion (0.10% / 0.05%)", 
-                        "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha"
+                        "min_score": 70, "years": 5, "tickers": [], "last_backtest": None, "tax_category": "private", "exit_profile": "private_alpha",
+                        "broker_account_id": "", "execution_mode": "CO_PILOT"
                     },
                     "apex": {
                         "id": "apex", "name": "Apex 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                         "compounding": "inactive", "trailing_stop": "active", "broker_profile": "Apex / CME Futures (Insti-Rate)", 
-                        "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock"
+                        "min_score": 60, "years": 2, "tickers": ["NQ=F"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "apex_lock",
+                        "broker_account_id": "", "execution_mode": "CO_PILOT"
                     },
                     "ftmo": {
                         "id": "ftmo", "name": "FTMO 50k Demo", "account_size": 50000.0, "risk_pct": 1.0, 
                         "compounding": "inactive", "trailing_stop": "active", "broker_profile": "FTMO / Forex (Raw Spread)", 
-                        "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing"
+                        "min_score": 60, "years": 2, "tickers": ["USDJPY=X", "GBPUSD=X"], "last_backtest": None, "tax_category": "prop_firm", "exit_profile": "ftmo_swing",
+                        "broker_account_id": "", "execution_mode": "CO_PILOT"
                     }
                 },
                 "scan_universes": {}
@@ -6940,7 +7127,7 @@ with st.expander("⚠️ Danger Zone (Werkseinstellungen)", expanded=bool(_dz_fe
             with open(user_cfg_path, "w", encoding="utf-8") as f:
                 json.dump(default_config, f, indent=4)
                 
-            cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'tp_price', 'planned_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
+            cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
             pd.DataFrame(columns=cols).to_csv(get_user_file("trade_journal.csv"), index=False)
             
             with open(get_user_file("alert_state.json"), "w", encoding="utf-8") as f:
