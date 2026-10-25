@@ -1248,7 +1248,7 @@ def calc_rsi_and_targets(df_ticker, t_buy, t_sell, strategy_mode="5_saeulen_core
             details["pts_saeulen"] = p1 + p2 + p3
             details["pts_signal"] = 15
             details["breakdown"] = f"EMA200:{p1} MACD:{p2} Vol:{p3}" if not vol_missing else f"EMA200:{p1} MACD:{p2} Vol:N/A"
-            details["ampel"] = "🟢 ⚡ Long (Trend)"
+            details["ampel"] = "🟢 LONG (Setup B)"
         else:
             details["setup_type"] = "A"
             p1 = 15 if latest_rsi <= eff_t_buy else 0
@@ -1262,10 +1262,12 @@ def calc_rsi_and_targets(df_ticker, t_buy, t_sell, strategy_mode="5_saeulen_core
             details["pts_signal"] = sig_trend + sig_ext
             details["breakdown"] = f"RSI:{p1} BB:{p2} KC:{p3} Vol:{p4}" if not vol_missing else f"RSI:{p1} BB:{p2} KC:{p3} Vol:N/A"
             
-            if (latest_close > df["EMA_200"].iloc[-1] or asset_class == "FOREX") and sig_ext > 0: details["ampel"] = "🟢 🔄 Long (Reversal)"
-            elif latest_close > df["EMA_20"].iloc[-1] and sig_ext > 0: details["ampel"] = "🟡 🔄 Long (Rebound/Risk)"
-            elif is_sell_zone: details["ampel"] = "🔴 Zu teuer"
-            elif not (latest_close > df["EMA_200"].iloc[-1] or latest_close > df["EMA_20"].iloc[-1] or asset_class == "FOREX"): details["ampel"] = "🔴 Trend blockiert (unter EMA 200)"
+            if is_sell_zone: 
+                details["ampel"] = "🟣 SHORT (Setup A)"
+            elif (latest_close > df["EMA_200"].iloc[-1] or asset_class == "FOREX") and sig_ext > 0: 
+                details["ampel"] = "🟢 LONG (Setup A)"
+            else: 
+                details["ampel"] = "⚪ Neutral"
             
         pro_mode = st.session_state.config.get("pro_mode_settings", {})
         if pro_mode.get("plateau_aktiv", "Inaktiv") == "Aktiv" and (is_buy_zone or is_sell_zone):
@@ -1926,12 +1928,21 @@ def render_search_bar(config_key, is_tab1=False):
                     st.info("ℹ️ Alle Ticker dieser Liste sind bereits vorhanden.")
             else:
                 if not any(t["symbol"] == chosen_sym for t in st.session_state.config[config_key]):
-                    new_entry = {"symbol": chosen_sym, "name": chosen_name}
-                    if is_tab1: new_entry.update({"sector": "Standard", "risk_class": "Wachstum/Aggressiv", "use_custom": False, "custom_rsi_buy": st.session_state.config["global_settings"]["rsi_aggressiv"], "custom_rsi_sell": st.session_state.config["global_settings"]["rsi_sell_aggressiv"]})
-                    if config_key == "lab_tickers": new_entry.update({"account": 10000.0, "risk": 1.0})
-                    st.session_state.config[config_key].append(new_entry)
-                    save_config(st.session_state.config)
-                    st.rerun()
+                    try:
+                        test_interval = "1wk" if is_tab1 else "1d"
+                        test_df = yf.Ticker(chosen_sym).history(period="6mo", interval=test_interval)
+                        if test_df.empty or "Close" not in test_df.columns or len(test_df["Close"].dropna()) < 20:
+                            st.error(f"⚠️ Zu wenig Kursdaten für '{chosen_sym}' (mind. 20 Perioden für RSI/MAs benötigt). Bitte wähle z. B. XETRA (.DE) statt illiquider Regionalbörsen.")
+                        else:
+                            new_entry = {"symbol": chosen_sym, "name": chosen_name}
+                            if is_tab1: new_entry.update({"sector": "Standard", "risk_class": "Wachstum/Aggressiv", "use_custom": False, "custom_rsi_buy": st.session_state.config["global_settings"]["rsi_aggressiv"], "custom_rsi_sell": st.session_state.config["global_settings"]["rsi_sell_aggressiv"]})
+                            if config_key == "lab_tickers": new_entry.update({"account": 10000.0, "risk": 1.0})
+                            st.session_state.config[config_key].append(new_entry)
+                            save_config(st.session_state.config)
+                            st.toast(f"✅ {chosen_sym} erfolgreich hinzugefügt!", icon="✅")
+                            st.rerun()
+                    except Exception:
+                        st.error(f"⚠️ Abruffehler für '{chosen_sym}'. Bitte prüfe das Kürzel.")
 
 def render_macro_weather():
     with st.expander("🌍 Globales Marktwetter & Trend-Radar", expanded=False):
@@ -2455,12 +2466,17 @@ with st.sidebar:
         dir_icon = "🟣 Short" if is_shrt else "🔵 Long"
         active_sym_u = str(active_sym).upper().strip()
         is_fx_sidebar = active_sym_u.endswith("=X") or "DX-Y" in active_sym_u or row_data.get("Klasse") == "Forex"
-        if is_fx_sidebar:
-            c_type = "Lot"
-            disp_klasse_sb = "Forex"
-        else:
-            c_type = row_data.get("Empf. Größe", "0 Kontrakt").split(" ")[1] if " " in str(row_data.get("Empf. Größe", "")) else "Kontrakt"
-            disp_klasse_sb = row_data.get('Klasse', 'N/A')
+        if active_sym_u in ["NQ=F", "MNQ"]: c_type = "MNQ"
+        elif active_sym_u in ["ES=F", "MES"]: c_type = "MES"
+        elif active_sym_u in ["YM=F", "MYM"]: c_type = "MYM"
+        elif active_sym_u in ["CL=F", "MCL"]: c_type = "MCL"
+        elif active_sym_u in ["GC=F", "MGC"]: c_type = "MGC"
+        elif active_sym_u in ["RTY=F", "M2K"]: c_type = "M2K"
+        elif row_data.get("Klasse") == "Forex" or is_fx_sidebar: c_type = "Lot"
+        else: c_type = "Kontrakt"
+        c_name = c_type
+        
+        disp_klasse_sb = "Forex" if is_fx_sidebar else row_data.get('Klasse', 'N/A')
         
         st.subheader(f"{active_sym}")
         st.markdown(f"**{disp_klasse_sb} | {row_data.get('Name', 'N/A')}**\n\n**Richtung:** {dir_icon} | **Typ:** {c_type}")
@@ -2652,45 +2668,83 @@ with st.sidebar:
         is_apex_acc_prop = not is_sandbox_prop and not is_private_prop and ("apex" in sel_pf_acc_name.lower() or prof_name == "apex_lock" or (acc_tax_prop == "prop_firm" and "ftmo" not in sel_pf_acc_name.lower() and prof_name != "ftmo_swing"))
 
         empfehlung = get_asset_strategy_recommendation(active_sym)
-        with st.container(border=True):
-            st.markdown(f"**🔄 Aktive Order: {active_sym} | {empfehlung['label']}**")
-            st.markdown(f"🎯 **Bestes Konto:** {empfehlung['konto_typ']} | ⏱️ **{empfehlung['timeframe']}**")
-            st.caption(f"_{empfehlung['hinweis']}_")
-            if is_private_prop:
-                st.info(f"👤 **Privatkonto-Bypass aktiv:** Prop-Firm Restriktionen sind aufgehoben (Aktives Profil: '{get_profile_display_name(prof_name)}').")
+        
+        # 1. Market & Session Check frühzeitig für das Banner
+        market_open_prop_early = is_market_open_mez(active_sym, row_data.get('Klasse', 'Futures'))
+        in_session_early = True
+        try:
+            berlin_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+            now_dt_early = datetime.datetime.now(berlin_tz)
+        except Exception:
+            now_dt_early = datetime.datetime.now()
+        wd_early = now_dt_early.weekday()
+        t_float_early = now_dt_early.hour + now_dt_early.minute / 60.0
+        sym_u_chk_early = str(active_sym).upper().strip()
+        
+        session_times = "Regulär"
+        if sym_u_chk_early == "NQ=F":
+            session_times = "15:30–21:30"
+            if wd_early >= 5 or not (15.5 <= t_float_early < 21.5): in_session_early = False
+        elif sym_u_chk_early in ["CL=F", "MCL"]:
+            session_times = "14:30–17:30"
+            if wd_early >= 5 or not (14.5 <= t_float_early < 17.5): in_session_early = False
+        elif sym_u_chk_early == "EURUSD=X":
+            session_times = "13:00–18:00"
+            if wd_early >= 5 or not (13.0 <= t_float_early < 18.0): in_session_early = False
+            
+        # 2. Asset / Profile Veto Check
+        asset_block_reason = ""
+        prof_disp_pf = get_profile_display_name(prof_name)
+        
+        if is_apex_acc_prop:
+            if active_sym in ["CL=F", "MCL"]:
+                if prof_name == "apex_lock":
+                    profile_conflict_blocked_prop = False
+                else:
+                    profile_conflict_blocked_prop = True
+                    asset_block_reason = f"{active_sym} erfordert zwingend 'Target-Lock Intraday' (Gewählt: {prof_disp_pf})."
+            elif active_sym == "NQ=F" and prof_name == "apex_lock":
                 profile_conflict_blocked_prop = False
-            elif is_apex_acc_prop:
-                if active_sym in ["CL=F", "MCL"]:
-                    if prof_name == "apex_lock":
-                        st.success("✅ Apex-Intraday-Impuls: Gesteuert durch RESONO (MCL-Micros, EOD-Exit vor 20:15 MEZ zwingend).")
-                        profile_conflict_blocked_prop = False
-                    else:
-                        if admin_bypass_prop:
-                            st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
-                        else:
-                            st.error("🛑 Apex-Guard: Für Rohöl auf Apex ist zwingend das Profil 'Target-Lock Intraday (Apex)' mit EOD-Close erforderlich. Mehrtages-Swings sind verboten.")
-                            profile_conflict_blocked_prop = True
-                elif active_sym == "NQ=F" and prof_name == "apex_lock":
-                    st.success("✅ Gewähltes Kontoprofil passt perfekt zum Setup.")
-                else:
-                    prof_disp_pf = get_profile_display_name(prof_name)
-                    if admin_bypass_prop:
-                        st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
-                    else:
-                        st.error(f"🛑 **Prop-Guard:** Profil-Konflikt! Auf Apex-Konten sind ausschließlich die validierten CME-Futures 'NQ=F' (MNQ) und 'CL=F' (MCL) mit 'Target-Lock Intraday (Apex)' zugelassen (Gewählt: {active_sym} mit '{prof_disp_pf}'). Um Drawdown-Verstöße und Regelbrüche auszuschließen, ist das Einloggen gesperrt.")
-                        profile_conflict_blocked_prop = True
-            elif prof_name in empfehlung.get("valid_profiles", [empfehlung["profil"]]):
-                st.success("✅ Gewähltes Kontoprofil passt perfekt zum Setup.")
             else:
-                prof_disp_pf = get_profile_display_name(prof_name)
-                if is_prop_firm_prop:
-                    if admin_bypass_prop:
-                        st.warning("⚠️ **Admin-Bypass aktiv:** Profil-Sperre aufgehoben.")
-                    else:
-                        st.error(f"🛑 **Prop-Guard:** Profil-Konflikt! Für {active_sym} ist ausschließlich '{empfehlung['profil']}' zugelassen. Gewählt ist '{prof_disp_pf}'. Um Drawdown-Verstöße und Regelbrüche auszuschließen, ist das Einloggen gesperrt.")
-                        profile_conflict_blocked_prop = True
-                else:
-                    st.warning(f"⚠️ **Profil-Abweichung:** Gewähltes Konto nutzt '{prof_disp_pf}', validiert ist jedoch '{empfehlung['profil']}'!")
+                profile_conflict_blocked_prop = True
+                asset_block_reason = f"{active_sym} ist auf Apex mit Profil {prof_disp_pf} nicht zugelassen."
+        elif is_prop_firm_prop and prof_name not in empfehlung.get("valid_profiles", [empfehlung["profil"]]):
+            profile_conflict_blocked_prop = True
+            asset_block_reason = f"{active_sym} ist für dieses Konto nicht freigegeben (erfordert {empfehlung['profil']})."
+        else:
+            profile_conflict_blocked_prop = False
+
+        # 3. Direction Veto Check
+        dir_block_reason = ""
+        acc_dir = sel_pf_acc_data.get("direction", "both")
+        is_shrt_eval = row_data.get('_raw_is_short', False)
+        trade_dir = "short" if is_shrt_eval else "long"
+        if acc_dir != "both" and acc_dir != trade_dir:
+            profile_conflict_blocked_prop = True
+            dir_block_reason = f"Konto erlaubt nur {acc_dir.upper()} — Signal ist {trade_dir.upper()}."
+
+        if admin_bypass_prop or is_private_prop:
+            profile_conflict_blocked_prop = False
+
+        res_allowed_early = st.session_state.current_resono_res.get("allowed", True)
+        resono_reason_early = st.session_state.current_resono_res.get("ui_reason", "")
+        
+        # 4. Rendering des horizontalen Kompakt-Banners
+        if profile_conflict_blocked_prop and not admin_bypass_prop and not is_private_prop:
+            st.error(f"🔴 **Asset-Veto:** {asset_block_reason}")
+        elif dir_block_reason and not admin_bypass_prop and not is_private_prop:
+            st.error(f"🔴 **Richtungs-Veto:** {dir_block_reason}")
+        elif has_open_pos and not is_private_prop:
+            st.error("🔴 **RESONO Veto:** Konto belegt (Maximal 1 offener Trade)")
+        elif not res_allowed_early and resono_reason_early and not is_private_prop:
+            st.error(f"🔴 **RESONO Veto:** {resono_reason_early}")
+        elif not market_open_prop_early or not in_session_early:
+            if admin_bypass_prop or is_private_prop:
+                st.success(f"🟢 **Bereit (Bypass):** {sel_pf_acc_name} | {empfehlung['timeframe']}")
+            else:
+                st.error(f"🔴 **Session inaktiv:** Handelsfenster ist {session_times} MEZ.")
+        else:
+            st.success(f"🟢 **Bereit:** {sel_pf_acc_name} | {empfehlung['timeframe']}")
 
         pt_val = pt_val_res
         raw_cp = raw_cp_res
@@ -2751,9 +2805,62 @@ with st.sidebar:
         c_b3.metric("Stop Loss", format_dynamic_price(raw_sl, active_sym))
         c_b4.metric("Take Profit", format_dynamic_price(raw_tp, active_sym))
         
-        max_limit_prop = (raw_tp + 1.25 * raw_sl) / 2.25 if not is_shrt else (raw_tp + 1.25 * raw_sl) / 2.25
-        limit_str_prop = format_dynamic_price(max_limit_prop, active_sym)
-        st.caption(f"🎯 Max. Limit-Preis (CRV ≥ 1.25): {limit_str_prop} | Slippage-Schutz: Limit-Order empfohlen!")
+        max_slip_price = (raw_tp + 1.25 * raw_sl) / 2.25 if not is_shrt else (raw_tp + 1.25 * raw_sl) / 2.25
+        current_price = raw_cp
+        entry_price = raw_cp 
+
+        is_futures = ("=F" in active_sym_u or "apex" in sel_pf_acc_name.lower() or actual_asset_class in ["Futures", "Rohstoffe"])
+
+        if is_futures:
+            if not is_shrt:
+                if current_price > entry_price and current_price <= max_slip_price:
+                    order_typ = "🟡 NT8: STOP MARKET (Buy Stop)"
+                    order_detail = "Kurs liegt über Einstieg; Einstieg erfordert Stop-Order (Ausbruch)."
+                elif current_price < entry_price:
+                    order_typ = "🔵 NT8: LIMIT (Buy Limit)"
+                    order_detail = "Einstieg liegt unter dem Markt; Rücksetzer abwarten."
+                else:
+                    order_typ = "🟢 NT8: MARKET (Buy Market)"
+                    order_detail = "Kurs steht vorteilhaft oder am Signal. Sofortkauf möglich."
+            else:
+                if current_price < entry_price and current_price >= max_slip_price:
+                    order_typ = "🟡 NT8: STOP MARKET (Sell Stop)"
+                    order_detail = "Kurs liegt unter Einstieg; Einstieg erfordert Stop-Order (Ausbruch)."
+                elif current_price > entry_price:
+                    order_typ = "🔵 NT8: LIMIT (Sell Limit)"
+                    order_detail = "Einstieg liegt über dem Markt; Erholung abwarten."
+                else:
+                    order_typ = "🟣 NT8: MARKET (Sell Market)"
+                    order_detail = "Kurs steht vorteilhaft oder am Signal. Sofortverkauf möglich."
+        else:
+            if not is_shrt:
+                if current_price > entry_price and current_price <= max_slip_price:
+                    order_typ = "🟡 MT5: STOP ORDER (Buy Stop)"
+                    order_detail = "Kurs liegt über Einstieg; Einstieg erfordert Stop-Order (Ausbruch)."
+                elif current_price < entry_price:
+                    order_typ = "🔵 MT5: LIMIT ORDER (Buy Limit)"
+                    order_detail = "Einstieg liegt unter dem Markt; Rücksetzer abwarten."
+                else:
+                    order_typ = "🟢 MT5: MARKTAUSFÜHRUNG (Kauf per Markt)"
+                    order_detail = "Kurs steht vorteilhaft oder am Signal. Sofortkauf möglich."
+            else:
+                if current_price < entry_price and current_price >= max_slip_price:
+                    order_typ = "🟡 MT5: STOP ORDER (Sell Stop)"
+                    order_detail = "Kurs liegt unter Einstieg; Einstieg erfordert Stop-Order (Ausbruch)."
+                elif current_price > entry_price:
+                    order_typ = "🔵 MT5: LIMIT ORDER (Sell Limit)"
+                    order_detail = "Einstieg liegt über dem Markt; Erholung abwarten."
+                else:
+                    order_typ = "🟣 MT5: MARKTAUSFÜHRUNG (Verkauf per Markt)"
+                    order_detail = "Kurs steht vorteilhaft oder am Signal. Sofortverkauf möglich."
+
+        st.markdown(f"""
+<div style="border: 1px solid #334155; padding: 12px; border-radius: 6px; background-color: #0F172A; margin-top: 15px; margin-bottom: 15px;">
+    <strong style="font-size: 1.05em;">{order_typ}</strong><br>
+    <span style="color: #94A3B8; font-size: 0.9em;">{order_detail}</span><br>
+    <span style="color: #64748B; font-size: 0.85em; margin-top: 4px; display: inline-block;">Limit-Grenze (CRV ≥ 1.25): {format_dynamic_price(max_slip_price, active_sym)}</span>
+</div>
+""", unsafe_allow_html=True)
         
         if is_forex_sym:
             st.markdown(f"**Abstand:** {row_data.get('Abstand', 'N/A')} | **Punktwert:** $10.00 pro Pip (bzw. ${pt_val:,.2f} pro {c_name})")
@@ -2778,16 +2885,40 @@ with st.sidebar:
             est_fees_usd = 0.0
         
         est_fees_eur = est_fees_usd * fx_usd_eur
+        if a_class == "Forex" or is_fx_sidebar:
+            if "EUR" in active_sym_u:
+                nom_eur = qty_dyn * 100000.0
+            else:
+                nom_eur = qty_dyn * 100000.0 * raw_cp * fx_usd_eur
+            nom_usd = qty_dyn * 100000.0 * raw_cp
+            margin_usd = nom_usd / 30.0
+            margin_eur = nom_eur / 30.0
+        else:
+            nom_usd = qty_dyn * raw_cp * pt_val
+            nom_eur = nom_usd * fx_usd_eur
+            if active_sym_u in ["NQ=F", "MNQ", "CL=F", "MCL", "GC=F", "MGC"]: margin_per_contract = 100.0
+            elif active_sym_u in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]: margin_per_contract = 50.0
+            else: margin_per_contract = 100.0
+            margin_usd = qty_dyn * margin_per_contract
+            margin_eur = margin_usd * fx_usd_eur
+            
         pure_risk_usd = actual_risk_dyn
         planned_risk_eur = pure_risk_usd * fx_usd_eur
         total_risk_usd = pure_risk_usd + est_fees_usd
         total_risk_eur = planned_risk_eur + est_fees_eur
+        
+        puffer_pct = (total_risk_usd / buf_val * 100.0) if buf_val > 0 else 0.0
+        
+        col_n1, col_n2 = st.columns(2)
+        col_n1.metric("Nominalwert", f"{nom_eur:,.2f} €", f"≈ ${nom_usd:,.2f}", delta_color="off")
+        col_n2.metric("Margin (Kaution)", f"{margin_eur:,.2f} €", f"≈ ${margin_usd:,.2f}", delta_color="off")
 
         # Risiko Kacheln
         c_r1, c_r2 = st.columns(2)
         c_r1.metric("Reines Kursrisiko", f"${pure_risk_usd:.2f}", f"≈ {planned_risk_eur:.2f} €", delta_color="off")
-        c_r2.metric("Effektives Gesamtrisiko", f"${total_risk_usd:.2f}", f"≈ {total_risk_eur:.2f} €", delta_color="off")
+        c_r2.metric("Effektives Gesamtrisiko", f"${total_risk_usd:.2f}", f"≈ {total_risk_eur:.2f} €", delta_color="off", help="Die Broker-Ordermaske (z. B. MT5 / NT8) zeigt im Vorfeld weniger Verlust an, da sie ab dem aktuellen Live-Tick misst und Kommissionen ignoriert. INVARIX berechnet den realen Maximalverlust ab Entry inklusive Broker-Gebühren.")
         st.caption(f"Geschätzte Gebühren: ${est_fees_usd:.2f} (≈ {est_fees_eur:.2f} €)")
+        st.caption(f"🛡️ Puffer-Belastung: {puffer_pct:.1f}% des aktuellen RESONO-Puffers (${buf_val:,.2f})")
 
         # Gewinn / TP Fallunterscheidung
         is_trend_runner = prof_name in ["private_alpha", "commodity_alpha", "ftmo_swing"] or "Trend" in str(row_data.get("Signal", ""))
@@ -3871,31 +4002,36 @@ with tab_futures:
     st.header("🎯 Prop-Firm Multi-Asset Desk (Intraday & Swing)")
     
     # --- 1. HEADER & PROP-FIRM RADAR ---
-    c_prof1, c_prof2 = st.columns([1, 3])
-    pf_profiles = {
-        "Apex 50k (Futures)": {"size": 50000, "daily_loss": 1250, "trail_dd": 2500, "target": 3000},
-        "FTMO 50k (Forex/CFD)": {"size": 50000, "daily_loss": 2500, "trail_dd": 5000, "target": 5000},
-        "Privatkonto (10k)": {"size": 10000, "daily_loss": 500, "trail_dd": 1000, "target": 1000}
-    }
+    acc_opts_t3_main = {acc["name"]: acc_id for acc_id, acc in st.session_state.config.get("lab_accounts", {}).items()}
+    if not acc_opts_t3_main: acc_opts_t3_main = {"Standard Portfolio": "default"}
+    def_acc_id_t3_main = st.session_state.get("active_lab_account", list(acc_opts_t3_main.values())[0])
+
+    sel_acc_data = st.session_state.config.get("lab_accounts", {}).get(def_acc_id_t3_main, {})
+    acc_name_t3 = sel_acc_data.get("name", "Unbekannt")
+    prof_name_t3 = sel_acc_data.get("exit_profile", "prop_guard")
+    broker_t3 = sel_acc_data.get("broker_profile", "Unbekannt")
+    prof_disp_t3 = get_profile_display_name(prof_name_t3)
+
+    st.caption(f"🏦 **Aktives Konto:** {acc_name_t3} &nbsp;|&nbsp; 🎯 **Profil:** {prof_disp_t3} &nbsp;|&nbsp; 💼 **Broker:** {broker_t3} *(Zentral gesteuert über 'Ziel-Konto' in der linken Seitenleiste)*")
+
+    acc_size = float(sel_acc_data.get("account_size", 50000))
     
-    with c_prof1:
-        sel_pf = st.selectbox("💼 Prop-Profil wählen:", list(pf_profiles.keys()) + ["Benutzerdefiniert"])
-    
-    if sel_pf == "Benutzerdefiniert":
-        with st.expander("⚙️ Eigene Parameter", expanded=True):
-            c_c1, c_c2, c_c3, c_c4 = st.columns(4)
-            acc_size = c_c1.number_input("Kontogröße", 10000)
-            dl = c_c2.number_input("Tagesverlust Limit", 500)
-            mdd = c_c3.number_input("Max Drawdown", 1000)
-            tgt = c_c4.number_input("Profit Target", 1000)
+    if prof_name_t3 == "apex_lock":
+        default_dl, default_mdd, default_tgt = acc_size * 0.025, acc_size * 0.05, acc_size * 0.06
+    elif prof_name_t3 == "ftmo_swing":
+        default_dl, default_mdd, default_tgt = acc_size * 0.05, acc_size * 0.10, acc_size * 0.10
     else:
-        acc_size, dl, mdd, tgt = pf_profiles[sel_pf]["size"], pf_profiles[sel_pf]["daily_loss"], pf_profiles[sel_pf]["trail_dd"], pf_profiles[sel_pf]["target"]
+        default_dl, default_mdd, default_tgt = acc_size * 0.05, acc_size * 0.10, acc_size * 0.10
+        
+    dl = float(sel_acc_data.get("daily_loss", default_dl))
+    mdd = float(sel_acc_data.get("trail_dd", default_mdd))
+    tgt = float(sel_acc_data.get("target", default_tgt))
 
     c_m1, c_m2, c_m3, c_m4 = st.columns(4)
-    c_m1.metric("Konto-Größe", f"${acc_size:,}")
-    c_m2.metric("Tagesverlust-Puffer", f"${dl:,}")
-    c_m3.metric("Max Trailing Drawdown", f"${mdd:,}")
-    c_m4.metric("Profit-Target Progress", f"${tgt:,}")
+    c_m1.metric("Konto-Größe", f"${acc_size:,.0f}")
+    c_m2.metric("Tagesverlust-Puffer", f"${dl:,.0f}")
+    c_m3.metric("Max Trailing Drawdown", f"${mdd:,.0f}")
+    c_m4.metric("Profit-Target Progress", f"${tgt:,.0f}")
 
     st.markdown("---")
     
@@ -4181,47 +4317,47 @@ with tab_futures:
             if has_open_pos:
                 if is_private_w:
                     html_veto = """
-                    <div style="margin-top: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid #3B82F6; padding: 10px; border-radius: 6px;">
-                        <strong style="color: #60A5FA;">ℹ️ Portfolio-Hinweis:</strong> <span style="color: #DBEAFE;">Konto hält bereits eine offene Position (Im Privatdepot sind parallele Positionen zulässig).</span>
-                    </div>
-                    """
+<div style="margin-top: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid #3B82F6; padding: 10px; border-radius: 6px;">
+    <strong style="color: #60A5FA;">ℹ️ Portfolio-Hinweis:</strong> <span style="color: #DBEAFE;">Konto hält bereits eine offene Position (Im Privatdepot sind parallele Positionen zulässig).</span>
+</div>
+"""
                 else:
                     html_veto = """
-                    <div style="margin-top: 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; padding: 10px; border-radius: 6px;">
-                        <strong style="color: #EF4444;">🚨 Kollisions-Veto aktiv:</strong> <span style="color: #FCA5A5;">Konto besitzt bereits eine offene Position. Kein paralleles Exposure erlaubt.</span>
-                    </div>
-                    """
+<div style="margin-top: 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; padding: 10px; border-radius: 6px;">
+    <strong style="color: #EF4444;">🚨 Kollisions-Veto aktiv:</strong> <span style="color: #FCA5A5;">Konto besitzt bereits eine offene Position. Kein paralleles Exposure erlaubt.</span>
+</div>
+"""
 
             html_left = f"""
-            <div style="display: flex; align-items: center; margin-bottom: 15px;">
-                <img src="data:image/png;base64,{icon_b64}" style="height: 28px; margin-right: 10px;" onerror="this.style.display='none'">
-                <h4 style="margin: 0; color: #F59E0B;">RESONO — Cluster-Risikofilter & Phasen-Resonanz</h4>
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
-                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid {z_color}; width: 100%;">
-                    <span style="color: #94A3B8; font-size: 0.85em;">Risikozone</span><br>
-                    <strong style="color: #ECE8E1; font-size: 1.1em;">{z_label} ({code})</strong>
-                </div>
-                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #3B82F6; width: 100%;">
-                    <span style="color: #94A3B8; font-size: 0.85em;">{puffer_label}</span><br>
-                    <strong style="color: #ECE8E1; font-size: 1.1em;">{puffer_val_str}</strong>
-                </div>
-                <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #8B5CF6; width: 100%;">
-                    <span style="color: #94A3B8; font-size: 0.85em;">Freigabe</span><br>
-                    <strong style="color: #ECE8E1; font-size: 1.1em;">{freigabe_str}</strong>
-                </div>
-            </div>
-            <div style="background: rgba(0,0,0,0.4); padding: 12px 16px; border-radius: 4px; border-left: 2px solid #64748B;">
-                <span style="color: #CBD5E1;"><strong>Anweisung:</strong> {reason}</span>
-            </div>
-            {html_veto}
-            """
+<div style="display: flex; align-items: center; margin-bottom: 15px;">
+    <img src="data:image/png;base64,{icon_b64}" style="height: 28px; margin-right: 10px;" onerror="this.style.display='none'">
+    <h4 style="margin: 0; color: #F59E0B;">RESONO — Cluster-Risikofilter & Phasen-Resonanz</h4>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
+    <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid {z_color}; width: 100%;">
+        <span style="color: #94A3B8; font-size: 0.85em;">Risikozone</span><br>
+        <strong style="color: #ECE8E1; font-size: 1.1em;">{z_label} ({code})</strong>
+    </div>
+    <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #3B82F6; width: 100%;">
+        <span style="color: #94A3B8; font-size: 0.85em;">{puffer_label}</span><br>
+        <strong style="color: #ECE8E1; font-size: 1.1em;">{puffer_val_str}</strong>
+    </div>
+    <div style="background: #131822; padding: 12px 16px; border-radius: 6px; border-left: 4px solid #8B5CF6; width: 100%;">
+        <span style="color: #94A3B8; font-size: 0.85em;">Freigabe</span><br>
+        <strong style="color: #ECE8E1; font-size: 1.1em;">{freigabe_str}</strong>
+    </div>
+</div>
+<div style="background: rgba(0,0,0,0.4); padding: 12px 16px; border-radius: 4px; border-left: 2px solid #64748B;">
+    <span style="color: #CBD5E1;"><strong>Anweisung:</strong> {reason}</span>
+</div>
+{html_veto}
+"""
             html_right = f"""
-            <div style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; padding: 10px 0;">
-                <img src="data:image/png;base64,{icon_b64}" style="width: 150px; margin-bottom: 15px;" onerror="this.style.display='none'">
-                <img src="data:image/png;base64,{word_b64}" style="width: 200px;" onerror="this.style.display='none'">
-            </div>
-            """
+<div style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; padding: 10px 0;">
+    <img src="data:image/png;base64,{icon_b64}" style="width: 150px; margin-bottom: 15px;" onerror="this.style.display='none'">
+    <img src="data:image/png;base64,{word_b64}" style="width: 200px;" onerror="this.style.display='none'">
+</div>
+"""
 
             with st.container(border=True):
                 col_left, col_right = st.columns([0.72, 0.28], vertical_alignment="center")
@@ -4280,11 +4416,11 @@ with tab_futures:
                             z_score_ql = details_ql.get("z_score", 0)
                             kc_upper_ql = float(plot_ql.get("KC_upper", plot_ql["EMA_20"]).iloc[-1])
                             
-                            signal_ql, is_short_ql = "🟡 Neutral", False
+                            signal_ql, is_short_ql = "⚪ Neutral", False
                             if c_p_ql > ema200_ql and (38 <= r_ql <= 52) and (abs(c_p_ql - ema20_ql)/ema20_ql <= 0.015): signal_ql = "🟢 ⚡ Long (Trend)"
                             elif r_ql <= rsi_long_ql or z_score_ql <= -2.0: signal_ql = "🟢 🔄 Long (Reversal)"
-                            elif c_p_ql < ema200_ql and (48 <= r_ql <= 62) and (abs(c_p_ql - ema20_ql)/ema20_ql <= 0.015): signal_ql, is_short_ql = "🟢 ⚡ Short (Trend)", True
-                            elif r_ql >= rsi_short_ql or z_score_ql >= 2.0 or c_p_ql >= kc_upper_ql: signal_ql, is_short_ql = "🟢 🔄 Short (Reversal)", True
+                            elif c_p_ql < ema200_ql and (48 <= r_ql <= 62) and (abs(c_p_ql - ema20_ql)/ema20_ql <= 0.015): signal_ql, is_short_ql = "🟣 ⚡ Short (Trend)", True
+                            elif r_ql >= rsi_short_ql or z_score_ql >= 2.0 or c_p_ql >= kc_upper_ql: signal_ql, is_short_ql = "🟣 🔄 Short (Reversal)", True
                             
                             sl_ql, tp_ql, _ = calculate_sl_tp_crv(plot_ql, c_p_ql, p_s_ql if not is_short_ql else p_b_ql, "tab3")
                             if not is_short_ql:
@@ -4295,7 +4431,7 @@ with tab_futures:
                             plot_ql = df_ql.copy()
                             c_p_ql = float(plot_ql['Close'].iloc[-1])
                             r_ql = 50.0
-                            signal_ql, is_short_ql = "🟡 Neutral", False
+                            signal_ql, is_short_ql = "⚪ Neutral", False
                             sl_ql = float(plot_ql["Low"].tail(24).min()) if "Low" in plot_ql.columns else c_p_ql * 0.98
                             if sl_ql >= c_p_ql: sl_ql = c_p_ql * 0.98
                             tp_ql = float(plot_ql["High"].tail(24).max()) if "High" in plot_ql.columns else c_p_ql * 1.02
@@ -4546,11 +4682,11 @@ with tab_futures:
                                 z_score = details.get("z_score", 0)
                                 kc_upper = plot.get("KC_upper", plot["EMA_20"]).iloc[-1]
                                 
-                                signal, is_short = "🟡 Neutral", False
+                                signal, is_short = "⚪ Neutral", False
                                 if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
                                 elif r <= rsi_long_eval or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
-                                elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
-                                elif r >= rsi_short_eval or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
+                                elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟣 ⚡ Short (Trend)", True
+                                elif r >= rsi_short_eval or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟣 🔄 Short (Reversal)", True
                                     
                                 sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
                                 
@@ -4685,11 +4821,12 @@ with tab_futures:
             
             def color_t3_new(row):
                 s = str(row["Signal"])
+                if "Neutral" in s: return [""] * len(row)
                 if "⚡ Long" in s: return ["background-color: #cce5ff; color: #004085; font-weight: bold"] * len(row)
                 if "🔄 Long" in s: return ["background-color: #d1ecf1; color: #0c5460; font-weight: bold"] * len(row)
-                if "⚡ Short" in s: return ["background-color: #e2d9f3; color: #38187a; font-weight: bold"] * len(row)
-                if "🔄 Short" in s: return ["background-color: #e8daef; color: #512e5f; font-weight: bold"] * len(row)
-                if "Blockiert" in s or "Neutral" in s: return ["background-color: #f8d7da; color: #721c24; font-weight: bold"] * len(row)
+                if "⚡ Short" in s: return ["background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"] * len(row)
+                if "🔄 Short" in s: return ["background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"] * len(row)
+                if "Blockiert" in s: return ["background-color: #f8d7da; color: #721c24; font-weight: bold"] * len(row)
                 return [""] * len(row)
 
             df_sorted["CRV"] = df_sorted["_crv"].apply(lambda x: f"{x:.2f}")
@@ -4994,11 +5131,11 @@ with tab_futures:
                             z_score = details.get("z_score", 0)
                             kc_upper = plot.get("KC_upper", plot["EMA_20"]).iloc[-1]
                             
-                            signal, is_short = "🟡 Neutral", False
+                            signal, is_short = "⚪ Neutral", False
                             if c_p > ema200 and (38 <= r <= 52) and (abs(c_p - ema20)/ema20 <= 0.015): signal = "🟢 ⚡ Long (Trend)"
                             elif r <= rsi_long_pw or z_score <= -2.0: signal = "🟢 🔄 Long (Reversal)"
-                            elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟢 ⚡ Short (Trend)", True
-                            elif r >= rsi_short_pw or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟢 🔄 Short (Reversal)", True
+                            elif c_p < ema200 and (48 <= r <= 62) and (abs(c_p - ema20)/ema20 <= 0.015): signal, is_short = "🟣 ⚡ Short (Trend)", True
+                            elif r >= rsi_short_pw or z_score >= 2.0 or c_p >= kc_upper: signal, is_short = "🟣 🔄 Short (Reversal)", True
                                 
                             sl, tp, crv_rating = calculate_sl_tp_crv(plot, c_p, p_s if not is_short else p_b, "tab3")
                             if not is_short:
@@ -5067,11 +5204,12 @@ with tab_futures:
                 
                 def color_pw(row):
                     s = str(row["Signal"])
+                    if "Neutral" in s: return [""] * len(row)
                     if "⚡ Long" in s: return ["background-color: #cce5ff; color: #004085; font-weight: bold"] * len(row)
                     if "🔄 Long" in s: return ["background-color: #d1ecf1; color: #0c5460; font-weight: bold"] * len(row)
-                    if "⚡ Short" in s: return ["background-color: #e2d9f3; color: #38187a; font-weight: bold"] * len(row)
-                    if "🔄 Short" in s: return ["background-color: #e8daef; color: #512e5f; font-weight: bold"] * len(row)
-                    if "Blockiert" in s or "Neutral" in s: return ["background-color: #f8d7da; color: #721c24; font-weight: bold"] * len(row)
+                    if "⚡ Short" in s: return ["background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"] * len(row)
+                    if "🔄 Short" in s: return ["background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"] * len(row)
+                    if "Blockiert" in s: return ["background-color: #f8d7da; color: #721c24; font-weight: bold"] * len(row)
                     return [""] * len(row)
 
                 disp_cols_pw = ["🛒 Order", "🔍 Info", "Klasse", "Ticker", "Name", "Master-Score", "Signal", "Kurs", "RSI", "CRV", "Risiko ($)", "Empf. Größe"]
