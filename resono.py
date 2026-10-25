@@ -7,16 +7,54 @@ def evaluate_account_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, A
     """
     account_id = account_dict.get('account_id', 'Unknown')
     account_type = account_dict.get('account_type', 'evaluation')
+    symbol = signal_dict.get('symbol', 'MNQ')
+    ticker = signal_dict.get("ticker", symbol).strip().upper()
+
+    # 1. Apex Master-Kader Whitelist
+    if account_type in ["evaluation", "funded_pa"]:
+        if ticker not in ["MNQ", "NQ=F", "MCL", "CL=F"]:
+            return {
+                "allowed": False,
+                "max_contracts": 0,
+                "zone": "RED",
+                "status_code": "UNAUTHORIZED_PROP_ASSET",
+                "ui_reason": f"Asset '{ticker}' ist nicht im Apex Master-Kader validiert (nur MNQ & MCL zugelassen).",
+                'risk_buffer_usd': 0.0,
+                'ko_threshold_usd': 0.0,
+                'trade_risk_usd': 0.0,
+                'ui_badge': '🔴 Gesperrt (Asset)'
+            }
+            
     current_balance = float(account_dict.get('current_balance', 0.0))
     high_watermark = float(account_dict.get('high_watermark', 0.0))
     has_open_position = bool(account_dict.get('has_open_position', False))
 
-    symbol = signal_dict.get('symbol', 'MNQ')
     stop_distance_points = float(signal_dict.get('stop_distance_points', 0.0))
     point_value = float(signal_dict.get('point_value', 2.0))
     
-    # 1. Monetäres Trade-Risiko für 1 Kontrakt berechnen
+    # Monetäres Trade-Risiko für 1 Kontrakt berechnen
     trade_risk_usd = stop_distance_points * point_value
+    
+    # 2. Dynamischer Risikodeckel (Dynamische Limit-Berechnung)
+    if account_type in ["evaluation", "funded_pa"]:
+        max_trade_risk = float(account_dict.get("daily_loss_limit", 1250.0)) * 0.10
+    else:
+        max_trade_risk = float(account_dict.get("daily_loss_limit", 2500.0)) * 0.05
+        
+    loss_per_contract = trade_risk_usd
+    
+    if loss_per_contract > max_trade_risk:
+        return {
+            "allowed": False,
+            "max_contracts": 0,
+            "zone": "RED",
+            "status_code": "SL_TOO_WIDE",
+            "ui_reason": "Stop-Loss zu weit für Prop-Risikolimit (Einzelkontrakt übersteigt maximales Tagespuffer-Budget).",
+            'risk_buffer_usd': 0.0,
+            'ko_threshold_usd': 0.0,
+            'trade_risk_usd': trade_risk_usd,
+            'ui_badge': '🔴 Gesperrt (SL)'
+        }
 
     # 2. Veto-Check: Offene Positionen
     if has_open_position:
