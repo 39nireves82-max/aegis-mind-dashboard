@@ -5,153 +5,150 @@ def evaluate_account_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, A
     Kernevaluierung des Account-Risikos (RESONO-Modul).
     Prüft Puffer, Kollisionen und setzt Phasen-Resonanz (Dreizonen-Modell) um.
     """
+    import math
     account_id = account_dict.get('account_id', 'Unknown')
-    account_type = account_dict.get('account_type', 'evaluation')
-    symbol = signal_dict.get('symbol', 'MNQ')
-    ticker = signal_dict.get("ticker", symbol).strip().upper()
-
-    # 1. Apex Master-Kader Whitelist
-    if account_type in ["evaluation", "funded_pa"]:
-        if ticker not in ["MNQ", "NQ=F", "MCL", "CL=F"]:
-            return {
-                "allowed": False,
-                "max_contracts": 0,
-                "zone": "RED",
-                "status_code": "UNAUTHORIZED_PROP_ASSET",
-                "ui_reason": f"Asset '{ticker}' ist nicht im Apex Master-Kader validiert (nur MNQ & MCL zugelassen).",
-                'risk_buffer_usd': 0.0,
-                'ko_threshold_usd': 0.0,
-                'trade_risk_usd': 0.0,
-                'ui_badge': '🔴 Gesperrt (Asset)'
-            }
-            
+    account_type = str(account_dict.get('account_type', 'evaluation')).strip().lower()
+    account_size = float(account_dict.get('account_size', account_dict.get('initial_balance', 50000.0)))
     current_balance = float(account_dict.get('current_balance', 0.0))
     high_watermark = float(account_dict.get('high_watermark', 0.0))
-    has_open_position = bool(account_dict.get('has_open_position', False))
+    
+    raw_symbol = str(signal_dict.get('ticker', signal_dict.get('symbol', 'MNQ'))).strip().upper()
+    cme_mapping = {
+        "NQ=F": "MNQ", "NQ": "MNQ", "MNQ": "MNQ",
+        "ES=F": "MES", "ES": "MES", "MES": "MES",
+        "YM=F": "MYM", "YM": "MYM", "MYM": "MYM",
+        "RTY=F": "M2K", "RTY": "M2K", "M2K": "M2K",
+        "CL=F": "MCL", "CL": "MCL", "MCL": "MCL",
+        "GC=F": "MGC", "GC": "MGC", "MGC": "MGC",
+        "SI=F": "SIL", "SI": "SIL", "SIL": "SIL",
+        "NG=F": "QG", "NG": "QG", "QG": "QG",
+        "HG=F": "MHG", "HG": "MHG", "MHG": "MHG"
+    }
+    ticker = cme_mapping.get(raw_symbol, raw_symbol)
+    symbol = ticker
 
-    stop_distance_points = float(signal_dict.get('stop_distance_points', 0.0))
-    point_value = float(signal_dict.get('point_value', 2.0))
-    
-    # Monetäres Trade-Risiko für 1 Kontrakt berechnen
-    trade_risk_usd = stop_distance_points * point_value
-    
-    # 2. Dynamischer Risikodeckel (Dynamische Limit-Berechnung)
-    if account_type in ["evaluation", "funded_pa"]:
-        max_trade_risk = float(account_dict.get("daily_loss_limit", 1250.0)) * 0.10
-    else:
-        max_trade_risk = float(account_dict.get("daily_loss_limit", 2500.0)) * 0.05
-        
-    loss_per_contract = trade_risk_usd
-    
-    if loss_per_contract > max_trade_risk:
+    stop_distance = float(signal_dict.get('stop_distance_points', signal_dict.get('stop_loss_distance', 0.0)))
+    point_value = float(signal_dict.get('point_value', 1.0))
+    score = float(signal_dict.get('score', signal_dict.get('master_score', 0.0)))
+
+    # VETO STUFE 1: Whitelist-Prüfung
+    allowed_futures = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG"]
+    if ticker not in allowed_futures:
         return {
-            "allowed": False,
-            "max_contracts": 0,
-            "zone": "RED",
-            "status_code": "SL_TOO_WIDE",
-            "ui_reason": "Stop-Loss zu weit für Prop-Risikolimit (Einzelkontrakt übersteigt maximales Tagespuffer-Budget).",
-            'risk_buffer_usd': 0.0,
-            'ko_threshold_usd': 0.0,
-            'trade_risk_usd': trade_risk_usd,
-            'ui_badge': '🔴 Gesperrt (SL)'
+            "allowed": False, "max_contracts": 0, "zone": "RED",
+            "status_code": "UNAUTHORIZED_PROP_ASSET",
+            "ui_reason": f"Asset '{ticker}' ist nicht im Apex Master-Kader validiert.",
+            'risk_buffer_usd': 0.0, 'ko_threshold_usd': 0.0, 'trade_risk_usd': 0.0,
+            'ui_badge': '🔴 Gesperrt (Asset)'
         }
-
-    # 2. Veto-Check: Offene Positionen
+        
+    # VETO STUFE 2: Belegungs-Prüfung
+    has_open_position = bool(account_dict.get('has_open_position', False))
     if has_open_position:
         return {
-            'allowed': False,
+            'allowed': False, 'max_contracts': 0, 'zone': 'RED',
             'status_code': 'VETO_OCCUPIED',
-            'max_contracts': 0,
-            'risk_buffer_usd': 0.0,
-            'ko_threshold_usd': 0.0,
-            'trade_risk_usd': trade_risk_usd,
-            'ui_badge': '🔴 Gesperrt',
-            'ui_reason': 'Konto belegt: Maximal 1 offener Trade erlaubt'
+            'risk_buffer_usd': 0.0, 'ko_threshold_usd': 0.0, 'trade_risk_usd': 0.0,
+            'ui_badge': '🔴 Gesperrt', 'ui_reason': 'Konto belegt: Maximal 1 offener Trade erlaubt'
+        }
+        
+    # VETO STUFE 3: Parameter-Validierung
+    if stop_distance <= 0.0 or point_value <= 0.0:
+        return {
+            'allowed': False, 'max_contracts': 0, 'zone': 'RED',
+            'status_code': 'INVALID_SL_DISTANCE',
+            'risk_buffer_usd': 0.0, 'ko_threshold_usd': 0.0, 'trade_risk_usd': 0.0,
+            'ui_badge': '🔴 Fehler (SL/PV)', 'ui_reason': 'Stop-Distance oder Point-Value ungültig (<= 0).'
         }
 
-    # 3. K.O.-Schwelle und effektiven Restpuffer berechnen (Apex 50k Standard)
-    raw_ko_threshold = high_watermark - 2500.0
+    # VETO STUFE 4: Risikobudget & Zonen-Evaluation
+    loss_per_contract = stop_distance * point_value
     
-    # Freeze-Regel (High-Watermark Lock)
-    if raw_ko_threshold >= 50100.0:
-        ko_threshold_usd = 50100.0
-    else:
-        ko_threshold_usd = raw_ko_threshold
-
-    risk_buffer_usd = current_balance - ko_threshold_usd
+    daily_loss_limit = float(account_dict.get('daily_loss_limit', account_size * 0.025))
+    max_dd_limit = float(account_dict.get('max_trailing_dd', account_size * 0.05))
     
-    # Kollabiertes Konto abfangen
-    if risk_buffer_usd < 0:
-        risk_buffer_usd = 0.0
+    raw_ko_threshold = high_watermark - max_dd_limit
+    ko_threshold_usd = 50100.0 if raw_ko_threshold >= 50100.0 else raw_ko_threshold
+    calculated_max_dd_buffer = max(0.0, current_balance - ko_threshold_usd)
+    
+    max_dd_buffer = float(account_dict.get('risk_buffer_usd', account_dict.get('buffer_to_ko', calculated_max_dd_buffer)))
+    daily_buffer = float(account_dict.get('daily_buffer', daily_loss_limit))
 
-    # Initialisierung der Rückgabewerte
+    effective_ratio = min(daily_buffer / daily_loss_limit, max_dd_buffer / max_dd_limit) if daily_loss_limit > 0 and max_dd_limit > 0 else 0.0
+    
     allowed = False
-    status_code = ''
-    max_contracts = 0
-    ui_badge = ''
-    ui_reason = ''
-
-    # 4. Dreizonen-Modell & Phasen-Resonanz auswerten
-    if risk_buffer_usd >= 1500.0:
-        # --- GRÜNE ZONE ---
-        if account_type == 'evaluation':
-            allowed = True
-            status_code = 'GREEN_FULL'
-            max_contracts = 3 if symbol == 'MNQ' else (2 if symbol == 'MCL' else 1)
-            ui_badge = f'🟢 Freigegeben ({max_contracts} {symbol})'
-            ui_reason = f'Grüne Zone (Puffer: {risk_buffer_usd:.2f} USD). Volle Skalierung für Evaluation freigegeben.'
-            
-        elif account_type == 'funded_pa':
-            allowed = True
-            status_code = 'GREEN_FULL'
-            # Check auf Freeze-Schwelle für PA-Skalierung
-            if ko_threshold_usd == 50100.0 and current_balance > 53100.0:
-                max_contracts = 2
-                ui_badge = f'🟢 Freigegeben ({max_contracts} {symbol})'
-                ui_reason = f'Grüne Zone (Puffer: {risk_buffer_usd:.2f} USD). Reifes PA-Konto: Skalierung auf 2 Kontrakte freigegeben.'
-            else:
-                max_contracts = 1
-                ui_badge = f'🟢 Freigegeben ({max_contracts} {symbol})'
-                ui_reason = f'Grüne Zone (Puffer: {risk_buffer_usd:.2f} USD). PA-Konto im Festungsmodus (max. 1 Kontrakt).'
-
-    elif 800.0 <= risk_buffer_usd < 1500.0:
-        # --- GELBE ZONE ---
+    status_code = ""
+    zone_cap = 0
+    ui_badge = ""
+    ui_reason = ""
+    
+    if effective_ratio >= 0.60:
+        allowed = True
+        status_code = 'GREEN_FULL'
+        zone_cap = 2 if ticker == 'MCL' else 3
+        ui_badge = f'🟢 Freigegeben ({zone_cap} {ticker})'
+        ui_reason = f'Grüne Zone (Quote: {effective_ratio:.2f}).'
+    elif 0.32 <= effective_ratio < 0.60:
         allowed = True
         status_code = 'YELLOW_THROTTLED'
-        max_contracts = 1
-        ui_badge = f'🟡 Schonmodus (1 {symbol})'
-        ui_reason = f'Gelbe Zone (Puffer: {risk_buffer_usd:.2f} USD). Strikt auf 1 Kontrakt gedrosselt.'
-
+        zone_cap = 1
+        ui_badge = f'🟡 Schonmodus (1 {ticker})'
+        ui_reason = f'Gelbe Zone (Quote: {effective_ratio:.2f}). Defensiver Schonmodus.'
     else:
-        # --- ROTE ZONE (< 800 USD) ---
-        if symbol == 'MCL':
-            allowed = False
-            status_code = 'VETO_ASSET_LOCKED'
-            max_contracts = 0
-            ui_badge = '🔴 Gesperrt (MCL)'
-            ui_reason = f'Rote Zone (Puffer: {risk_buffer_usd:.2f} USD). MCL bei akuter K.O.-Gefahr ausnahmslos gesperrt.'
-        else:
-            # Sniper-Rehabilitations-Modus für MNQ
-            if trade_risk_usd <= (0.20 * risk_buffer_usd) and risk_buffer_usd > 0:
+        allowed = False
+        status_code = 'MUTED_RED_ZONE'
+        zone_cap = 0
+        ui_badge = '🔴 Stummgeschaltet'
+        ui_reason = f'Rote Zone (Quote: {effective_ratio:.2f}).'
+        
+        # Ausnahme Sniper-Reha
+        if score >= 75.0:
+            effective_buffer = max(0.0, min(daily_buffer, max_dd_buffer))
+            erlaubtes_risiko = 0.20 * effective_buffer
+            max_trade_risk_reha = daily_loss_limit * 0.10
+            if loss_per_contract <= erlaubtes_risiko and loss_per_contract <= max_trade_risk_reha and effective_buffer > 0:
                 allowed = True
-                status_code = 'RED_SNIPER'
-                max_contracts = 1
-                ui_badge = f'🔴 Sniper-Modus (1 {symbol})'
-                ui_reason = f'Rote Zone (Puffer: {risk_buffer_usd:.2f} USD). Risiko ({trade_risk_usd:.2f} USD) <= 20% des Puffers. Sniper-Modus aktiv.'
-            else:
-                allowed = False
-                status_code = 'RED_MUTED'
-                max_contracts = 0
-                ui_badge = '🔴 Stummgeschaltet'
-                ui_reason = f'Rote Zone (Puffer: {risk_buffer_usd:.2f} USD). Risiko ({trade_risk_usd:.2f} USD) übersteigt 20% des Puffers. Stummgeschaltet.'
+                status_code = 'SNIPER_REHAB'
+                zone_cap = 1
+                ui_badge = f'🎯 Sniper-Reha (1 {ticker})'
+                ui_reason = f'Rote Zone Sniper: Risiko {loss_per_contract:.2f} <= {erlaubtes_risiko:.2f}.'
+
+    # Mathematischer 10%-Risikodeckel
+    max_trade_risk = daily_loss_limit * 0.10
+    if loss_per_contract > max_trade_risk:
+        allowed = False
+        zone_cap = 0
+        status_code = 'SL_TOO_WIDE'
+        ui_badge = '🔴 Gesperrt (SL)'
+        ui_reason = f'Stop-Loss zu weit (Risiko {loss_per_contract:.2f} > Deckel {max_trade_risk:.2f}).'
+        
+    risk_capped_qty = math.floor(max_trade_risk / loss_per_contract) if loss_per_contract > 0 else 0
+    max_contracts = min(zone_cap, risk_capped_qty) if allowed else 0
+    
+    if max_contracts == 0 and allowed:
+        allowed = False
+        status_code = 'SL_TOO_WIDE'
+        ui_badge = '🔴 Gesperrt (SL)'
+        ui_reason = f'Risiko für 1 Kontrakt ({loss_per_contract:.2f}) übersteigt Limit ({max_trade_risk:.2f}).'
+    elif allowed:
+        # Dynamisches Poka-Yoke UI-Badge mit der freigegebenen Kontraktzahl
+        if 'GREEN' in status_code:
+            ui_badge = f'🟢 Freigegeben ({max_contracts} {symbol})'
+        elif 'YELLOW' in status_code:
+            ui_badge = f'🟡 Schonmodus ({max_contracts} {symbol})'
+        elif status_code == 'SNIPER_REHAB':
+            ui_badge = f'🎯 Sniper-Reha ({max_contracts} {symbol})'
+            
+        if max_contracts < zone_cap:
+            ui_reason += f' [Gedrosselt durch Risikodeckel: {max_contracts} max]'
 
     return {
         'allowed': allowed,
         'status_code': status_code,
         'max_contracts': max_contracts,
-        'risk_buffer_usd': round(risk_buffer_usd, 2),
+        'risk_buffer_usd': round(max_dd_buffer, 2),
         'ko_threshold_usd': round(ko_threshold_usd, 2),
-        'trade_risk_usd': round(trade_risk_usd, 2),
+        'trade_risk_usd': round(loss_per_contract, 2),
         'ui_badge': ui_badge,
         'ui_reason': ui_reason
     }
@@ -275,10 +272,54 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
     basierend auf dem Flaschenhals-Prinzip (Minimum aus Tagespuffer und Max-DD-Puffer)
     inklusive Sniper-Rehabilitationsmodus in der Roten Zone.
     """
+    import math
     account_size = float(account_dict.get("account_size", account_dict.get("initial_balance", 50000.0)))
     current_balance = float(account_dict.get("current_balance", account_size))
-    daily_limit = float(account_dict.get("daily_loss_limit", account_size * 0.05))
     
+    raw_symbol = str(signal_dict.get("ticker", signal_dict.get("symbol", "EURUSD"))).strip().upper()
+    if not raw_symbol.endswith("=X") and raw_symbol != "NONE":
+        ticker = raw_symbol + "=X"
+    else:
+        ticker = raw_symbol
+    symbol = ticker
+        
+    stop_distance = float(signal_dict.get('stop_distance_points', signal_dict.get('stop_loss_distance', signal_dict.get('sl_pips', 0.0))))
+    if stop_distance > 10.0:
+        stop_distance = stop_distance / 10000.0
+        
+    point_value = float(signal_dict.get('point_value', 100000.0))
+    score = float(signal_dict.get("score", signal_dict.get("master_score", 0.0)))
+    
+    # Stufe 1: Whitelist-Prüfung
+    allowed_forex = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X", "EURJPY=X", "NONE=X"]
+    if ticker not in allowed_forex and symbol != "NONE":
+        return {
+            'allowed': False, 'zone': 'RED', 'status_code': 'UNAUTHORIZED_PROP_ASSET',
+            'max_lots': 0.0, 'daily_buffer_usd': 0.0, 'effective_buffer': 0.0,
+            'effective_threshold_usd': 0.0, 'allocated_risk_usd': 0.0,
+            'ui_badge': '🔴 Gesperrt (Asset)', 'ui_reason': f"Asset '{ticker}' nicht freigegeben."
+        }
+
+    has_open_position = bool(account_dict.get("has_open_position", False))
+    # Stufe 2: Belegungs-Prüfung
+    if has_open_position:
+        return {
+            'allowed': False, 'zone': 'RED', 'status_code': 'VETO_OCCUPIED',
+            'max_lots': 0.0, 'daily_buffer_usd': 0.0, 'effective_buffer': 0.0,
+            'effective_threshold_usd': 0.0, 'allocated_risk_usd': 0.0,
+            'ui_badge': '🔴 Gesperrt', 'ui_reason': 'Konto belegt: Maximal 1 offener Trade erlaubt.'
+        }
+
+    # Stufe 3: Parameter-Validierung
+    if stop_distance <= 0.0 or point_value <= 0.0:
+        return {
+            'allowed': False, 'zone': 'RED', 'status_code': 'INVALID_SL_DISTANCE',
+            'max_lots': 0.0, 'daily_buffer_usd': 0.0, 'effective_buffer': 0.0,
+            'effective_threshold_usd': 0.0, 'allocated_risk_usd': 0.0,
+            'ui_badge': '🔴 Fehler (SL/PV)', 'ui_reason': 'Stop-Distance oder Point-Value ungültig.'
+        }
+
+    daily_limit = float(account_dict.get("daily_loss_limit", account_size * 0.05))
     if "daily_buffer" in account_dict and account_dict.get("daily_buffer") is not None:
         daily_buffer = float(account_dict.get("daily_buffer", daily_limit))
     elif "day_start_balance" in account_dict:
@@ -287,8 +328,6 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
     else:
         daily_buffer = daily_limit
 
-    has_open_position = bool(account_dict.get("has_open_position", False))
-
     max_loss_threshold = account_size * 0.90
     max_dd_buffer = max(0.0, current_balance - max_loss_threshold)
 
@@ -296,31 +335,9 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
     effective_buffer = max(0.0, min(daily_buffer, max_dd_buffer))
     effective_threshold_usd = current_balance - effective_buffer
 
-    pt_val = float(signal_dict.get("point_value", 100000.0))
-    sl_dist = float(signal_dict.get("stop_loss_distance", 0.0))
-    if sl_dist <= 0.0 and "sl_pips" in signal_dict:
-        sl_dist = float(signal_dict.get("sl_pips", 0.0)) / 10000.0
-    score = float(signal_dict.get("score", 0.0))
-
-    # 2. Veto-Check: Offene Positionen
-    if has_open_position:
-        return {
-            'allowed': False,
-            'zone': 'RED',
-            'status_code': 'VETO_OCCUPIED',
-            'max_lots': 0.0,
-            'daily_buffer_usd': round(effective_buffer, 2),
-            'effective_buffer': round(effective_buffer, 2),
-            'effective_threshold_usd': round(effective_threshold_usd, 2),
-            'allocated_risk_usd': 0.0,
-            'ui_badge': '🔴 Gesperrt',
-            'ui_reason': 'Konto belegt: Maximal 1 offener Trade erlaubt.'
-        }
-
     allowed = False
     zone = 'GREEN'
     status_code = ''
-    max_lots = 0.0
     allocated_risk_usd = 0.0
     ui_badge = ''
     ui_reason = ''
@@ -330,51 +347,55 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
         zone = 'GREEN'
         allowed = True
         status_code = 'GREEN_FULL'
-        risk_percentage = 5.0
-        allocated_risk_usd = effective_buffer * (risk_percentage / 100.0)
-        risk_per_lot_usd = sl_dist * pt_val
-        if risk_per_lot_usd > 0:
-            raw_lots = allocated_risk_usd / risk_per_lot_usd
-            max_lots = round(max(0.01, min(raw_lots, 10.0)), 2)
-        else:
-            max_lots = 0.01
-        ui_badge = f'🟢 Freigegeben ({max_lots:.2f} Lots)'
-        ui_reason = f'Grüne Zone (Puffer: {effective_buffer:.2f} USD). {risk_percentage}% Risiko = {allocated_risk_usd:.2f} USD Budget.'
-
+        allocated_risk_usd = effective_buffer * 0.05
+        ui_reason = f'Grüne Zone (Puffer: {effective_buffer:.2f} USD). 5.0% Risiko = {allocated_risk_usd:.2f} USD Budget.'
     elif (daily_limit * 0.30) <= effective_buffer < (daily_limit * 0.60):
         zone = 'YELLOW'
         allowed = True
         status_code = 'YELLOW_THROTTLED'
-        risk_percentage = 2.5
-        allocated_risk_usd = effective_buffer * (risk_percentage / 100.0)
-        risk_per_lot_usd = sl_dist * pt_val
-        if risk_per_lot_usd > 0:
-            raw_lots = allocated_risk_usd / risk_per_lot_usd
-            max_lots = round(max(0.01, min(raw_lots, 10.0)), 2)
-        else:
-            max_lots = 0.01
-        ui_badge = f'🟡 Schonmodus ({max_lots:.2f} Lots)'
-        ui_reason = f'Gelbe Zone (Puffer: {effective_buffer:.2f} USD). {risk_percentage}% Risiko = {allocated_risk_usd:.2f} USD Budget.'
-
+        allocated_risk_usd = effective_buffer * 0.025
+        ui_reason = f'Gelbe Zone (Puffer: {effective_buffer:.2f} USD). 2.5% Risiko = {allocated_risk_usd:.2f} USD Budget.'
     else:
-        # ROTE ZONE (< 30% von daily_limit): Sniper-Reha-Prüfung
         zone = 'RED'
-        if effective_buffer >= 50.0 and score >= 60.0:
-            status_code = 'SNIPER_REHAB'
-            sniper_risk_usd = effective_buffer * 0.10
-            allocated_risk_usd = sniper_risk_usd
-            raw_lots = sniper_risk_usd / (sl_dist * pt_val) if (sl_dist * pt_val) > 0 else 0.01
-            max_lots = round(max(0.01, min(raw_lots, 1.0)), 2)
+        if score >= 70.0 and effective_buffer >= 50.0:
             allowed = True
-            ui_badge = f'🎯 Sniper-Reha ({max_lots:.2f} Lots)'
-            ui_reason = f'🎯 Sniper-Reha aktiv: Starkes Setup ({int(score)} Pkt.) mit Mini-Risiko (${sniper_risk_usd:.2f}) freigegeben.'
+            status_code = 'SNIPER_REHAB'
+            allocated_risk_usd = effective_buffer * 0.01  # Strikt 1.0%
+            ui_reason = f'🎯 Sniper-Reha aktiv: Score {score} freigegeben. Budget: {allocated_risk_usd:.2f} USD.'
         else:
             allowed = False
-            max_lots = 0.0
-            status_code = 'RED_MUTED'
+            status_code = 'MUTED_RED_ZONE'
             allocated_risk_usd = 0.0
-            ui_badge = '🔴 Tages-Stopp'
             ui_reason = '🚨 Notbremse aktiv: Puffer erschöpft oder Setup zu schwach für Reha.'
+
+    # Universelle Obergrenze über alle Zonen
+    allocated_risk_usd = min(allocated_risk_usd, daily_limit * 0.05)
+
+    # Mikrolot-Sizing & math.floor
+    risk_per_lot_usd = stop_distance * point_value
+    raw_lots = math.floor((allocated_risk_usd / risk_per_lot_usd) * 100.0) / 100.0 if risk_per_lot_usd > 0 else 0.0
+    
+    # Poka-Yoke Schutz gegen Lot-Aufrundung (nur aktiv wenn Trade grundsätzlich erlaubt)
+    if allowed:
+        if raw_lots < 0.01:
+            allowed = False
+            max_lots = 0.0
+            status_code = 'SL_TOO_WIDE'
+            ui_reason = 'Stop-Loss zu weit für Mikrolot-Minimum.'
+        else:
+            max_lots = raw_lots
+    else:
+        max_lots = 0.0
+
+    if allowed:
+        if status_code == 'GREEN_FULL':
+            ui_badge = f'🟢 Freigegeben ({max_lots:.2f} Lots)'
+        elif status_code == 'YELLOW_THROTTLED':
+            ui_badge = f'🟡 Schonmodus ({max_lots:.2f} Lots)'
+        elif status_code == 'SNIPER_REHAB':
+            ui_badge = f'🎯 Sniper-Reha ({max_lots:.2f} Lots)'
+    else:
+        ui_badge = '🔴 Gesperrt (SL)' if status_code == 'SL_TOO_WIDE' else '🔴 Tages-Stopp'
 
     return {
         'allowed': allowed,

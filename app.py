@@ -43,6 +43,11 @@ if "username" not in st.session_state:
 
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
+if "inbox_prefill_active" not in st.session_state:
+    st.session_state["inbox_prefill_active"] = False
+
+if "inbox_prefill_data" not in st.session_state:
+    st.session_state["inbox_prefill_data"] = {}
 
 dev_auto_login = os.getenv('DEV_AUTO_LOGIN', 'false').lower()
 if dev_auto_login == 'true' and st.session_state.username is None:
@@ -164,6 +169,18 @@ BOT_DIR = os.path.join(PARENT_DIR, "RSI Bot")
 CONFIG_FILE = os.path.join(BOT_DIR, "ticker_config.json")
 MEGA_LISTS_DIR = os.path.join(BOT_DIR, "mega_lists")
 JOURNAL_FILE = os.path.join(BOT_DIR, "trade_journal.csv")
+_p_inbox = os.path.join(PARENT_DIR, "RSI Bot", "state", "signal_inbox.json")
+_b_inbox = os.path.join(BASE_DIR, "state", "signal_inbox.json")
+_e_inbox = os.getenv("INVARIX_SIGNAL_INBOX")
+
+if os.path.exists(_p_inbox):
+    SIGNAL_INBOX_FILE = _p_inbox
+elif os.path.exists(_b_inbox):
+    SIGNAL_INBOX_FILE = _b_inbox
+elif _e_inbox and os.path.exists(_e_inbox):
+    SIGNAL_INBOX_FILE = _e_inbox
+else:
+    SIGNAL_INBOX_FILE = _p_inbox  # Fallback
 #endregion
 USERS_DIR = os.path.join(BASE_DIR, "users")
 AUTH_FILE = os.path.join(USERS_DIR, "auth_credentials.json")
@@ -683,6 +700,52 @@ def file_lock(filepath, timeout=5.0):
             except Exception:
                 pass
         os.close(fd)
+
+def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
+    if not os.path.exists(SIGNAL_INBOX_FILE):
+        return []
+    try:
+        with open(SIGNAL_INBOX_FILE, "r", encoding="utf-8") as f:
+            inbox = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    if not isinstance(inbox, list):
+        return []
+        
+    try:
+        state_file = get_user_file("alert_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as f:
+                alert_state = json.load(f)
+        else:
+            alert_state = {}
+    except Exception:
+        alert_state = {}
+        
+    dismissed_signals = alert_state.get("dismissed_signals", [])
+    consumed_signals = alert_state.get("consumed_signals", {})
+    
+    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    valid_inbox = []
+    
+    for entry in inbox:
+        sig_id = entry.get("id", "")
+        if sig_id in dismissed_signals:
+            continue
+            
+        try:
+            ts_str = entry.get("timestamp", "")
+            dt = datetime.datetime.fromisoformat(ts_str)
+            age = now_ts - dt.timestamp()
+            if age <= max_age_seconds:
+                if sig_id in consumed_signals:
+                    entry["_consumed_accounts"] = consumed_signals[sig_id]
+                valid_inbox.append(entry)
+        except Exception:
+            pass
+            
+    return valid_inbox
+
 def load_trade_journal():
     cols = ['id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction', 'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type', 'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur', 'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode', 'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes', 'strategy_version', 'execution_type']
     user_journal = get_user_file("trade_journal.csv")
@@ -894,6 +957,20 @@ def get_point_value(symbol, contract=""):
     if contract in POINT_VALUES: return POINT_VALUES[contract]
     if symbol in POINT_VALUES: return POINT_VALUES[symbol]
     return 1.0    
+def get_effective_forex_risk_pts(symbol, raw_pts, current_price, fx_usd_eur=1.0):
+    sym_u = str(symbol).upper().strip()
+    cp = float(current_price) if float(current_price) > 0.0 else 1.0
+    fx = float(fx_usd_eur) if float(fx_usd_eur) > 0.0 else 1.0
+    
+    # 1. USD-Basispaare (USDJPY, USDCAD, USDCHF)
+    if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
+        return raw_pts / cp
+    # 2. Cross-Pair EURJPY (JPY Kursdifferenz auf EUR und danach auf USD normieren)
+    elif sym_u.startswith("EURJPY"):
+        return (raw_pts / cp) / fx
+    # 3. Standard-Paare mit USD als Quote (EURUSD, GBPUSD, AUDUSD)
+    else:
+        return raw_pts
 #endregion
 #region CALC CORE
 def is_market_open_mez(symbol, category_hint=""):
@@ -1137,7 +1214,13 @@ def calculate_master_score(details, crv_rating, rs_ratio, latest_rsi, rsi_buy, d
         details["ampel"] = "⚪ Kein Swing-Setup (Low Volatility)"
         return 0, "⚪ N/A (Defensiv)", "Säulen:0 CRV:0 RS:0 Sig:0"
 
-    icon = "🚀" if total >= 75 else ("🟢" if total >= 60 else ("🟡" if total >= 40 else "🔴"))
+    if total >= 70:
+        icon = "🟢"
+    elif total <= 35:
+        icon = "🟣"
+    else:
+        icon = "🟡"
+        
     breakdown_str = f"Säulen:{int(pts_saeulen)} CRV:{int(pts_crv)} RS:{int(pts_rs)} Sig:{int(pts_signal)}"
     return total, f"{icon} {total}/100", breakdown_str
 def calc_rsi_and_targets(df_ticker, t_buy, t_sell, strategy_mode="5_saeulen_core", is_dynamic=False, z_buy=-2.0, z_sell=2.0, ticker=""):
@@ -2015,6 +2098,8 @@ with st.expander("📖 Schnellstart-Anleitung & Kader-Spickzettel", expanded=Fal
 
 #region SIDEBAR (Risk Management & Order Desk)
 with st.sidebar:
+    if st.session_state.get("_pending_sidebar_account"):
+        st.session_state["sidebar_lab_account_selector"] = st.session_state.pop("_pending_sidebar_account")
     
     st.markdown(f"👤 **Eingeloggt als:** {st.session_state.username} ({st.session_state.role})")
     if st.button("🚪 Logout", use_container_width=True):
@@ -2148,6 +2233,58 @@ with st.sidebar:
     
     # Helfer zum Abrufen der aktuellen Order-Daten (Tab-unabhängig)
     def get_global_order_data():
+        if st.session_state.get("inbox_order_payload"):
+            sig = st.session_state["inbox_order_payload"]
+            sym = str(sig.get("symbol", "")).strip()
+            
+            # Poka-Yoke: Wenn der Nutzer aktiv einen anderen Ticker in der Tabelle wählt, Inbox-Payload freigeben
+            active_check = st.session_state.get("active_futures_order") or st.session_state.get("active_order_ticker")
+            if active_check and active_check != sym:
+                st.session_state["inbox_order_payload"] = None
+            else:
+                is_short = sig.get("direction", "").upper() == "SHORT"
+                cp = float(sig.get("current_price", 0.0))
+                sl = float(sig.get("sl_price", 0.0))
+                tp = float(sig.get("tp_price", 0.0))
+                score = float(sig.get("score", 70))
+                setup = sig.get("setup", "")
+                
+                is_fx = sym.upper().endswith("=X") or "DX-Y" in sym.upper()
+                is_fut = "=F" in sym.upper() or sym.upper() in ["MNQ", "MES", "MYM", "M2K", "MGC", "MCL", "QG", "SIL"]
+                desk_type = "prop" if (is_fx or is_fut) else "swing"
+                a_class = "Forex" if is_fx else ("Futures" if is_fut else "Aktien")
+                
+                dist_val = abs(cp - sl)
+                dist_str = f"{dist_val * 100:.1f} Pips" if "JPY" in sym.upper() else (f"{dist_val * 10000:.1f} Pips" if is_fx else (f"{dist_val:.4f} Pkt." if dist_val < 1.0 else f"{dist_val:.2f} Pkt."))
+                
+                fb_atr = max(1.0, dist_val * 0.5)
+                atr_val = float(sig.get("atr", fb_atr))
+                
+                row_data = {
+                    "Ticker": sym,
+                    "Name": f"{sym} (Co-Pilot)",
+                    "Klasse": a_class,
+                    "Signal": ("🟣 " if is_short else "🟢 ") + f"⚡ {'Short' if is_short else 'Long'} (Trend)",
+                    "Ampel": "🟣 Short" if is_short else "🟢 Long",
+                    "Kurs": format_dynamic_price(cp, sym),
+                    "Stop Loss": format_dynamic_price(sl, sym),
+                    "Take Profit": format_dynamic_price(tp, sym),
+                    "Stop Loss (SL)": format_dynamic_price(sl, sym),
+                    "Take Profit (TP)": format_dynamic_price(tp, sym),
+                    "SL": sl, "TP": tp,
+                    "ATR": atr_val,
+                    "_raw_cp": cp, "_raw_sl": sl, "_raw_tp": tp,
+                    "_raw_is_short": is_short,
+                    "_raw_name": f"{sym} (Signal)",
+                    "_raw_qty": 0,
+                    "Sort_Score": score,
+                    "Master-Score": f"{'🟣' if is_short else '🟢'} {int(score)}/100",
+                    "Säulen-Details": "EMA200:15 MACD:10 Vol:10",
+                    "DNA": f"[{a_class.upper()}] 🚀 High-Beta Growth",
+                    "Abstand": dist_str
+                }
+                return sym, row_data, desk_type
+
         if st.session_state.get("active_order_ticker"):
             sym = st.session_state.active_order_ticker
             if "scanner_results" in st.session_state and not st.session_state.scanner_results.empty:
@@ -2171,7 +2308,49 @@ with st.sidebar:
         # ZUSTAND A: RUHEZUSTAND
         st.info("👈 Wähle in der Tabelle eines Scanners die Checkbox '🛒 Order' aus, um den automatischen Positions- und Risiko-Rechner zu laden.")
     
-    elif desk_type == "swing":
+    else:
+        # INBOX-PREFILL & ENTPRELLUNG: Werte überschreiben, bevor sie ans UI / RESONO fließen
+        if hasattr(row_data, "to_dict"):
+            row_data = row_data.to_dict()
+        elif not isinstance(row_data, dict):
+            row_data = dict(row_data)
+
+        if st.session_state.get("inbox_prefill_active", False):
+            inbox_data = st.session_state.get("inbox_prefill_data", {})
+            
+            # Ticker-Vergleich mit Micro-Futures-Toleranz (NQ=F <-> MNQ und CL=F <-> MCL)
+            sig_s = str(inbox_data.get("symbol", "")).upper().strip()
+            act_s = str(active_sym).upper().strip()
+            sym_match = (
+                (sig_s == act_s) or 
+                (sig_s in ["NQ=F", "MNQ"] and act_s in ["NQ=F", "MNQ"]) or 
+                (sig_s in ["CL=F", "MCL"] and act_s in ["CL=F", "MCL"])
+            )
+            
+            if sym_match:
+                is_short_inbox = (inbox_data.get("direction", "").upper() == "SHORT")
+                
+                # Swing-Desk Keys überschreiben
+                row_data['Ampel'] = "🟣 Short" if is_short_inbox else "🟢 Long"
+                row_data['Kurs'] = str(inbox_data.get("current_price", row_data.get('Kurs', '0')))
+                row_data['Stop Loss (SL)'] = str(inbox_data.get("sl_price", row_data.get('Stop Loss (SL)', 0)))
+                row_data['Take Profit (TP)'] = str(inbox_data.get("tp_price", row_data.get('Take Profit (TP)', 0)))
+                row_data['SL'] = float(inbox_data.get("sl_price", row_data.get('SL', 0)))
+                row_data['TP'] = float(inbox_data.get("tp_price", row_data.get('TP', 0)))
+                
+                # Prop-Desk Keys überschreiben
+                row_data['_raw_is_short'] = is_short_inbox
+                row_data['_raw_cp'] = float(inbox_data.get("current_price", row_data.get('_raw_cp', 0)))
+                row_data['_raw_sl'] = float(inbox_data.get("sl_price", row_data.get('_raw_sl', 0)))
+                row_data['_raw_tp'] = float(inbox_data.get("tp_price", row_data.get('_raw_tp', 0)))
+                
+                if "score" in inbox_data:
+                    row_data['Sort_Score'] = float(inbox_data["score"])
+                    
+            # Flag transaktional zurücksetzen (Entprellung, Poka-Yoke)
+            st.session_state["inbox_prefill_active"] = False
+
+    if desk_type == "swing":
         # ZUSTAND B: SWING-DESK (Aktien & Krypto)
         st.header("📋 Broker-Order-Desk (Aktien & Krypto)")
         if st.button("🗑️ Order-Desk leeren / Auswahl aufheben", use_container_width=True, key="global_clear_swing"):
@@ -2239,6 +2418,7 @@ with st.sidebar:
             
             temp_config["global_settings"]["account_size"] = free_cash
             temp_config["global_settings"]["risk_pct"] = sel_acc_data.get("risk_pct", 1.0)
+            temp_config["global_settings"]["risk_mode"] = "Prozentuales Konto-Risiko (%)"
             temp_config["global_settings"]["prop_guard"] = (acc_prof_sb in ["prop_guard", "defensive_swing", "apex_lock"])
             temp_config["global_settings"]["fee_mode"] = fee_mode_str
         profile_conflict_blocked_swing = False
@@ -2270,7 +2450,7 @@ with st.sidebar:
         atr_val = float(row_data.get('ATR', 0))
         
         is_multi = active_sym.endswith("=F") or any(ext in active_sym.upper() for ext in ["=X", "DX-Y"])
-        is_setup_b = "⚡ Long" in str(row_data.get("Ampel", ""))
+        is_setup_b = "EMA200" in str(row_data.get("Säulen-Details", ""))
         
         if is_multi or acc_prof_sb == "apex_lock": expected_days = 0.5
         elif is_setup_b: expected_days = 15
@@ -2378,6 +2558,9 @@ with st.sidebar:
         render_currency_metric(c_order7, "Möglicher Gewinn (Netto)", gewinn_eur_netto / fx if fx > 0 else gewinn_eur_netto, curr, fx, curr_view, active_sym)
         st.markdown(f"**Reiner Kursgewinn:** {gewinn_eur_brutto:.2f} € | **Gebühren bei TP:** {tp_fees_eur:.2f} €")
                 
+        if atr_val <= 0:
+            atr_val = max(1.0, abs(einstieg_val - sl_val) * 0.5)
+
         if atr_val > 0:
             st.markdown(f"⏱️ **Erwartete Haltedauer:** ca. {int(expected_days)} Handelstage")
             st.markdown("---")
@@ -2412,7 +2595,7 @@ with st.sidebar:
             real_reward_swing = abs(tp_val - real_fill_swing)
             effective_crv_swing = (real_reward_swing / real_risk_swing) if real_risk_swing > 0 else 0.0
 
-            if real_fill_swing != einstieg_val:
+            if abs(real_fill_swing - einstieg_val) > 0.0001:
                 if effective_crv_swing < 1.0:
                     st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_swing:.2f} eingebrochen. Risiko übersteigt Gewinnchance!")
                 elif effective_crv_swing < 1.25:
@@ -2428,7 +2611,7 @@ with st.sidebar:
                 dyn_inv_cap_real = dyn_pos_size * real_fill_swing * fx
                 dyn_risk_eur_real = dyn_pos_size * abs(real_fill_swing - sl_val) * fx
                 trade_notes_swing = ""
-                if effective_crv_swing < 1.25 and real_fill_swing != einstieg_val:
+                if effective_crv_swing < 1.25 and abs(real_fill_swing - einstieg_val) > 0.0001:
                     final_exit_mode_swing = "DEFENSIVE_EMERGENCY"
                     trade_notes_swing = f"Slippage-Alert: Signal {einstieg_val:.2f} vs Fill {real_fill_swing:.2f} (CRV: {effective_crv_swing:.2f})"
                 else:
@@ -2450,7 +2633,31 @@ with st.sidebar:
                 }
                 df_j = pd.concat([df_j, pd.DataFrame([new_trade])], ignore_index=True)
                 save_trade_journal(df_j)
+                if st.session_state.get("inbox_order_payload"):
+                    sig_id = str(st.session_state["inbox_order_payload"].get("id", ""))
+                    if sig_id:
+                        try:
+                            state_file = get_user_file("alert_state.json")
+                            if os.path.exists(state_file):
+                                with open(state_file, "r", encoding="utf-8") as f:
+                                    alert_state = json.load(f)
+                            else:
+                                alert_state = {}
+                                
+                            consumed = alert_state.get("consumed_signals", {})
+                            if sig_id not in consumed:
+                                consumed[sig_id] = []
+                            if sel_acc_name not in consumed[sig_id]:
+                                consumed[sig_id].append(sel_acc_name)
+                                
+                            alert_state["consumed_signals"] = consumed
+                            with open(state_file, "w", encoding="utf-8") as f:
+                                json.dump(alert_state, f, indent=4)
+                        except Exception:
+                            pass
+                    st.session_state["inbox_order_payload"] = None
                 st.toast("✅ Trade erfolgreich im Journal archiviert!", icon="📝")
+                st.session_state["inbox_order_payload"] = None
                 st.rerun()
 
     elif desk_type == "prop":
@@ -2525,7 +2732,7 @@ with st.sidebar:
             start_cap_pf = float(sel_pf_acc_data.get("account_size", 50000.0))
             
             prof_name = sel_pf_acc_data.get("exit_profile", "prop_guard")
-            if prof_name == "apex_lock": dl, mdd = start_cap_pf * 0.025, start_cap_pf * 0.05
+            if prof_name == "apex_lock" or "apex" in sel_pf_acc_name.lower(): dl, mdd = start_cap_pf * 0.025, start_cap_pf * 0.05
             elif prof_name == "ftmo_swing": dl, mdd = start_cap_pf * 0.05, start_cap_pf * 0.10
             else: dl, mdd = start_cap_pf * 0.05, start_cap_pf * 0.10 # Fallback
             
@@ -2560,7 +2767,11 @@ with st.sidebar:
         raw_cp_res = float(row_data.get('_raw_cp', str(row_data.get('Kurs', '0')).split()[0]))
         raw_sl_res = float(row_data.get('_raw_sl', row_data.get('Stop Loss', 0)))
         risk_pts_dyn = abs(raw_cp_res - raw_sl_res)
-        eff_risk_pts_sb = (risk_pts_dyn / 100.0) if (is_fx_sidebar and "JPY" in active_sym_u) else risk_pts_dyn
+        fx_usd_eur_local = get_fx_rate("$", "EUR")
+        if is_fx_sidebar:
+            eff_risk_pts_sb = get_effective_forex_risk_pts(active_sym, risk_pts_dyn, raw_cp_res, fx_usd_eur_local)
+        else:
+            eff_risk_pts_sb = risk_pts_dyn
 
         today_str_sidebar = datetime.datetime.now().strftime("%d/%m/%Y")
         df_closed_today_sidebar = df_j_closed_pf[df_j_closed_pf['exit_date'].astype(str).str.contains(today_str_sidebar, na=False)] if (not is_sandbox_prop and not df_j_closed_pf.empty) else pd.DataFrame()
@@ -2569,15 +2780,30 @@ with st.sidebar:
         open_pnl_sidebar = 0.0
         if has_open_pos:
             df_open_sidebar = df_j_acc[df_j_acc['status'] == 'OPEN']
+            fx_usd_eur_local = get_fx_rate("$", "EUR")
             for _, r_op in df_open_sidebar.iterrows():
-                if r_op['symbol'] == active_sym:
-                    dir_m_op = 1 if r_op['direction'] == 'Long' else -1
-                    open_pnl_sidebar += (raw_cp_res - float(r_op['entry_price'])) * float(r_op['position_size']) * float(r_op.get('point_value', 1.0)) * dir_m_op
+                op_sym = str(r_op['symbol']).strip()
+                op_ep = float(r_op['entry_price'])
+                op_qty = float(r_op['position_size'])
+                op_dir = 1 if str(r_op['direction']).title() == 'Long' else -1
+                op_pv = float(r_op.get('point_value', 1.0)) if pd.notna(r_op.get('point_value')) else 1.0
+                op_cp = op_ep  # Basis
+                # Aktuellen Kurs aus row_data nutzen wenn gleicher Ticker, sonst r_op['entry_price']
+                if op_sym == active_sym:
+                    op_cp = raw_cp_res
+                
+                raw_diff = (op_cp - op_ep) * op_dir
+                if op_sym.endswith("=X") or "DX-Y" in op_sym:
+                    # Devisen Währungsskalierung
+                    eff_diff = get_effective_forex_risk_pts(op_sym, raw_diff, op_cp, fx_usd_eur_local)
+                    open_pnl_sidebar += eff_diff * op_qty * op_pv
+                else:
+                    open_pnl_sidebar += raw_diff * op_qty * op_pv
         
         daily_pnl_sidebar = float(today_realized_pnl_sidebar + open_pnl_sidebar)
         cap_for_limit = float(start_cap_pf) if not is_sandbox_prop else float(sandbox_cap_pf)
         if cap_for_limit <= 0: cap_for_limit = 50000.0
-        daily_loss_limit_sidebar = cap_for_limit * 0.05
+        daily_loss_limit_sidebar = dl if (is_apex_lock or "apex" in sel_pf_acc_name.lower()) else (cap_for_limit * 0.05)
         daily_buffer_sidebar = daily_loss_limit_sidebar + daily_pnl_sidebar
 
         actual_asset_class = "Forex" if is_fx_sidebar else row_data.get("Klasse", "Futures")
@@ -2673,8 +2899,8 @@ with st.sidebar:
         market_open_prop_early = is_market_open_mez(active_sym, row_data.get('Klasse', 'Futures'))
         in_session_early = True
         try:
-            berlin_tz = zoneinfo.ZoneInfo("Europe/Berlin")
-            now_dt_early = datetime.datetime.now(berlin_tz)
+            ny_tz = zoneinfo.ZoneInfo("America/New_York")
+            now_dt_early = datetime.datetime.now(ny_tz)
         except Exception:
             now_dt_early = datetime.datetime.now()
         wd_early = now_dt_early.weekday()
@@ -2682,32 +2908,36 @@ with st.sidebar:
         sym_u_chk_early = str(active_sym).upper().strip()
         
         session_times = "Regulär"
-        if sym_u_chk_early == "NQ=F":
-            session_times = "15:30–21:30"
-            if wd_early >= 5 or not (15.5 <= t_float_early < 21.5): in_session_early = False
+        if sym_u_chk_early in ["NQ=F", "MNQ", "ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]:
+            session_times = "09:30–15:30 ET"
+            if wd_early >= 5 or not (9.5 <= t_float_early < 15.5): in_session_early = False
         elif sym_u_chk_early in ["CL=F", "MCL"]:
-            session_times = "14:30–17:30"
-            if wd_early >= 5 or not (14.5 <= t_float_early < 17.5): in_session_early = False
+            session_times = "08:30–11:30 ET"
+            if wd_early >= 5 or not (8.5 <= t_float_early < 11.5): in_session_early = False
         elif sym_u_chk_early == "EURUSD=X":
-            session_times = "13:00–18:00"
-            if wd_early >= 5 or not (13.0 <= t_float_early < 18.0): in_session_early = False
+            session_times = "07:00–12:00 ET"
+            if wd_early >= 5 or not (7.0 <= t_float_early < 12.0): in_session_early = False
             
         # 2. Asset / Profile Veto Check
         asset_block_reason = ""
         prof_disp_pf = get_profile_display_name(prof_name)
         
         if is_apex_acc_prop:
-            if active_sym in ["CL=F", "MCL"]:
+            active_sym_upper = str(active_sym).upper().strip()
+            is_cme_future = (
+                active_sym_upper.endswith("=F") or 
+                active_sym_upper in ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG",
+                                     "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+            )
+            if is_cme_future:
                 if prof_name == "apex_lock":
                     profile_conflict_blocked_prop = False
                 else:
                     profile_conflict_blocked_prop = True
                     asset_block_reason = f"{active_sym} erfordert zwingend 'Target-Lock Intraday' (Gewählt: {prof_disp_pf})."
-            elif active_sym == "NQ=F" and prof_name == "apex_lock":
-                profile_conflict_blocked_prop = False
             else:
                 profile_conflict_blocked_prop = True
-                asset_block_reason = f"{active_sym} ist auf Apex mit Profil {prof_disp_pf} nicht zugelassen."
+                asset_block_reason = f"{active_sym} ist auf Apex nicht zugelassen (nur CME-Futures)."
         elif is_prop_firm_prop and prof_name not in empfehlung.get("valid_profiles", [empfehlung["profil"]]):
             profile_conflict_blocked_prop = True
             asset_block_reason = f"{active_sym} ist für dieses Konto nicht freigegeben (erfordert {empfehlung['profil']})."
@@ -2778,8 +3008,11 @@ with st.sidebar:
             st.error("🛑 **Krypto-Guard:** Krypto ist auf Prop-Firm Challenges gesperrt (Whipsaw-Risiko).")
             is_trade_blocked, raw_qty_dyn = True, 0
         fallback_qty = float(row_data.get('_raw_qty', 0))
-        if admin_bypass_prop or raw_qty_dyn <= 0:
-            raw_qty_dyn = fallback_qty if fallback_qty > 0 else (1.0 if a_class in ["Futures", "Rohstoffe"] else 0.1)
+        if admin_bypass_prop:
+            if raw_qty_dyn <= 0:
+                raw_qty_dyn = fallback_qty if fallback_qty > 0 else (1.0 if a_class in ["Futures", "Rohstoffe"] else 0.1)
+        elif not res_allowed or raw_qty_dyn <= 0:
+            raw_qty_dyn = 0.0
 
         if admin_bypass_prop or is_private_prop:
             is_trade_blocked = False
@@ -2795,7 +3028,10 @@ with st.sidebar:
             size_str_dyn = f"{qty_dyn:.2f} {c_name}" if (a_class == "Forex" and qty_dyn > 0) else (f"{qty_dyn} {c_name}" if qty_dyn > 0 else "⚠️ RESONO Veto")
             actual_risk_dyn = qty_dyn * eff_risk_pts_sb * pt_val
             
-        if is_trade_blocked: size_str_dyn, actual_risk_dyn = "🚫 Gesperrt", 0.0
+        if is_trade_blocked or raw_qty_dyn <= 0:
+            qty_dyn = 0
+            size_str_dyn = "🚫 Gesperrt"
+            actual_risk_dyn = 0.0
         
         c_b1, c_b2 = st.columns(2)
         c_b1.metric("Einstieg", format_dynamic_price(raw_cp, active_sym))
@@ -2874,23 +3110,21 @@ with st.sidebar:
             fee_mode_str = st.session_state.config.get("global_settings", {}).get("fee_mode", "Keine Gebühren / Raw")
         # fee_mode_str für reguläre Konten wurde bereits weiter oben gesetzt
         
-        # Poka-Yoke Gebühren-Routing nach Asset-Klasse (Prop-Desk)
-        if "Keine Gebühren / Raw" in fee_mode_str:
-            est_fees_usd = 0.0
-        elif a_class == "Forex" or is_fx_sidebar:
-            est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.00003
-        elif a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper():
-            est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.00005
-        else:
-            est_fees_usd = 0.0
-        
-        est_fees_eur = est_fees_usd * fx_usd_eur
+        # NEU: Dreiteilung des Nominalwerts VOR den Gebühren berechnen
         if a_class == "Forex" or is_fx_sidebar:
-            if "EUR" in active_sym_u:
+            # 1. USD-Basispaare (USDJPY, USDCAD, USDCHF) -> 1 Lot = 100.000 USD
+            if any(active_sym_u.startswith(p) for p in ["USDJPY", "USDCAD", "USDCHF"]):
+                nom_usd = qty_dyn * 100000.0
+                nom_eur = nom_usd * fx_usd_eur
+            # 2. Cross-Pair EURJPY -> 1 Lot = 100.000 EUR
+            elif active_sym_u.startswith("EURJPY"):
                 nom_eur = qty_dyn * 100000.0
+                nom_usd = nom_eur / fx_usd_eur if fx_usd_eur > 0 else nom_eur
+            # 3. Standard-Paare mit USD als Quote (EURUSD, GBPUSD, AUDUSD)
             else:
-                nom_eur = qty_dyn * 100000.0 * raw_cp * fx_usd_eur
-            nom_usd = qty_dyn * 100000.0 * raw_cp
+                nom_usd = qty_dyn * 100000.0 * raw_cp
+                nom_eur = nom_usd * fx_usd_eur
+            
             margin_usd = nom_usd / 30.0
             margin_eur = nom_eur / 30.0
         else:
@@ -2901,6 +3135,19 @@ with st.sidebar:
             else: margin_per_contract = 100.0
             margin_usd = qty_dyn * margin_per_contract
             margin_eur = margin_usd * fx_usd_eur
+            
+        # Poka-Yoke Gebühren-Routing nach Asset-Klasse (Prop-Desk)
+        if "Keine Gebühren / Raw" in fee_mode_str:
+            est_fees_usd = 0.0
+        elif a_class == "Forex" or is_fx_sidebar:
+            # Exakte 6,00 $ Roundtrip pro Standard-Lot (0.003% pro Half-Turn auf Nominalwert)
+            est_fees_usd = nom_usd * 2.0 * 0.00003
+        elif a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper():
+            est_fees_usd = (raw_cp + raw_tp) * qty_dyn * pt_val * 0.00005
+        else:
+            est_fees_usd = 0.0
+        
+        est_fees_eur = est_fees_usd * fx_usd_eur
             
         pure_risk_usd = actual_risk_dyn
         planned_risk_eur = pure_risk_usd * fx_usd_eur
@@ -2961,8 +3208,8 @@ with st.sidebar:
         
         in_session = True
         try:
-            berlin_tz = zoneinfo.ZoneInfo("Europe/Berlin")
-            now_dt = datetime.datetime.now(berlin_tz)
+            ny_tz = zoneinfo.ZoneInfo("America/New_York")
+            now_dt = datetime.datetime.now(ny_tz)
         except Exception:
             now_dt = datetime.datetime.now()
         
@@ -2970,9 +3217,9 @@ with st.sidebar:
         t_float = now_dt.hour + now_dt.minute / 60.0
         sym_u_chk = str(active_sym).upper().strip()
         
-        if sym_u_chk == "NQ=F" and (wd >= 5 or not (15.5 <= t_float < 21.5)): in_session = False
-        elif sym_u_chk in ["CL=F", "MCL"] and (wd >= 5 or not (14.5 <= t_float < 17.5)): in_session = False
-        elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (13.0 <= t_float < 18.0)): in_session = False
+        if sym_u_chk in ["NQ=F", "MNQ", "ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"] and (wd >= 5 or not (9.5 <= t_float < 15.5)): in_session = False
+        elif sym_u_chk in ["CL=F", "MCL"] and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
+        elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (7.0 <= t_float < 12.0)): in_session = False
         
         if not market_open_prop:
             st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
@@ -3024,7 +3271,7 @@ with st.sidebar:
         real_reward_prop = abs(raw_tp - real_fill_prop)
         effective_crv_prop = (real_reward_prop / real_risk_prop) if real_risk_prop > 0 else 0.0
 
-        if real_fill_prop != raw_cp:
+        if abs(real_fill_prop - raw_cp) > 0.0001:
             if effective_crv_prop < 1.0:
                 st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_prop:.2f} eingebrochen. Risiko übersteigt Gewinnchance!")
             elif effective_crv_prop < 1.25:
@@ -3060,7 +3307,7 @@ with st.sidebar:
             
             est_fees_eur_real = est_fees_usd_real * fx_usd_eur
 
-            if effective_crv_prop < 1.25 and real_fill_prop != raw_cp:
+            if effective_crv_prop < 1.25 and abs(real_fill_prop - raw_cp) > 0.0001:
                 final_exit_mode_prop = "DEFENSIVE_EMERGENCY"
                 trade_notes_prop = f"Prop-Desk ({size_str_dyn}) | Slippage-Alert: Signal {format_dynamic_price(raw_cp, active_sym)} vs Fill {format_dynamic_price(real_fill_prop, active_sym)} (CRV: {effective_crv_prop:.2f})"
             else:
@@ -3085,7 +3332,31 @@ with st.sidebar:
             }
             df_j = pd.concat([df_j, pd.DataFrame([new_trade])], ignore_index=True)
             save_trade_journal(df_j)
+            if st.session_state.get("inbox_order_payload"):
+                sig_id = str(st.session_state["inbox_order_payload"].get("id", ""))
+                if sig_id:
+                    try:
+                        state_file = get_user_file("alert_state.json")
+                        if os.path.exists(state_file):
+                            with open(state_file, "r", encoding="utf-8") as f:
+                                alert_state = json.load(f)
+                        else:
+                            alert_state = {}
+                            
+                        consumed = alert_state.get("consumed_signals", {})
+                        if sig_id not in consumed:
+                            consumed[sig_id] = []
+                        if sel_pf_acc_name not in consumed[sig_id]:
+                            consumed[sig_id].append(sel_pf_acc_name)
+                            
+                        alert_state["consumed_signals"] = consumed
+                        with open(state_file, "w", encoding="utf-8") as f:
+                            json.dump(alert_state, f, indent=4)
+                    except Exception:
+                        pass
+                st.session_state["inbox_order_payload"] = None
             st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
+            st.session_state["inbox_order_payload"] = None
             st.rerun()
     with st.expander("⚙️ Globale Vorgaben (Standard für Sandbox & Neukonten)", expanded=False):
         with st.form("sidebar_risk_form_advanced"):
@@ -3308,6 +3579,79 @@ with tab_watch:
 with tab_screen:
     st.header("⚡ Shortterm Scanner & Scoring")
     st.markdown("Durchsuche vordefinierte Markt-Universen nach deinen Kriterien und speichere die besten Setups als Favoriten.")
+    active_signals = load_active_signal_inbox()
+    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+    
+    swing_signals = []
+    for sig in active_signals:
+        s_sym = str(sig.get("symbol", "")).upper().strip()
+        is_fut_fx = s_sym.endswith("=F") or s_sym.endswith("=X") or "DX-Y" in s_sym or s_sym in cme_list
+        if not is_fut_fx:
+            swing_signals.append(sig)
+            
+    if swing_signals:
+        swing_signals = sorted(swing_signals, key=lambda x: float(x.get("score", 0)), reverse=True)
+        with st.container(border=True):
+            st.markdown("#### ⚡ Aktive Co-Pilot Signale (Aktien & Krypto)")
+            for idx, sig in enumerate(swing_signals):
+                try:
+                    sig_ts = datetime.datetime.fromisoformat(sig.get("timestamp", ""))
+                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - sig_ts.timestamp()) / 60)
+                except Exception:
+                    age_min = 0
+
+                is_short = sig.get("direction", "").upper() == "SHORT"
+                dir_badge = "🟣 SHORT" if is_short else "🟢 LONG"
+                
+                c_sig1, c_sig2, c_sig3 = st.columns([3, 4, 3])
+                with c_sig1:
+                    st.markdown(f"**{sig.get('symbol', 'N/A')}** | {dir_badge} | Timeframe: `{sig.get('timeframe', 'N/A')}`")
+                    st.markdown(f"*{sig.get('setup', 'N/A')}* | Master-Score: **{sig.get('score', 0)}/100**")
+                    st.caption(f"⏱️ vor {age_min} Min.")
+                with c_sig2:
+                    st.markdown(f"**Trigger:** {sig.get('current_price', 'N/A')} | **Max. Limit:** {sig.get('max_limit_price', 'N/A')}")
+                    st.markdown(f"**Stop-Loss:** {sig.get('sl_price', 'N/A')} | **Take-Profit (+1.0 R):** {sig.get('tp_price', 'N/A')}")
+                with c_sig3:
+                    acc_list = sig.get('accounts', [])
+                    consumed_list = sig.get('_consumed_accounts', [])
+                    if acc_list:
+                        badges = []
+                        for acc in acc_list:
+                            is_consumed = any(str(acc).lower() in str(c).lower() or str(c).lower() in str(acc).lower() for c in consumed_list)
+                            if is_consumed:
+                                badges.append(f"<span style='background-color:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>✅ {acc}</span>")
+                            else:
+                                badges.append(f"<span style='background-color:#F59E0B; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>⏳ {acc}</span>")
+                        st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
+                        
+                    c_btn_load, c_btn_dismiss = st.columns([4, 1])
+                    with c_btn_load:
+                        if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_t1_{sig.get('id', idx)}", use_container_width=True):
+                            st.session_state["inbox_order_payload"] = sig
+                            st.session_state["active_order_ticker"] = sig.get("symbol")
+                            st.session_state["active_futures_order"] = None
+                            st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
+                            st.rerun()
+                    with c_btn_dismiss:
+                        if st.button("✕", key=f"btn_inbox_dismiss_t1_{sig.get('id', idx)}", help="Signal ignorieren/ausblenden", use_container_width=True):
+                            sig_id = sig.get('id')
+                            if sig_id:
+                                try:
+                                    state_file = get_user_file("alert_state.json")
+                                    a_state = {}
+                                    if os.path.exists(state_file):
+                                        with open(state_file, "r", encoding="utf-8") as f: a_state = json.load(f)
+                                    a_state.setdefault("dismissed_signals", [])
+                                    if sig_id not in a_state["dismissed_signals"]:
+                                        a_state["dismissed_signals"].append(sig_id)
+                                    with open(state_file, "w", encoding="utf-8") as f: json.dump(a_state, f, indent=4)
+                                    if st.session_state.get("inbox_order_payload", {}).get("id") == sig_id:
+                                        st.session_state["inbox_order_payload"] = None
+                                except Exception: pass
+                            st.rerun()
+                st.markdown("---")
+    else:
+        st.caption("⚪ Keine neuen Swing-Signale (Aktien/Krypto) in den letzten 4 Stunden.")
 
     with st.expander("🛠️ AEGIS MIND Engine — Säulen & Konfluenz", expanded=False):
         st.info("💡 **Poka-Yoke (Fehlervermeidung):** Die Indikator-Aktivierung erfolgt vollautomatisch und dynamisch über die Asset-DNA des jeweiligen Marktes. Ein manuelles Deaktivieren ist zum Schutz der Strategie-Integrität ('Rules Never Bend') ausgeschlossen.")
@@ -3535,13 +3879,23 @@ with tab_screen:
                                     pos_size, inv_cap, max_r_eur, fee_rt, _ = calculate_position_size(c_p, sl, tp, st.session_state.config, fx_rate)
                                     m_score_val, m_score_str, m_score_breakdown = calculate_master_score(details, crv_rating, rs_ratio, r, scan_limit)
 
+                                    if m_score_val >= 70:
+                                        ampel_display = "🟢 Long"
+                                    elif m_score_val <= 35:
+                                        ampel_display = "🟣 Short"
+                                    else:
+                                        ampel_display = "⚪ Neutral"
+                                        
+                                    if esg_cfg.get("aktiv", False) and sym in esg_cfg.get("tickers", []):
+                                        ampel_display = "🚫 ESG-Sperre"
+
                                     rsi_display = f"{r:.2f} (Z: {details.get('z_score', 0):.2f})" if details.get("is_dynamic") else f"{r:.2f}"
                                     scan_results_list.append({
                                         "Favorit": False, "Kategorie": source_u, "Ticker": sym, "Name": name, 
                                         "DNA": details.get("dna", "⚪ N/A"), "ATR%": details.get("atr_pct", 0.0),
                                         "Kurs": f"{format_dynamic_price(c_p, sym)} {warn_icon}".strip(), "RSI": rsi_display, 
                                         "Master-Score": m_score_str, "Score-Details": m_score_breakdown, 
-                                        "Ampel": details["ampel"], "Säulen": f"{details['score']}/{details['score_max']}", 
+                                        "Ampel": ampel_display, "Säulen": f"{details['score']}/{details['score_max']}", 
                                         "Säulen-Details": details["breakdown"], "Plateau": details.get("plateau", "⚪ N/A"), 
                                         "Sort_Score": m_score_val, "CRV Rating": crv_rating, 
                                         "Rel. Stärke": f"{rs_ratio:.2f}" if rs_ratio else "N/A",
@@ -3585,7 +3939,14 @@ with tab_screen:
             for i, (_, row) in enumerate(overall_top3.iterrows()):
                 with cols_ov[i]:
                     # Zeigt auch an, aus welchem Universum der Gesamtsieger stammt
-                    st.metric(label=f"{medals[i]}: {row['Ticker']} ({row['Kategorie']})", value=row["Master-Score"], delta=row["Ampel"], delta_color="off")
+                    score_val = row["Sort_Score"]
+                    if score_val >= 70:
+                        delta_str = "↑ 🟢 Long"
+                    elif score_val <= 35:
+                        delta_str = "↓ 🟣 Short"
+                    else:
+                        delta_str = "→ ⚪ Neutral"
+                    st.metric(label=f"{medals[i]}: {row['Ticker']} ({row['Kategorie']})", value=row["Master-Score"], delta=delta_str, delta_color="off")
         st.markdown("---")
         
         # 1. Top-Picks pro Universum anzeigen (Kacheln)
@@ -3597,18 +3958,25 @@ with tab_screen:
                 cols = st.columns(3)
                 for i, (_, row) in enumerate(univ_df.iterrows()):
                     with cols[i]:
-                        st.metric(label=f"{medals[i]}: {row['Ticker']}", value=row["Master-Score"], delta=row["Ampel"], delta_color="off")
+                        score_val = row["Sort_Score"]
+                        if score_val >= 70:
+                            delta_str = "↑ 🟢 Long"
+                        elif score_val <= 35:
+                            delta_str = "↓ 🟣 Short"
+                        else:
+                            delta_str = "→ ⚪ Neutral"
+                        st.metric(label=f"{medals[i]}: {row['Ticker']}", value=row["Master-Score"], delta=delta_str, delta_color="off")
         
         st.markdown("---")
         
         # --- FIX: Die Farb-Funktion wieder einfügen! ---
         def highlight_ampel(val):
             val_str = str(val)
-            if "⚡ Long (Trend)" in val_str: return "background-color: #cce5ff; color: #004085; font-weight: bold"
-            if "🔄 Long (Reversal)" in val_str: return "background-color: #d1ecf1; color: #0c5460; font-weight: bold"
-            if "Rebound" in val_str: return "background-color: #fff3cd; color: #856404; font-weight: bold"
-            if "Zu teuer" in val_str or "Blockiert" in val_str: return "background-color: #f8d7da; color: #721c24; font-weight: bold"
-            return "background-color: #fff3cd; color: #856404;"
+            if "🟢 Long" in val_str: return "background-color: rgba(16, 185, 129, 0.15); color: #10B981; font-weight: bold"
+            if "🟣 Short" in val_str: return "background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"
+            if "⚪ Neutral" in val_str: return "background-color: transparent; color: #94A3B8;"
+            if "Blockiert" in val_str or "Zu teuer" in val_str or "ESG-Sperre" in val_str: return "background-color: rgba(239, 68, 68, 0.15); color: #EF4444; font-weight: bold"
+            return ""
         # 2. Dynamischer Filter für die Haupttabelle
         sel_univ = st.selectbox("📂 Universum filtern:", ["Alle Universen"] + sorted(list(disp_df["Kategorie"].unique())))
         filtered_df = disp_df if sel_univ == "Alle Universen" else disp_df[disp_df["Kategorie"] == sel_univ]
@@ -3712,10 +4080,12 @@ with tab_screen:
                             st.warning(f"**🧭 Handlungsanweisung:** {guideline_scan}")
                         else:
                             st.info(f"**🧭 Handlungsanweisung:** {guideline_scan}")
-                        if "⚡ Long" in row_data.get("Ampel", ""): rec_text = "🔵 Starkes Trend-Setup (Pullback im Bullenmarkt)"
+                        is_setup_b_scan = "EMA200" in str(row_data.get("Säulen-Details", ""))
+                        if is_setup_b_scan and sort_score >= 60: rec_text = "🔵 Starkes Trend-Setup (Pullback im Bullenmarkt)"
                         elif sort_score >= 75: rec_text = "🚀 Starkes Setup (Kaufzone)"
                         elif sort_score >= 60: rec_text = "🟡 Auf der Watchlist beobachten (Reifendes Setup)"
-                        else: rec_text = "🔴 Aktuell kein Einstieg"
+                        elif sort_score <= 35: rec_text = "🟣 Bärischer Trend / Short-Kandidat"
+                        else: rec_text = "⚪ Neutral / Kein klares Setup"
                         st.markdown(f"**Empfehlung:** {rec_text}")
                         st.markdown("---")
                         rec_t2_scan = get_asset_strategy_recommendation(sym)
@@ -3815,6 +4185,16 @@ with tab_screen:
                             rs_ratio = calc_relative_strength(sym, plot)
                             m_score_val, m_score_str, m_score_breakdown = calculate_master_score(details, crv_rating, rs_ratio, r, t_b2)
 
+                            if m_score_val >= 70:
+                                ampel_display = "🟢 Long"
+                            elif m_score_val <= 35:
+                                ampel_display = "🟣 Short"
+                            else:
+                                ampel_display = "⚪ Neutral"
+                                
+                            if esg_cfg.get("aktiv", False) and sym in esg_cfg.get("tickers", []):
+                                ampel_display = "🚫 ESG-Sperre"
+
                             tb_data2.append({
                                 "Sektor": t_dict.get("sector", "Standard"), "Ticker": sym, "Name": t_dict["name"],
                                 "DNA": details.get("dna", "⚪ N/A"), "ATR%": details.get("atr_pct", 0.0), 
@@ -3822,7 +4202,7 @@ with tab_screen:
                                 "Säulen-Details": details["breakdown"], "Kauf-Zielpreis": format_dynamic_price(p_b, sym), 
                                 "Verkauf-Zielpreis": format_dynamic_price(p_s, sym), "Stop Loss (SL)": format_dynamic_price(sl, sym), 
                                 "Take Profit (TP)": format_dynamic_price(tp, sym), "CRV Rating": crv_rating, 
-                                "Ampel": details["ampel"], "Plateau": details.get("plateau", "⚪ N/A"),
+                                "Ampel": ampel_display, "Plateau": details.get("plateau", "⚪ N/A"),
                                 "Monte-Carlo": mc_label, "Stückzahl": pos_size_str, "Investition": f"{inv_cap:,.2f} €",
                                 "Master-Score": m_score_str, "Score-Details": m_score_breakdown, "Rel. Stärke": f"{rs_ratio:.2f}" if rs_ratio else "N/A",
                                 "ATR": details.get("atr", 0.0)
@@ -3835,11 +4215,10 @@ with tab_screen:
                     f_res2 = df_res2 if sel_sec2 == "Alle" else df_res2[df_res2["Sektor"] == sel_sec2]
                     def highlight_ampel_t2(val):
                         val_str = str(val)
-                        if "ESG-Sperre" in val_str: return "background-color: #e2e3e5; color: #383d41; text-decoration: line-through;"
-                        if "⚡ Long (Trend)" in val_str: return "background-color: #cce5ff; color: #004085; font-weight: bold"
-                        if "🔄 Long (Reversal)" in val_str: return "background-color: #d1ecf1; color: #0c5460; font-weight: bold"
-                        if "Rebound" in val_str: return "background-color: #fff3cd; color: #856404; font-weight: bold"
-                        if "Zu teuer" in val_str or "Blockiert" in val_str: return "background-color: #f8d7da; color: #721c24; font-weight: bold"
+                        if "ESG-Sperre" in val_str: return "background-color: rgba(239, 68, 68, 0.15); color: #EF4444; text-decoration: line-through;"
+                        if "🟢 Long" in val_str: return "background-color: rgba(16, 185, 129, 0.15); color: #10B981; font-weight: bold"
+                        if "🟣 Short" in val_str: return "background-color: rgba(168, 85, 247, 0.15); color: #C084FC; font-weight: bold"
+                        if "⚪ Neutral" in val_str: return "background-color: transparent; color: #94A3B8;"
                         return ""
                     f_res2_disp = f_res2.copy()
                     if "active_order_ticker" not in st.session_state: st.session_state.active_order_ticker = None
@@ -3931,10 +4310,12 @@ with tab_screen:
                                 else:
                                     st.info(f"**🧭 Handlungsanweisung:** {guideline_watch}")
                                 
-                                if "⚡ Long" in w_row.get("Ampel", ""): rec_text = "🔵 Starkes Trend-Setup (Pullback im Bullenmarkt)"
+                                is_setup_b_watch = "EMA200" in str(w_row.get("Säulen-Details", ""))
+                                if is_setup_b_watch and score_val >= 60: rec_text = "🔵 Starkes Trend-Setup (Pullback im Bullenmarkt)"
                                 elif score_val >= 75: rec_text = "🚀 Starkes Setup (Kaufzone)"
                                 elif score_val >= 60: rec_text = "🟡 Auf der Watchlist beobachten (Reifendes Setup)"
-                                else: rec_text = "🔴 Aktuell kein Einstieg"
+                                elif score_val <= 35: rec_text = "🟣 Bärischer Trend / Short-Kandidat"
+                                else: rec_text = "⚪ Neutral / Kein klares Setup"
                                 st.markdown(f"**Empfehlung:** {rec_text}")
                                 st.markdown("---")
                                 rec_t2_watch = get_asset_strategy_recommendation(sym)
@@ -4034,6 +4415,93 @@ with tab_futures:
     c_m4.metric("Profit-Target Progress", f"${tgt:,.0f}")
 
     st.markdown("---")
+    active_signals = load_active_signal_inbox()
+    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+    
+    prop_signals = []
+    for sig in active_signals:
+        s_sym = str(sig.get("symbol", "")).upper().strip()
+        is_fut_fx = s_sym.endswith("=F") or s_sym.endswith("=X") or "DX-Y" in s_sym or s_sym in cme_list
+        if is_fut_fx:
+            prop_signals.append(sig)
+
+    if not prop_signals:
+        st.caption("⚪ Keine neuen Prop-Desk-Signale (Futures/Forex) in den letzten 4 Stunden.")
+    else:
+        prop_signals = sorted(prop_signals, key=lambda x: float(x.get("score", 0)), reverse=True)
+        with st.container(border=True):
+            st.markdown("#### ⚡ Aktive Co-Pilot Signale (Futures & Forex)")
+            for idx, sig in enumerate(prop_signals):
+                try:
+                    sig_ts = datetime.datetime.fromisoformat(sig.get("timestamp", ""))
+                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - sig_ts.timestamp()) / 60)
+                except Exception:
+                    age_min = 0
+
+                is_short = sig.get("direction", "").upper() == "SHORT"
+                dir_badge = "🟣 SHORT" if is_short else "🟢 LONG"
+                
+                c_sig1, c_sig2, c_sig3 = st.columns([3, 4, 3])
+                
+                with c_sig1:
+                    st.markdown(f"**{sig.get('symbol', 'N/A')}** | {dir_badge} | Timeframe: `{sig.get('timeframe', 'N/A')}`")
+                    st.markdown(f"*{sig.get('setup', 'N/A')}* | Master-Score: **{sig.get('score', 0)}/100**")
+                    st.caption(f"⏱️ vor {age_min} Min.")
+                    
+                with c_sig2:
+                    st.markdown(f"**Trigger:** {sig.get('current_price', 'N/A')} | **Max. Limit:** {sig.get('max_limit_price', 'N/A')}")
+                    st.markdown(f"**Stop-Loss:** {sig.get('sl_price', 'N/A')} | **Take-Profit (+1.0 R):** {sig.get('tp_price', 'N/A')}")
+                    
+                with c_sig3:
+                    acc_list = sig.get('accounts', [])
+                    consumed_list = sig.get('_consumed_accounts', [])
+                    
+                    if acc_list:
+                        badges = []
+                        for acc in acc_list:
+                            is_consumed = any(acc.lower() in c.lower() or c.lower() in acc.lower() for c in consumed_list)
+                            if is_consumed:
+                                badges.append(f"<span style='background-color:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>✅ {acc}</span>")
+                            else:
+                                badges.append(f"<span style='background-color:#F59E0B; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>⏳ {acc}</span>")
+                        st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
+                        
+                    c_btn_load, c_btn_dismiss = st.columns([4, 1])
+                    with c_btn_load:
+                        if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_{sig.get('id', idx)}", use_container_width=True):
+                            st.session_state["inbox_order_payload"] = sig
+                            st.session_state["active_futures_order"] = sig.get("symbol")
+                            st.session_state["active_order_ticker"] = None
+                            st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
+                            st.rerun()
+                    with c_btn_dismiss:
+                        if st.button("✕", key=f"btn_inbox_dismiss_{sig.get('id', idx)}", help="Signal ignorieren/ausblenden", use_container_width=True):
+                            sig_id = sig.get('id')
+                            if sig_id:
+                                try:
+                                    state_file = get_user_file("alert_state.json")
+                                    if os.path.exists(state_file):
+                                        with open(state_file, "r", encoding="utf-8") as f:
+                                            alert_state = json.load(f)
+                                    else:
+                                        alert_state = {}
+                                    
+                                    dismissed = alert_state.get("dismissed_signals", [])
+                                    if sig_id not in dismissed:
+                                        dismissed.append(sig_id)
+                                    
+                                    alert_state["dismissed_signals"] = dismissed
+                                    with open(state_file, "w", encoding="utf-8") as f:
+                                        json.dump(alert_state, f, indent=4)
+                                        
+                                    if st.session_state.get("inbox_order_payload", {}).get("id") == sig_id:
+                                        st.session_state["inbox_order_payload"] = None
+                                        
+                                except Exception:
+                                    pass
+                            st.rerun()
+                        
+                st.markdown("---")
     
     # --- 2. ELITE-UNIVERSUM & WATCHLIST-MANAGER ---
     render_dynamic_settings(
@@ -4210,19 +4678,30 @@ with tab_futures:
             df_closed_today_w = df_closed_w[df_closed_w['exit_date'].astype(str).str.contains(today_str_w, na=False)] if not df_closed_w.empty else pd.DataFrame()
             today_realized_pnl_w = float(df_closed_today_w['pnl_eur'].sum()) if not df_closed_today_w.empty else 0.0
             
+            fx_usd_eur_w = get_fx_rate("$", "EUR")
             open_pnl_w = 0.0
             if has_open_pos:
                 df_open_w = df_j_acc_w[df_j_acc_w['status'] == 'OPEN']
                 for _, r_op in df_open_w.iterrows():
-                    if r_op['symbol'] == sym:
-                        dir_m_op = 1 if r_op['direction'] == 'Long' else -1
-                        open_pnl_w += (raw_cp - float(r_op['entry_price'])) * float(r_op['position_size']) * float(r_op.get('point_value', 1.0)) * dir_m_op
+                    op_sym = str(r_op['symbol']).strip()
+                    op_ep = float(r_op['entry_price'])
+                    op_qty = float(r_op['position_size'])
+                    op_dir = 1 if str(r_op['direction']).title() == 'Long' else -1
+                    op_pv = float(r_op.get('point_value', 1.0)) if pd.notna(r_op.get('point_value')) else 1.0
+                    
+                    op_cp = raw_cp if op_sym == sym else op_ep
+                    
+                    raw_diff = (op_cp - op_ep) * op_dir
+                    if op_sym.endswith("=X") or "DX-Y" in op_sym:
+                        eff_diff = get_effective_forex_risk_pts(op_sym, raw_diff, op_cp, fx_usd_eur_w)
+                        open_pnl_w += eff_diff * op_qty * op_pv
+                    else:
+                        open_pnl_w += raw_diff * op_qty * op_pv
 
             daily_pnl_w = float(today_realized_pnl_w + open_pnl_w)
             base_cap_w = float(start_cap_pf) if float(start_cap_pf) > 0 else 50000.0
-            daily_loss_limit_w = base_cap_w * 0.05
+            daily_loss_limit_w = base_cap_w * 0.025 if (is_apex_lock or "apex" in str(sel_acc_name).lower()) else base_cap_w * 0.05
             daily_buffer_w = daily_loss_limit_w + daily_pnl_w
-
             account_dict = {
                 "account_size": base_cap_w,
                 "current_balance": float(free_cash_pf) if float(free_cash_pf) > 0 else base_cap_w,
@@ -4238,7 +4717,7 @@ with tab_futures:
             elif sym_u in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
             else: sig_sym = sym if c_name in ["Kontrakt", "Lot", "Lots"] else c_name
             
-            eff_risk_pts_w = (risk_pts / 100.0) if (actual_asset_class == "Forex" and "JPY" in sym_u) else risk_pts
+            eff_risk_pts_w = get_effective_forex_risk_pts(sym, risk_pts, raw_cp, fx_usd_eur_w) if actual_asset_class == "Forex" else risk_pts
             signal_dict = {
                 "ticker": sig_sym,
                 "asset_class": actual_asset_class,
@@ -5429,7 +5908,13 @@ with tab_lab:
                     cur_p = df_prices["Close"].dropna().iloc[-1]
                     
                 point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
-                tr_raw_pnl = (cur_p - ep) * qty * point_val * dir_m
+                sym_u = str(sym).upper().strip()
+                if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
+                    tr_raw_pnl = ((cur_p - ep) / cur_p) * qty * point_val * dir_m if cur_p > 0 else 0.0
+                elif sym_u.startswith("EURJPY"):
+                    tr_raw_pnl = (((cur_p - ep) / cur_p) / fx) * qty * point_val * dir_m if (cur_p > 0 and fx > 0) else 0.0
+                else:
+                    tr_raw_pnl = (cur_p - ep) * qty * point_val * dir_m
                 tr_pnl = tr_raw_pnl * fx
                 est_fees = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
                 net_tr_pnl = tr_pnl - est_fees
@@ -5555,7 +6040,10 @@ with tab_lab:
         )
         
         if acc_opts[sel_global_acc_name] != st.session_state.active_lab_account:
-            st.session_state.active_lab_account = acc_opts[sel_global_acc_name]
+            new_id = acc_opts[sel_global_acc_name]
+            st.session_state.active_lab_account = new_id
+            st.session_state["_last_synced_lab_account"] = new_id
+            st.session_state["_pending_sidebar_account"] = sel_global_acc_name
             st.rerun()
 
         # --- 1. LIVE JOURNAL (OFFENE TRADES) ---
@@ -5646,7 +6134,13 @@ with tab_lab:
                         dir_m = 1 if row['direction'] == 'Long' else -1
                         point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
                         qty = float(row['position_size'])
-                        raw_pnl = (cur_p - ep) * qty * point_val * dir_m
+                        sym_u = str(row['symbol']).upper().strip()
+                        if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
+                            raw_pnl = ((cur_p - ep) / cur_p) * qty * point_val * dir_m if cur_p > 0 else 0.0
+                        elif sym_u.startswith("EURJPY"):
+                            raw_pnl = (((cur_p - ep) / cur_p) / fx) * qty * point_val * dir_m if (cur_p > 0 and fx > 0) else 0.0
+                        else:
+                            raw_pnl = (cur_p - ep) * qty * point_val * dir_m
                         net_pnl_eur = (raw_pnl * fx) - float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
                         inv_eur = float(row.get('invest_eur', 0.0))
                         if inv_eur <= 0:
@@ -5709,14 +6203,15 @@ with tab_lab:
                                     dist = (t_entry - rec_sl) if t_dir == 'Long' else (rec_sl - t_entry)
                                     
                                     t_sym_u = str(full_journal.at[t_idx, 'symbol']).upper()
-                                    if "=X" in t_sym_u and "JPY" in t_sym_u:
-                                        dist = dist / 100.0
+                                    t_fx_raw = full_journal.at[t_idx, 'fx_rate']
+                                    t_fx = float(t_fx_raw) if pd.notna(t_fx_raw) and float(t_fx_raw) > 0 else 1.0
+                                    
+                                    if t_sym_u.endswith("=X") or "DX-Y" in t_sym_u:
+                                        dist = get_effective_forex_risk_pts(t_sym_u, dist, rec_sl, t_fx)
                                         
                                     t_qty = float(full_journal.at[t_idx, 'position_size'])
                                     t_pv_raw = full_journal.at[t_idx, 'point_value']
                                     t_pv = float(t_pv_raw) if pd.notna(t_pv_raw) else 1.0
-                                    t_fx_raw = full_journal.at[t_idx, 'fx_rate']
-                                    t_fx = float(t_fx_raw) if pd.notna(t_fx_raw) and float(t_fx_raw) > 0 else 1.0
                                     
                                     new_risk = dist * t_qty * t_pv * t_fx
                                     if new_risk <= 0.0:
@@ -5784,9 +6279,13 @@ with tab_lab:
                                 point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
                                 dir_m = 1 if row['direction'] == 'Long' else -1
                                 
-                                raw_pnl = (final_exit_price - ep) * qty * point_val * dir_m
-                                if any(ext in str(row['symbol']).upper() for ext in ["JPY=X", "CHF=X", "CAD=X"]) and final_exit_price > 0:
-                                    raw_pnl = raw_pnl / final_exit_price
+                                sym_u = str(row['symbol']).upper().strip()
+                                if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
+                                    raw_pnl = ((final_exit_price - ep) / final_exit_price) * qty * point_val * dir_m if final_exit_price > 0 else 0.0
+                                elif sym_u.startswith("EURJPY"):
+                                    raw_pnl = (((final_exit_price - ep) / final_exit_price) / fx) * qty * point_val * dir_m if (final_exit_price > 0 and fx > 0) else 0.0
+                                else:
+                                    raw_pnl = (final_exit_price - ep) * qty * point_val * dir_m
                                     
                                 pnl = raw_pnl * fx
                                 est_fees = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
