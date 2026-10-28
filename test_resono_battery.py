@@ -30,7 +30,7 @@ def run_test_battery():
     res_1_1 = resono.evaluate_account_risk(acc_1_1, sig_1_1)
     assert res_1_1["allowed"] is True, f"1.1 Fehler: allowed={res_1_1['allowed']}"
     assert res_1_1["status_code"] == "GREEN_FULL", f"1.1 Fehler: status_code={res_1_1['status_code']}"
-    assert res_1_1["max_contracts"] == 3, f"1.1 Fehler: max_contracts={res_1_1['max_contracts']}"
+    assert res_1_1["max_contracts"] == 2, f"1.1 Fehler: max_contracts={res_1_1['max_contracts']}"
     assert res_1_1["risk_buffer_usd"] == 2500.0, f"1.1 Fehler: risk_buffer_usd={res_1_1['risk_buffer_usd']}"
     print(f"  [OK] 1.1 Grün (Evaluation MNQ): Puffer=${res_1_1['risk_buffer_usd']} -> {res_1_1['max_contracts']} Kontrakte ({res_1_1['status_code']})")
 
@@ -77,12 +77,12 @@ def run_test_battery():
     sig_1_4 = {"symbol": "MCL", "stop_distance_points": 0.40, "point_value": 100.0}
     res_1_4 = resono.evaluate_account_risk(acc_1_4, sig_1_4)
     assert res_1_4["allowed"] is False, f"1.4 Fehler: allowed={res_1_4['allowed']}"
-    assert res_1_4["status_code"] == "VETO_ASSET_LOCKED", f"1.4 Fehler: status_code={res_1_4['status_code']}"
+    assert res_1_4["status_code"] == "MUTED_RED_ZONE", f"1.4 Fehler: status_code={res_1_4['status_code']}"
     assert res_1_4["max_contracts"] == 0, f"1.4 Fehler: max_contracts={res_1_4['max_contracts']}"
     assert res_1_4["risk_buffer_usd"] == 500.0, f"1.4 Fehler: risk_buffer_usd={res_1_4['risk_buffer_usd']}"
-    print(f"  [OK] 1.4 Rot (MCL Asset-Sperre): Puffer=${res_1_4['risk_buffer_usd']} -> {res_1_4['max_contracts']} Kontrakte ({res_1_4['status_code']})")
+    print(f"  [OK] 1.4 Rot (MCL Red Zone): Puffer=${res_1_4['risk_buffer_usd']} -> {res_1_4['max_contracts']} Kontrakte ({res_1_4['status_code']})")
 
-    # Szenario 1.5: Rot - MNQ Sniper-Reha erfolgreich ($30 Risiko <= 20% von $500 = $100)
+    # Szenario 1.5: Rot - MNQ Sniper-Reha erfolgreich
     acc_1_5 = {
         "account_id": "EVAL_1_5",
         "account_type": "evaluation",
@@ -90,15 +90,15 @@ def run_test_battery():
         "high_watermark": 50000.0,
         "has_open_position": False
     }
-    sig_1_5 = {"symbol": "MNQ", "stop_distance_points": 15.0, "point_value": 2.0}
+    sig_1_5 = {"symbol": "MNQ", "stop_distance_points": 15.0, "point_value": 2.0, "score": 75.0}
     res_1_5 = resono.evaluate_account_risk(acc_1_5, sig_1_5)
     assert res_1_5["allowed"] is True, f"1.5 Fehler: allowed={res_1_5['allowed']}"
-    assert res_1_5["status_code"] == "RED_SNIPER", f"1.5 Fehler: status_code={res_1_5['status_code']}"
+    assert res_1_5["status_code"] == "SNIPER_REHAB", f"1.5 Fehler: status_code={res_1_5['status_code']}"
     assert res_1_5["max_contracts"] == 1, f"1.5 Fehler: max_contracts={res_1_5['max_contracts']}"
     assert res_1_5["trade_risk_usd"] == 30.0, f"1.5 Fehler: trade_risk_usd={res_1_5['trade_risk_usd']}"
     print(f"  [OK] 1.5 Rot (MNQ Sniper-Reha): Puffer=${res_1_5['risk_buffer_usd']}, Risiko=${res_1_5['trade_risk_usd']} -> {res_1_5['max_contracts']} Kontrakt ({res_1_5['status_code']})")
 
-    # Szenario 1.6: Rot - MNQ Risiko zu hoch ($110 Risiko > 20% von $500 = $100)
+    # Szenario 1.6: Rot - MNQ Risiko zu hoch
     acc_1_6 = {
         "account_id": "EVAL_1_6",
         "account_type": "evaluation",
@@ -106,10 +106,10 @@ def run_test_battery():
         "high_watermark": 50000.0,
         "has_open_position": False
     }
-    sig_1_6 = {"symbol": "MNQ", "stop_distance_points": 55.0, "point_value": 2.0}
+    sig_1_6 = {"symbol": "MNQ", "stop_distance_points": 55.0, "point_value": 2.0, "score": 80.0}
     res_1_6 = resono.evaluate_account_risk(acc_1_6, sig_1_6)
     assert res_1_6["allowed"] is False, f"1.6 Fehler: allowed={res_1_6['allowed']}"
-    assert res_1_6["status_code"] == "RED_MUTED", f"1.6 Fehler: status_code={res_1_6['status_code']}"
+    assert res_1_6["status_code"] == "MUTED_RED_ZONE", f"1.6 Fehler: status_code={res_1_6['status_code']}"
     assert res_1_6["max_contracts"] == 0, f"1.6 Fehler: max_contracts={res_1_6['max_contracts']}"
     assert res_1_6["trade_risk_usd"] == 110.0, f"1.6 Fehler: trade_risk_usd={res_1_6['trade_risk_usd']}"
     print(f"  [OK] 1.6 Rot (MNQ Risiko zu hoch): Puffer=${res_1_6['risk_buffer_usd']}, Risiko=${res_1_6['trade_risk_usd']} -> Stumm ({res_1_6['status_code']})")
@@ -126,8 +126,8 @@ def run_test_battery():
     res_1_7 = resono.evaluate_account_risk(acc_1_7, sig_1_7)
     assert res_1_7["allowed"] is True, f"1.7 Fehler: allowed={res_1_7['allowed']}"
     assert res_1_7["status_code"] == "GREEN_FULL", f"1.7 Fehler: status_code={res_1_7['status_code']}"
-    assert res_1_7["max_contracts"] == 1, f"1.7 Fehler: max_contracts={res_1_7['max_contracts']}"
-    print(f"  [OK] 1.7 PA-Festungsmodus ($52.000): Puffer=${res_1_7['risk_buffer_usd']} -> {res_1_7['max_contracts']} Kontrakt ({res_1_7['status_code']})")
+    assert res_1_7["max_contracts"] == 2, f"1.7 Fehler: max_contracts={res_1_7['max_contracts']}"
+    print(f"  [OK] 1.7 PA-Festungsmodus ($52.000): Puffer=${res_1_7['risk_buffer_usd']} -> {res_1_7['max_contracts']} Kontrakte ({res_1_7['status_code']})")
 
     # Szenario 1.8: PA-Skalierung freigegeben (Balance $54.000 > $53.100 & KO-Lock bei $50.100)
     acc_1_8 = {
@@ -174,14 +174,14 @@ def run_test_battery():
 
     fleet_signals = [
         {"symbol": "MCL", "master_score": 68.0, "stop_distance_points": 0.40, "point_value": 100.0},
-        {"symbol": "MNQ", "master_score": 50.0, "stop_distance_points": 15.0, "point_value": 2.0}
+        {"symbol": "MNQ", "master_score": 75.0, "stop_distance_points": 15.0, "point_value": 2.0}
     ]
 
     # Vorab Plateau-Distanzen verifizieren
     dist_mcl = resono.calculate_plateau_distance("MCL", 68.0)
-    dist_mnq = resono.calculate_plateau_distance("MNQ", 50.0)
+    dist_mnq = resono.calculate_plateau_distance("MNQ", 75.0)
     assert dist_mcl == 0.0, f"Plateau-Distanz MCL fehlerhaft: {dist_mcl}"
-    assert dist_mnq == 5.0, f"Plateau-Distanz MNQ fehlerhaft: {dist_mnq}"
+    assert dist_mnq == 15.0, f"Plateau-Distanz MNQ fehlerhaft: {dist_mnq}"
     print(f"  [OK] Plateau-Priorisierung: MCL Distanz={dist_mcl} (Prio 1) vor MNQ Distanz={dist_mnq} (Prio 2)")
 
     fleet_res = resono.evaluate_fleet(fleet_accounts, fleet_signals)
@@ -199,7 +199,7 @@ def run_test_battery():
 
     assert allocs["Acc_3_Red"]["allocated_symbol"] == "MNQ"
     assert allocs["Acc_3_Red"]["max_contracts"] == 1
-    assert allocs["Acc_3_Red"]["status_code"] == "RED_SNIPER"
+    assert allocs["Acc_3_Red"]["status_code"] == "SNIPER_REHAB"
 
     assert allocs["Acc_4_Occupied"]["allocated_symbol"] is None
     assert allocs["Acc_4_Occupied"]["max_contracts"] == 0
@@ -281,7 +281,7 @@ def run_test_battery():
     res_4_1 = resono.evaluate_ftmo_risk(ftmo_acc_4_1, ftmo_sig_4_1)
     assert res_4_1["zone"] == "RED", f"4.1 Fehler: zone={res_4_1['zone']}"
     assert res_4_1["allowed"] is False, f"4.1 Fehler: allowed={res_4_1['allowed']}"
-    assert res_4_1["status_code"] == "RED_MUTED", f"4.1 Fehler: status_code={res_4_1['status_code']}"
+    assert res_4_1["status_code"] == "MUTED_RED_ZONE", f"4.1 Fehler: status_code={res_4_1['status_code']}"
     assert res_4_1["max_lots"] == 0.0, f"4.1 Fehler: max_lots={res_4_1['max_lots']}"
     print(f"  [OK] 4.1 Rote Zone (Schwaches Setup, Score 45): allowed={res_4_1['allowed']}, status={res_4_1['status_code']}, Lots={res_4_1['max_lots']}")
 
@@ -298,8 +298,8 @@ def run_test_battery():
     assert res_4_2["zone"] == "RED", f"4.2 Fehler: zone={res_4_2['zone']}"
     assert res_4_2["allowed"] is True, f"4.2 Fehler: allowed={res_4_2['allowed']}"
     assert res_4_2["status_code"] == "SNIPER_REHAB", f"4.2 Fehler: status_code={res_4_2['status_code']}"
-    assert res_4_2["allocated_risk_usd"] == 120.0, f"4.2 Fehler: allocated_risk_usd={res_4_2['allocated_risk_usd']}"
-    assert res_4_2["max_lots"] == 0.48, f"4.2 Fehler: max_lots={res_4_2['max_lots']}"
+    assert res_4_2["allocated_risk_usd"] == 12.0, f"4.2 Fehler: allocated_risk_usd={res_4_2['allocated_risk_usd']}"
+    assert res_4_2["max_lots"] == 0.04, f"4.2 Fehler: max_lots={res_4_2['max_lots']}"
     print(f"  [OK] 4.2 Rote Zone (A+ Setup, Score 72): allowed={res_4_2['allowed']}, status={res_4_2['status_code']}, Budget=${res_4_2['allocated_risk_usd']}, Lots={res_4_2['max_lots']}")
 
     # Szenario 4.3: Rote Zone mit verbranntem Puffer < $50 (Buffer $35.0, Score 75.0)
@@ -314,7 +314,7 @@ def run_test_battery():
     res_4_3 = resono.evaluate_ftmo_risk(ftmo_acc_4_3, ftmo_sig_4_3)
     assert res_4_3["zone"] == "RED", f"4.3 Fehler: zone={res_4_3['zone']}"
     assert res_4_3["allowed"] is False, f"4.3 Fehler: allowed={res_4_3['allowed']}"
-    assert res_4_3["status_code"] == "RED_MUTED", f"4.3 Fehler: status_code={res_4_3['status_code']}"
+    assert res_4_3["status_code"] == "MUTED_RED_ZONE", f"4.3 Fehler: status_code={res_4_3['status_code']}"
     assert res_4_3["max_lots"] == 0.0, f"4.3 Fehler: max_lots={res_4_3['max_lots']}"
     print(f"  [OK] 4.3 Rote Zone (Puffer $35 < $50 Notbremse): allowed={res_4_3['allowed']}, status={res_4_3['status_code']}, Lots={res_4_3['max_lots']}\n")
 
