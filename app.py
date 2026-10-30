@@ -1602,7 +1602,7 @@ def calculate_position_size(entry_price, sl_price, tp_price, config, fx_rate=1.0
     target_risk_base = acc_size * (risk_pct / 100.0) if mode == "Prozentuales Konto-Risiko (%)" else risk_eur
     
     modifier = 1.0
-    status_msg = f"⚙️ Smart Sizing: Inaktiv (Strikte 1.0x Basis = {target_risk_base:.2f} €)"
+    status_msg = f"⚙️ Sizing: 1.0x Basis ({target_risk_base:.2f} €)"
     
     if mode != "Feste Investition (€)" and dyn_scaling and tp_eur is not None and risk_per_share_eur > 0:
         reward_per_share_eur = abs(tp_eur - entry_eur)
@@ -1611,14 +1611,14 @@ def calculate_position_size(entry_price, sl_price, tp_price, config, fx_rate=1.0
         if crv >= 2.0:
             modifier = 1.0 if prop_guard else 1.2
             if prop_guard:
-                status_msg = f"🛡️ Smart Sizing: Aktiv (Auf 1.0x / {target_risk_base:.2f} € gedeckelt durch Prop-Firm Guard)"
+                status_msg = f"🛡️ Smart Sizing: Aktiv (Gedeckelt auf 1.0x / {target_risk_base:.2f} € durch Prop-Guard)"
             else:
-                status_msg = f"⚡ Smart Sizing: Aktiv (+20% Skalierung auf {target_risk_base * 1.2:.2f} €)"
+                status_msg = f"🔥 Alpha-Boost aktiv: +20% Risiko ({target_risk_base * 1.2:.2f} €) – Herausragendes CRV ({crv:.2f}:1 ≥ 2.00:1)"
         elif crv < 1.5:
             modifier = 0.5
-            status_msg = f"⚠️ Smart Sizing: Aktiv (Defensiv halbiert auf {target_risk_base * 0.5:.2f} €)"
+            status_msg = f"🛡️ Kapitalschutz aktiv: Risiko halbiert auf {target_risk_base * 0.5:.2f} € – Rechnerisches CRV ({crv:.2f}:1 < 1.50:1) bietet begrenzten Spielraum zum Ziel"
         else:
-            status_msg = f"⚙️ Smart Sizing: Aktiv (Normales CRV, 1.0x Basis = {target_risk_base:.2f} €)"
+            status_msg = f"🟢 Standard-Sizing aktiv: 1.0x Basis ({target_risk_base:.2f} €) – Solides CRV ({crv:.2f}:1 ≥ 1.50:1)"
     fee_rate_pct = 0.0
     flat_fee_eur = 0.0
     if "1.49% Spread" in fee_mode or "Bitpanda Retail" in fee_mode:
