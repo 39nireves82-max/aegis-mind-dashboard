@@ -1,0 +1,34 @@
+
+Die Profi-Stresstests für Argon (Isolierte Bausteine)
+
+
+1. Der IPC- & Deadlock-Stresstest (NinjaTrader 8 Schnittstelle)
+
+Die Kommunikation über 127.0.0.1:50005 (vermutlich WebSockets oder TCP-Sockets) zwischen Python und NinjaTrader ist bei hoher Volatilität extrem anfällig für Puffer-Überläufe oder Blockaden.
+• So füttern Sie Argon: Kopieren Sie ausschließlich die Python-Klasse, die den Socket-Schnittstellen-Traffic zu NT8 verwaltet. Keine Configs, kein Streamlit.
+• Der Argon-Prompt:*"Dieser Python-Code verwaltet die IPC-Socket-Verbindung (127.0.0.1:50005) zu NinjaTrader 8. Simuliere einen asynchronen Stresstest während der US-Markteröffnung (hohe Tick-Dichte):
+	1. Was passiert, wenn NinjaTrader die Verbindung mitten in einem JSON-Stream abrupt trennt oder blockiert?
+	2. Kann der Python-Socket-Puffer überlaufen, wenn NT8 schneller Daten sendet, als die App sie verarbeitet?
+Prüfe ausschließlich auf Deadlocks und unvollständige TCP-Pakete. Antworte nur mit der Schwachstelle und einem kompakten Code-Diff."*
+
+2. Der Streamlit-Session-State vs. .env Read-Only Stresstest
+
+Da die .env schreibgeschützt in den Container gemappt wird, injizieren Sie die Secrets beim Start. Wenn Streamlit-Nutzer parallel agieren, darf es unter keinen Umständen zu einer Vermischung der Zustände im Arbeitsspeicher kommen.
+• So füttern Sie Argon: Kopieren Sie den Codeabschnitt, der die .env einliest und die Initialisierung des st.session_state für den angemeldeten Nutzer vornimmt.
+• Der Argon-Prompt:"Die .env ist zur Laufzeit read-only im Container gemappt. Hier ist der Code für das Session-Setup in Streamlit. Führe ein Audit bezüglich Race Conditions im RAM durch: Wenn 7 Nutzer gleichzeitig die App initialisieren, gibt es irgendeine theoretische Chance, dass globale Variablen oder die Umgebungsvariablen im Speicher zwischen den Threads lecken? Prüfe, ob die Zuweisung in den st.session_state absolut thread-sicher isoliert ist. Generiere keinen Text, nur das Ergebnis im JSON-Format."
+
+3. Der Maskierungs- & Regex-Stresstest (Telegram & Terminal-Dämon)
+
+Sie maskieren Ticker und Chat-IDs (***1234). Wenn hier ein String-Parsing-Fehler auftritt (z.B. durch unerwartete Sonderzeichen in der Telegram-Response), fliegt die Maskierung auf oder der Dämon stürzt ab.
+• So füttern Sie Argon: Die reine Maskierungs-Funktion (Regex oder String-Manipulation).
+• Der Argon-Prompt:"Diese Funktion maskiert sensible Daten für das Terminal und Telegram. Führe einen destruktiven String-Stresstest durch. Was passiert bei SQL-Injection-ähnlichen Strings, Unicode-Sonderzeichen oder unerwartet kurzen/langen Chat-IDs in der Eingabe? Bricht die Maskierung auf oder wirft die Funktion eine ungefangene Exception? Zeige mir die Schwachstelle."
+
+Wie Sie den Workflow jetzt flüssig halten
+
+1. Kein Kontext-Ballast: Geben Sie Argon niemals die obige Liste Ihrer Sicherheitsarchitektur mit. Das verleitet das Reasoning-Modell dazu, über Nginx, SSH und Bitwarden nachzudenken, was wertvolle Token kostet. Argon muss denken, es sieht ein isoliertes, kleines Skript.
+2. Die "JSON-only"-Bremse: Zwingen Sie Argon über den Prompt, die Antwort in einem extrem kurzen JSON-Format auszugeben. Da Argon die Denkprozesse intern ausführt, sparen Sie beim eigentlichen Output massiv Raten-Limits, wenn das Modell nicht hunderte Zeilen Markdown-Text zurückschreiben muss.
+3. Flash/Pro baut um: Sobald Argon den mathematischen Fehler im Socket oder der Maskierung im JSON-Format benannt hat, füttern Sie das Ergebnis in Ihren Haupt-Chat mit Gemini Pro, um den Umbau final durchzuführen.
+Mit dieser strikten Arbeitsteilung nutzen Sie Argons unheimliche Tiefe wie ein externes Sicherheits-Audit-Tool, behalten aber das Tempo der Flash/Pro-Kombination für die tägliche Entwicklung bei.
+Da der Daemon lokal bereits voll funktionsfähig ist und die NinjaTrader-Schnittstelle steht:
+• Tritt das Limit-Problem bei Argon primär auf, wenn Sie die Logik des Trade-Copiers umbauen, oder liegt es an den Streamlit-Dashboard-Dateien, weil diese durch das UI-Layout schlicht zu lang geworden sind?
+KI-Antworten können Fehler enthalten. Weitere Informationen

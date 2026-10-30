@@ -712,34 +712,62 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
     if not isinstance(inbox, list):
         return []
         
+    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    
+    # TEIL 6: 48h-Pruning für alert_state.json
+    state_file = get_user_file("alert_state.json")
+    alert_state = {}
     try:
-        state_file = get_user_file("alert_state.json")
         if os.path.exists(state_file):
             with open(state_file, "r", encoding="utf-8") as f:
                 alert_state = json.load(f)
-        else:
-            alert_state = {}
     except Exception:
-        alert_state = {}
+        pass
         
     dismissed_signals = alert_state.get("dismissed_signals", [])
     consumed_signals = alert_state.get("consumed_signals", {})
     
-    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    valid_inbox = []
+    state_modified = False
+    valid_48h_ids = set()
     
     for entry in inbox:
+        try:
+            dt = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
+            age = now_ts - dt.timestamp()
+            if age <= 172800: # 48 Stunden (172.800 Sek)
+                valid_48h_ids.add(entry.get("id", ""))
+        except Exception:
+            pass
+            
+    new_dismissed = [sid for sid in dismissed_signals if sid in valid_48h_ids]
+    if len(new_dismissed) != len(dismissed_signals):
+        alert_state["dismissed_signals"] = new_dismissed
+        state_modified = True
+        
+    new_consumed = {k: v for k, v in consumed_signals.items() if k in valid_48h_ids}
+    if len(new_consumed) != len(consumed_signals):
+        alert_state["consumed_signals"] = new_consumed
+        state_modified = True
+        
+    if state_modified:
+        try:
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(alert_state, f, indent=4)
+        except Exception:
+            pass
+            
+    valid_inbox = []
+    for entry in inbox:
         sig_id = entry.get("id", "")
-        if sig_id in dismissed_signals:
+        if sig_id in alert_state.get("dismissed_signals", []):
             continue
             
         try:
-            ts_str = entry.get("timestamp", "")
-            dt = datetime.datetime.fromisoformat(ts_str)
+            dt = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
             age = now_ts - dt.timestamp()
             if age <= max_age_seconds:
-                if sig_id in consumed_signals:
-                    entry["_consumed_accounts"] = consumed_signals[sig_id]
+                if sig_id in alert_state.get("consumed_signals", {}):
+                    entry["_consumed_accounts"] = alert_state["consumed_signals"][sig_id]
                 valid_inbox.append(entry)
         except Exception:
             pass
@@ -2262,7 +2290,7 @@ with st.sidebar:
                 
                 row_data = {
                     "Ticker": sym,
-                    "Name": f"{sym} (Co-Pilot)",
+                    "Name": sig.get("name") or f"{sym} (Co-Pilot)",
                     "Klasse": a_class,
                     "Signal": ("🟣 " if is_short else "🟢 ") + f"⚡ {'Short' if is_short else 'Long'} (Trend)",
                     "Ampel": "🟣 Short" if is_short else "🟢 Long",
@@ -2525,8 +2553,14 @@ with st.sidebar:
         st.info(f"🎯 Empfohlenes Kauflimit: Maximal bis {limit_str} {curr} | Slippage-Schutz: Limit-Order im Broker platzieren!")
         
         c_order3, c_order4 = st.columns(2)
+        is_runner_mode = is_setup_b or (acc_prof_sb in ["private_alpha", "commodity_alpha", "HOME_RUN_TREND", "ALPHA_CASHFLOW"])
+        
         render_currency_metric(c_order3, "Stop Loss", sl_val, curr, fx, curr_view, active_sym)
-        render_currency_metric(c_order4, "Take Profit", tp_val, curr, fx, curr_view, active_sym)
+        if is_runner_mode:
+            c_order4.metric("Take Profit", "⚪ Kein TP", "Offener Home-Run Runner")
+        else:
+            render_currency_metric(c_order4, "Take Profit", tp_val, curr, fx, curr_view, active_sym)
+            
         st.markdown(f"**Reines Kursrisiko:** {dyn_max_r:.2f} € | **Geschätzte Gebühren:** {est_fees:.2f} €")
         
         risk_per_share = einstieg_val - sl_val
@@ -2554,9 +2588,10 @@ with st.sidebar:
         c_order5.metric("Effektives Gesamtrisiko", f"{total_risk_eur:.2f} €")
         render_currency_metric(c_order6, "Investition", dyn_inv_cap / fx if fx > 0 else dyn_inv_cap, curr, fx, curr_view, active_sym)
 
-        c_order7, c_order8 = st.columns(2)
-        render_currency_metric(c_order7, "Möglicher Gewinn (Netto)", gewinn_eur_netto / fx if fx > 0 else gewinn_eur_netto, curr, fx, curr_view, active_sym)
-        st.markdown(f"**Reiner Kursgewinn:** {gewinn_eur_brutto:.2f} € | **Gebühren bei TP:** {tp_fees_eur:.2f} €")
+        if not is_runner_mode:
+            c_order7, c_order8 = st.columns(2)
+            render_currency_metric(c_order7, "Möglicher Gewinn (Netto)", gewinn_eur_netto / fx if fx > 0 else gewinn_eur_netto, curr, fx, curr_view, active_sym)
+            st.markdown(f"**Reiner Kursgewinn:** {gewinn_eur_brutto:.2f} € | **Gebühren bei TP:** {tp_fees_eur:.2f} €")
                 
         if atr_val <= 0:
             atr_val = max(1.0, abs(einstieg_val - sl_val) * 0.5)
@@ -2617,6 +2652,8 @@ with st.sidebar:
                 else:
                     final_exit_mode_swing = determined_exit_mode
 
+                tp_val_log = 0.0 if final_exit_mode_swing in ["ALPHA_CASHFLOW", "HOME_RUN_TREND"] else tp_val
+
                 new_trade = {
                     'id': str(uuid.uuid4())[:8], 'account_name': sel_acc_name,
                     'entry_date': datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -2624,7 +2661,7 @@ with st.sidebar:
                     'direction': 'Long', 'signal_price': einstieg_val, 'entry_price': real_fill_swing, 'currency': curr,
                     'fx_rate': fx, 'position_size': dyn_pos_size, 'contract_type': '', 'point_value': 1.0, 'base_currency': 'EUR',
                     'invest_eur': dyn_inv_cap_real,
-                    'sl_price': sl_val, 'current_sl': sl_val, 'tp_price': tp_val, 'planned_risk_eur': dyn_risk_eur_real,
+                    'sl_price': sl_val, 'current_sl': sl_val, 'tp_price': tp_val_log, 'planned_risk_eur': dyn_risk_eur_real,
                     'current_risk_eur': dyn_risk_eur_real, 'est_fees_eur': est_fees, 'master_score': sort_score, 'setup_type': row_data.get("Ampel", ""),
                     'mc_robustness': row_data.get("Monte-Carlo", ""), 'atr_days': expected_days,
                     'exit_mode': final_exit_mode_swing, 'status': 'OPEN', 'exit_price': None, 'pnl_eur': None, 'pnl_pct': None,
@@ -3358,45 +3395,7 @@ with st.sidebar:
             st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
             st.session_state["inbox_order_payload"] = None
             st.rerun()
-    with st.expander("⚙️ Globale Vorgaben (Standard für Sandbox & Neukonten)", expanded=False):
-        with st.form("sidebar_risk_form_advanced"):
-            gs = st.session_state.config.get("global_settings", {})
-            new_prop_guard = st.checkbox("🛡️ Prop-Firm Modus (Risiko-Limitierung global)", value=bool(gs.get("prop_guard", True)))
-            new_dyn_scaling = st.checkbox("⚡ Dynamische CRV-Skalierung erlauben (Smart Sizing)", value=bool(gs.get("dynamic_risk_scaling", False)))
-            new_compounding = st.checkbox("⚡ Zinseszins (Compounding) im Risk-Management", value=bool(gs.get("compounding", False)))
-            st.markdown("---")
-            stored_fee = gs.get("fee_mode", "Keine Gebühren / Raw")
-            fee_opts = [
-                "Apex / Tradovate (Futures Insti-Rate)",
-                "FTMO / MetaTrader 5 (Forex Raw Spread)",
-                "Interactive Brokers / Flatex (Aktien Flat)",
-                "Bybit / Krypto-Börse (0.06% / 0.02%)",
-                "Bitpanda Fusion (0.10% / 0.05%)",
-                "Bitpanda Retail (1.49% Spread)",
-                "Keine Gebühren / Raw"
-            ]
-            if stored_fee not in fee_opts:
-                if "1.49%" in stored_fee or "Retail" in stored_fee: stored_fee = "Bitpanda Retail (1.49% Spread)"
-                elif "Fusion" in stored_fee or "0.25%" in stored_fee or "0.10%" in stored_fee: stored_fee = "Bitpanda Fusion (0.10% / 0.05%)"
-                elif "Bybit" in stored_fee or "0.06%" in stored_fee: stored_fee = "Bybit / Krypto-Börse (0.06% / 0.02%)"
-                elif "Aktien Broker" in stored_fee or "Flat" in stored_fee or "Interactive" in stored_fee or "Flatex" in stored_fee: stored_fee = "Interactive Brokers / Flatex (Aktien Flat)"
-                elif "Apex" in stored_fee or "Tradovate" in stored_fee: stored_fee = "Apex / Tradovate (Futures Insti-Rate)"
-                elif "FTMO" in stored_fee or "MetaTrader" in stored_fee: stored_fee = "FTMO / MetaTrader 5 (Forex Raw Spread)"
-                else: stored_fee = "Keine Gebühren / Raw"
-            fee_idx = fee_opts.index(stored_fee)
-            new_fee_mode = st.selectbox("Gebühren-Modus", fee_opts, index=fee_idx)
-        
-            new_curr_view = st.radio("Währungs-Ansicht", ["Duale Ansicht (Original & EUR)", "Nur Bitpanda EUR (€)", "Nur Original"], index=["Duale Ansicht (Original & EUR)", "Nur Bitpanda EUR (€)", "Nur Original"].index(gs.get("currency_view", "Duale Ansicht (Original & EUR)")))
-            
-            if st.form_submit_button("💾 Standardvorgaben speichern", use_container_width=True):
-                st.session_state.config["global_settings"].update({
-                    "prop_guard": new_prop_guard, "currency_view": new_curr_view,
-                    "dynamic_risk_scaling": new_dyn_scaling, "fee_mode": new_fee_mode,
-                    "compounding": new_compounding
-                })
-                save_config(st.session_state.config)
-                st.success("Gespeichert!")
-                st.rerun()
+    
 #endregion
 
 #region MAIN APP TABS
@@ -6168,10 +6167,19 @@ with tab_lab:
                         st.write(f"Initial-SL: {sl:{fmt}} {curr} (≈ {sl * fx:.2f} €)")
                         if current_sl != sl:
                             st.markdown(f"🛡️ **Aktueller SL:** `{current_sl:{fmt}} {curr}`")
-                        st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
+                            
+                        if tp <= 0.0:
+                            st.write(f"TP: ⚪ Kein TP (Home-Run Runner)")
+                        else:
+                            st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
                         
-                        if tp > ep and ep > sl:
-                            atr_proxy = (tp - ep) / max(1.0, float(row.get('atr_days', 10.0)))
+                        if (tp > ep or tp <= 0.0) and ep > sl:
+                            if tp <= 0.0:
+                                risk_per_share = abs(ep - sl)
+                                atr_proxy = (risk_per_share / 1.8) if risk_per_share > 0 else (abs(cur_p - sl) * 0.5)
+                            else:
+                                atr_proxy = (tp - ep) / max(1.0, float(row.get('atr_days', 10.0)))
+                                
                             exit_mode_val = str(row.get('exit_mode', ''))
                             if not exit_mode_val or exit_mode_val == 'nan':
                                 acc_prof = "prop_guard"
@@ -6232,6 +6240,8 @@ with tab_lab:
                         c_risk = float(c_val) if pd.notna(c_val) else p_risk
 
                         st.write(f"Initial-Risk: {p_risk:.2f} €")
+                        st.markdown(f"**1 R = {p_risk:.2f} €**")
+                        
                         if c_risk < p_risk:
                             if c_risk <= 0.0:
                                 st.markdown("🛡️ **Aktuelles Risk: 0.00 € (Risk-Free)**")
