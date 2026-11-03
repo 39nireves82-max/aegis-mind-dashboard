@@ -32,8 +32,8 @@ def evaluate_account_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, A
     score = float(signal_dict.get('score', signal_dict.get('master_score', 0.0)))
 
     # VETO STUFE 1: Whitelist-Prüfung
-    allowed_futures = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG"]
-    if ticker not in allowed_futures:
+    allowed_futures = ["MNQ", "MCL", "NQ=F", "CL=F"]
+    if ticker not in allowed_futures and raw_symbol not in allowed_futures:
         return {
             "allowed": False, "max_contracts": 0, "zone": "RED",
             "status_code": "UNAUTHORIZED_PROP_ASSET",
