@@ -160,6 +160,22 @@ def run_test_battery():
     assert res_1_9["max_contracts"] == 0, f"1.9 Fehler: max_contracts={res_1_9['max_contracts']}"
     print(f"  [OK] 1.9 Kollisions-Veto (Offener Trade): allowed={res_1_9['allowed']} ({res_1_9['status_code']})\n")
 
+    # Szenario 1.10: Whitelist-Veto (Apex Gold / MGC)
+    acc_1_10 = {
+        "account_id": "EVAL_1_10",
+        "account_type": "evaluation",
+        "current_balance": 50000.0,
+        "high_watermark": 50000.0,
+        "has_open_position": False
+    }
+    sig_1_10 = {"symbol": "MGC", "stop_distance_points": 21.60, "point_value": 10.0}
+    res_1_10 = resono.evaluate_account_risk(acc_1_10, sig_1_10)
+    assert res_1_10["allowed"] is False, f"1.10 Fehler: allowed={res_1_10['allowed']}"
+    assert res_1_10["status_code"] == "UNAUTHORIZED_PROP_ASSET", f"1.10 Fehler: status_code={res_1_10['status_code']}"
+    assert res_1_10["max_contracts"] == 0, f"1.10 Fehler: max_contracts={res_1_10['max_contracts']}"
+    assert res_1_10["zone"] == "RED", f"1.10 Fehler: zone={res_1_10['zone']}"
+    print("  [OK] 1.10 Whitelist-Veto (MGC Gold): allowed=False (UNAUTHORIZED_PROP_ASSET)\n")
+
     # =========================================================================
     # 2. TEST-BATTERIE 2: FLOTTEN-ALLOKATION & KOLLISIONSAUFLÖSUNG
     # =========================================================================
@@ -264,6 +280,21 @@ def run_test_battery():
     assert res_3_2_red["zone"] == "RED", f"3.2b Fehler: zone={res_3_2_red['zone']}"
     print(f"  [OK] 3.2 Flaschenhals-Schutz: Tagespuffer=$5.000, aber Max-DD-Restpuffer=${res_3_2['effective_buffer']} (bzw. $1.400 -> Zone={res_3_2_red['zone']}) greift!\n")
 
+    # Szenario 3.3: FTMO USD/JPY (Quote JPY Skalierung)
+    ftmo_acc_3_3 = {
+        "initial_balance": 100000.0,
+        "day_start_balance": 100000.0,
+        "current_balance": 100000.0,
+        "has_open_position": False
+    }
+    ftmo_sig_3_3 = {"symbol": "USDJPY=X", "stop_loss_distance": 0.0032258, "point_value": 100000.0, "score": 65.0}
+    res_3_3 = resono.evaluate_ftmo_risk(ftmo_acc_3_3, ftmo_sig_3_3)
+    assert res_3_3["zone"] == "GREEN", f"3.3 Fehler: zone={res_3_3['zone']}"
+    assert res_3_3["allowed"] is True, f"3.3 Fehler: allowed={res_3_3['allowed']}"
+    assert res_3_3["status_code"] == "GREEN_FULL", f"3.3 Fehler: status_code={res_3_3['status_code']}"
+    assert res_3_3["max_lots"] == 0.77, f"3.3 Fehler: max_lots={res_3_3['max_lots']}"
+    print("  [OK] 3.3 FTMO USD/JPY (Quote JPY Skalierung): Eff. Puffer=$5000.0 -> 0.77 Lots (GREEN_FULL)\n")
+
     # =========================================================================
     # 4. TEST-BATTERIE 4: FTMO FOREX SNIPER-REHABILITATION IN DER ROTEN ZONE
     # =========================================================================
@@ -319,7 +350,7 @@ def run_test_battery():
     print(f"  [OK] 4.3 Rote Zone (Puffer $35 < $50 Notbremse): allowed={res_4_3['allowed']}, status={res_4_3['status_code']}, Lots={res_4_3['max_lots']}\n")
 
     print("============================================================")
-    print("✅ ALLE 4 RESONO TEST-BATTERIEN ERFOLGREICH BESTANDEN (15/15)")
+    print("✅ ALLE 4 RESONO TEST-BATTERIEN ERFOLGREICH BESTANDEN (17/17)")
     print("============================================================")
 
 

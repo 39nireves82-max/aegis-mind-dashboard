@@ -172,13 +172,16 @@ JOURNAL_FILE = os.path.join(BOT_DIR, "trade_journal.csv")
 _p_inbox = os.path.join(PARENT_DIR, "RSI Bot", "state", "signal_inbox.json")
 _b_inbox = os.path.join(BASE_DIR, "state", "signal_inbox.json")
 _e_inbox = os.getenv("INVARIX_SIGNAL_INBOX")
+_c_inbox = "/app/RSI Bot/state/signal_inbox.json"
 
-if os.path.exists(_p_inbox):
-    SIGNAL_INBOX_FILE = _p_inbox
-elif os.path.exists(_b_inbox):
-    SIGNAL_INBOX_FILE = _b_inbox
-elif _e_inbox and os.path.exists(_e_inbox):
+if _e_inbox and (os.path.exists(_e_inbox) or os.path.exists(os.path.dirname(_e_inbox))):
     SIGNAL_INBOX_FILE = _e_inbox
+elif os.path.exists(_p_inbox) or os.path.exists(os.path.dirname(_p_inbox)):
+    SIGNAL_INBOX_FILE = _p_inbox
+elif os.path.exists(_b_inbox) or os.path.exists(os.path.dirname(_b_inbox)):
+    SIGNAL_INBOX_FILE = _b_inbox
+elif os.path.exists(_c_inbox) or os.path.exists(os.path.dirname(_c_inbox)):
+    SIGNAL_INBOX_FILE = _c_inbox
 else:
     SIGNAL_INBOX_FILE = _p_inbox  # Fallback
 #endregion
@@ -732,11 +735,17 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
     
     for entry in inbox:
         try:
-            dt = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
-            age = now_ts - dt.timestamp()
+            ts_val = entry.get("timestamp", "")
+            if isinstance(ts_val, (int, float)):
+                entry_ts = float(ts_val)
+            else:
+                ts_str = str(ts_val).replace("Z", "+00:00")
+                dt = datetime.datetime.fromisoformat(ts_str)
+                entry_ts = dt.timestamp()
+            age = now_ts - entry_ts
             if age <= 172800: # 48 Stunden (172.800 Sek)
                 valid_48h_ids.add(entry.get("id", ""))
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             pass
             
     new_dismissed = [sid for sid in dismissed_signals if sid in valid_48h_ids]
@@ -757,19 +766,35 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
             pass
             
     valid_inbox = []
+    current_unix_time = time.time()
+    
     for entry in inbox:
         sig_id = entry.get("id", "")
         if sig_id in alert_state.get("dismissed_signals", []):
             continue
             
+        if "expires_at" in entry:
+            try:
+                if current_unix_time > float(entry["expires_at"]):
+                    continue
+            except (ValueError, TypeError):
+                pass
+                
         try:
-            dt = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
-            age = now_ts - dt.timestamp()
-            if age <= max_age_seconds:
+            ts_val = entry.get("timestamp", "")
+            if isinstance(ts_val, (int, float)):
+                entry_ts = float(ts_val)
+            else:
+                ts_str = str(ts_val).replace("Z", "+00:00")
+                dt = datetime.datetime.fromisoformat(ts_str)
+                entry_ts = dt.timestamp()
+                
+            age = now_ts - entry_ts
+            if "expires_at" in entry or age <= max_age_seconds:
                 if sig_id in alert_state.get("consumed_signals", {}):
                     entry["_consumed_accounts"] = alert_state["consumed_signals"][sig_id]
                 valid_inbox.append(entry)
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             pass
             
     return valid_inbox
@@ -2631,10 +2656,11 @@ with st.sidebar:
             effective_crv_swing = (real_reward_swing / real_risk_swing) if real_risk_swing > 0 else 0.0
 
             if abs(real_fill_swing - einstieg_val) > 0.0001:
-                if effective_crv_swing < 1.0:
-                    st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_swing:.2f} eingebrochen. Risiko übersteigt Gewinnchance!")
-                elif effective_crv_swing < 1.25:
-                    st.warning(f"⚠️ Slippage-Warnung: Reales CRV auf 1:{effective_crv_swing:.2f} gefallen. Frühes Netto-Break-Even empfohlen.")
+                if effective_crv_swing < 1.25:
+                    st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_swing:.2f} eingebrochen. Einstieg gesperrt (CRV < 1.25).")
+                    if not admin_bypass_swing:
+                        btn_disabled = True
+                        btn_help_swing = "Gesperrt: Kritisches CRV unter 1.25"
                 else:
                     st.info(f"ℹ️ Reales CRV nach Fill: 1:{effective_crv_swing:.2f}")
 
@@ -2961,12 +2987,9 @@ with st.sidebar:
         
         if is_apex_acc_prop:
             active_sym_upper = str(active_sym).upper().strip()
-            is_cme_future = (
-                active_sym_upper.endswith("=F") or 
-                active_sym_upper in ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG",
-                                     "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
-            )
-            if is_cme_future:
+            is_apex_master_kader = active_sym_upper in ["NQ=F", "MNQ", "CL=F", "MCL"]
+            
+            if is_apex_master_kader:
                 if prof_name == "apex_lock":
                     profile_conflict_blocked_prop = False
                 else:
@@ -2974,7 +2997,7 @@ with st.sidebar:
                     asset_block_reason = f"{active_sym} erfordert zwingend 'Target-Lock Intraday' (Gewählt: {prof_disp_pf})."
             else:
                 profile_conflict_blocked_prop = True
-                asset_block_reason = f"{active_sym} ist auf Apex nicht zugelassen (nur CME-Futures)."
+                asset_block_reason = "Apex-Guard: Auf Apex-Konten sind ausschließlich der Nasdaq 100 (NQ/MNQ) und Rohöl (CL/MCL) zugelassen. Gold gehört ins private Alpha-Depot."
         elif is_prop_firm_prop and prof_name not in empfehlung.get("valid_profiles", [empfehlung["profil"]]):
             profile_conflict_blocked_prop = True
             asset_block_reason = f"{active_sym} ist für dieses Konto nicht freigegeben (erfordert {empfehlung['profil']})."
@@ -3309,10 +3332,13 @@ with st.sidebar:
         effective_crv_prop = (real_reward_prop / real_risk_prop) if real_risk_prop > 0 else 0.0
 
         if abs(real_fill_prop - raw_cp) > 0.0001:
-            if effective_crv_prop < 1.0:
-                st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_prop:.2f} eingebrochen. Risiko übersteigt Gewinnchance!")
-            elif effective_crv_prop < 1.25:
-                st.warning(f"⚠️ Slippage-Warnung: Reales CRV auf 1:{effective_crv_prop:.2f} gefallen. Frühes Netto-Break-Even empfohlen.")
+            if effective_crv_prop < 1.25:
+                st.error(f"🛑 Kritische Slippage! Reales CRV auf 1:{effective_crv_prop:.2f} eingebrochen. Einstieg gesperrt (CRV < 1.25).")
+                if not admin_bypass_prop:
+                    btn_disabled_prop = True
+                    if "Kritisches CRV unter 1.25" not in sperrgruende:
+                        sperrgruende.append("Kritisches CRV unter 1.25")
+                    btn_help_prop = "Gesperrt: " + " | ".join(sperrgruende)
             else:
                 st.info(f"ℹ️ Reales CRV nach Fill: 1:{effective_crv_prop:.2f}")
 
@@ -3592,11 +3618,36 @@ with tab_screen:
         swing_signals = sorted(swing_signals, key=lambda x: float(x.get("score", 0)), reverse=True)
         with st.container(border=True):
             st.markdown("#### ⚡ Aktive Co-Pilot Signale (Aktien & Krypto)")
+            unique_swing_syms = list(set([s.get("symbol") for s in swing_signals if s.get("symbol")]))
+            live_prices_swing = {}
+            if unique_swing_syms:
+                try:
+                    df_live_swing = fetch_market_data(unique_swing_syms, "5d", "1d")
+                    for sym in unique_swing_syms:
+                        live_p = None
+                        if isinstance(df_live_swing.columns, pd.MultiIndex):
+                            if sym in df_live_swing.columns.get_level_values(0):
+                                live_p = float(df_live_swing[sym]["Close"].dropna().iloc[-1])
+                            elif sym in df_live_swing.columns.get_level_values(1):
+                                live_p = float(df_live_swing.xs(sym, level=1, axis=1)["Close"].dropna().iloc[-1])
+                        elif "Close" in df_live_swing.columns:
+                            live_p = float(df_live_swing["Close"].dropna().iloc[-1])
+                        if live_p is not None:
+                            live_prices_swing[sym] = live_p
+                except Exception:
+                    pass
+
             for idx, sig in enumerate(swing_signals):
                 try:
-                    sig_ts = datetime.datetime.fromisoformat(sig.get("timestamp", ""))
-                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - sig_ts.timestamp()) / 60)
-                except Exception:
+                    ts_val = sig.get("timestamp", "")
+                    if isinstance(ts_val, (int, float)):
+                        entry_ts = float(ts_val)
+                    else:
+                        ts_str = str(ts_val).replace("Z", "+00:00")
+                        sig_ts = datetime.datetime.fromisoformat(ts_str)
+                        entry_ts = sig_ts.timestamp()
+                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - entry_ts) / 60)
+                except (ValueError, TypeError, AttributeError, Exception):
                     age_min = 0
 
                 is_short = sig.get("direction", "").upper() == "SHORT"
@@ -3613,7 +3664,19 @@ with tab_screen:
                 with c_sig3:
                     acc_list = sig.get('accounts', [])
                     consumed_list = sig.get('_consumed_accounts', [])
-                    if acc_list:
+                    routing_recs = sig.get('routing_recommendations', [])
+                    if routing_recs:
+                        badges = []
+                        for rec in routing_recs:
+                            acc_name = rec.get("name", "Unbekannt")
+                            a_type = str(rec.get("type", "")).upper()
+                            a_prof = rec.get("profile", "")
+                            is_consumed = any(str(acc_name).lower() in str(c).lower() or str(c).lower() in str(acc_name).lower() for c in consumed_list)
+                            bg_col = "#10B981" if is_consumed else "#F59E0B"
+                            icon = "✅" if is_consumed else "⏳"
+                            badges.append(f"<span style='background-color:{bg_col}; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px; display:inline-block; margin-bottom:4px;'>{icon} [{a_type}] {acc_name} - {a_prof}</span>")
+                        st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
+                    elif acc_list:
                         badges = []
                         for acc in acc_list:
                             is_consumed = any(str(acc).lower() in str(c).lower() or str(c).lower() in str(acc).lower() for c in consumed_list)
@@ -3625,12 +3688,27 @@ with tab_screen:
                         
                     c_btn_load, c_btn_dismiss = st.columns([4, 1])
                     with c_btn_load:
-                        if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_t1_{sig.get('id', idx)}", use_container_width=True):
-                            st.session_state["inbox_order_payload"] = sig
-                            st.session_state["active_order_ticker"] = sig.get("symbol")
-                            st.session_state["active_futures_order"] = None
-                            st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
-                            st.rerun()
+                        sym = sig.get('symbol', '')
+                        live_price = live_prices_swing.get(sym)
+                        try:
+                            max_lim = float(sig.get('max_limit_price', 0))
+                        except (ValueError, TypeError):
+                            max_lim = 0.0
+                            
+                        limit_destroyed = False
+                        if live_price and max_lim > 0:
+                            if is_short and live_price < max_lim: limit_destroyed = True
+                            elif not is_short and live_price > max_lim: limit_destroyed = True
+                            
+                        if limit_destroyed:
+                            st.button("🚫 Invalidiert (Limit überschritten)", key=f"btn_inbox_load_t1_{sig.get('id', idx)}", use_container_width=True, disabled=True)
+                        else:
+                            if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_t1_{sig.get('id', idx)}", use_container_width=True):
+                                st.session_state["inbox_order_payload"] = sig
+                                st.session_state["active_order_ticker"] = sig.get("symbol")
+                                st.session_state["active_futures_order"] = None
+                                st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
+                                st.rerun()
                     with c_btn_dismiss:
                         if st.button("✕", key=f"btn_inbox_dismiss_t1_{sig.get('id', idx)}", help="Signal ignorieren/ausblenden", use_container_width=True):
                             sig_id = sig.get('id')
@@ -4430,11 +4508,36 @@ with tab_futures:
         prop_signals = sorted(prop_signals, key=lambda x: float(x.get("score", 0)), reverse=True)
         with st.container(border=True):
             st.markdown("#### ⚡ Aktive Co-Pilot Signale (Futures & Forex)")
+            unique_prop_syms = list(set([s.get("symbol") for s in prop_signals if s.get("symbol")]))
+            live_prices_prop = {}
+            if unique_prop_syms:
+                try:
+                    df_live_prop = fetch_market_data(unique_prop_syms, "5d", "1d")
+                    for sym in unique_prop_syms:
+                        live_p = None
+                        if isinstance(df_live_prop.columns, pd.MultiIndex):
+                            if sym in df_live_prop.columns.get_level_values(0):
+                                live_p = float(df_live_prop[sym]["Close"].dropna().iloc[-1])
+                            elif sym in df_live_prop.columns.get_level_values(1):
+                                live_p = float(df_live_prop.xs(sym, level=1, axis=1)["Close"].dropna().iloc[-1])
+                        elif "Close" in df_live_prop.columns:
+                            live_p = float(df_live_prop["Close"].dropna().iloc[-1])
+                        if live_p is not None:
+                            live_prices_prop[sym] = live_p
+                except Exception:
+                    pass
+
             for idx, sig in enumerate(prop_signals):
                 try:
-                    sig_ts = datetime.datetime.fromisoformat(sig.get("timestamp", ""))
-                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - sig_ts.timestamp()) / 60)
-                except Exception:
+                    ts_val = sig.get("timestamp", "")
+                    if isinstance(ts_val, (int, float)):
+                        entry_ts = float(ts_val)
+                    else:
+                        ts_str = str(ts_val).replace("Z", "+00:00")
+                        sig_ts = datetime.datetime.fromisoformat(ts_str)
+                        entry_ts = sig_ts.timestamp()
+                    age_min = int((datetime.datetime.now(datetime.timezone.utc).timestamp() - entry_ts) / 60)
+                except (ValueError, TypeError, AttributeError, Exception):
                     age_min = 0
 
                 is_short = sig.get("direction", "").upper() == "SHORT"
@@ -4455,7 +4558,19 @@ with tab_futures:
                     acc_list = sig.get('accounts', [])
                     consumed_list = sig.get('_consumed_accounts', [])
                     
-                    if acc_list:
+                    routing_recs = sig.get('routing_recommendations', [])
+                    if routing_recs:
+                        badges = []
+                        for rec in routing_recs:
+                            acc_name = rec.get("name", "Unbekannt")
+                            a_type = str(rec.get("type", "")).upper()
+                            a_prof = rec.get("profile", "")
+                            is_consumed = any(str(acc_name).lower() in str(c).lower() or str(c).lower() in str(acc_name).lower() for c in consumed_list)
+                            bg_col = "#10B981" if is_consumed else "#F59E0B"
+                            icon = "✅" if is_consumed else "⏳"
+                            badges.append(f"<span style='background-color:{bg_col}; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px; display:inline-block; margin-bottom:4px;'>{icon} [{a_type}] {acc_name} - {a_prof}</span>")
+                        st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
+                    elif acc_list:
                         badges = []
                         for acc in acc_list:
                             is_consumed = any(acc.lower() in c.lower() or c.lower() in acc.lower() for c in consumed_list)
@@ -4467,12 +4582,27 @@ with tab_futures:
                         
                     c_btn_load, c_btn_dismiss = st.columns([4, 1])
                     with c_btn_load:
-                        if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_{sig.get('id', idx)}", use_container_width=True):
-                            st.session_state["inbox_order_payload"] = sig
-                            st.session_state["active_futures_order"] = sig.get("symbol")
-                            st.session_state["active_order_ticker"] = None
-                            st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
-                            st.rerun()
+                        sym = sig.get('symbol', '')
+                        live_price = live_prices_prop.get(sym)
+                        try:
+                            max_lim = float(sig.get('max_limit_price', 0))
+                        except (ValueError, TypeError):
+                            max_lim = 0.0
+                            
+                        limit_destroyed = False
+                        if live_price and max_lim > 0:
+                            if is_short and live_price < max_lim: limit_destroyed = True
+                            elif not is_short and live_price > max_lim: limit_destroyed = True
+                            
+                        if limit_destroyed:
+                            st.button("🚫 Invalidiert (Limit überschritten)", key=f"btn_inbox_load_{sig.get('id', idx)}", use_container_width=True, disabled=True)
+                        else:
+                            if st.button("🎯 In Order-Desk laden", key=f"btn_inbox_load_{sig.get('id', idx)}", use_container_width=True):
+                                st.session_state["inbox_order_payload"] = sig
+                                st.session_state["active_futures_order"] = sig.get("symbol")
+                                st.session_state["active_order_ticker"] = None
+                                st.toast(f"🎯 Signal {sig.get('symbol')} ({sig.get('direction', '')}) in Order-Desk übertragen!", icon="⚡")
+                                st.rerun()
                     with c_btn_dismiss:
                         if st.button("✕", key=f"btn_inbox_dismiss_{sig.get('id', idx)}", help="Signal ignorieren/ausblenden", use_container_width=True):
                             sig_id = sig.get('id')
@@ -6059,8 +6189,14 @@ with tab_lab:
         if not df_open_list.empty:
             st.subheader("🟢 Offene Trades verwalten")
             
+            if "so_nonce_dict" not in st.session_state:
+                st.session_state.so_nonce_dict = {}
+                
             for idx, row in df_open_list.iterrows():
                 with st.container(border=True):
+                    orig_id_str = str(row['id']).strip()
+                    has_runner_split = not df_j[df_j['id'].astype(str).str.startswith(f"{orig_id_str}_SO", na=False) & (df_j['status'] == 'CLOSED')].empty
+                    
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
                     with col1:
                         entry_d_str = str(row['entry_date'])
@@ -6096,6 +6232,8 @@ with tab_lab:
                         
                         dir_label = "⬆️ LONG" if row['direction'] == 'Long' else "⬇️ SHORT"
                         st.write(f"**{row['symbol']} ({row['name']})** | `{dir_label}`")
+                        if has_runner_split:
+                            st.info("⚖️ RUNNER AKTIV: Teilverkauf bereits verbucht | Restposition läuft risikofrei auf Net-BE")
                         st.caption(f"📅 **Eröffnet:** {entry_d_str} | ⏳ **Dauer:** {curr_days_str} (Geplant: {plan_days} Tage) | 🏦 **Konto:** {row['account_name']}")
                         
                         fx = float(row.get('fx_rate', 1.0))
@@ -6128,12 +6266,15 @@ with tab_lab:
                         pnl_temp = (cur_p - ep) / ep * 100 if row['direction'] == 'Long' else (ep - cur_p) / ep * 100
                         icon = "🟢" if pnl_temp >= 0 else "🔴"
                         
-                        is_forex = str(row['symbol']).endswith('=X') or ep < 10.0
-                        fmt = ".4f" if is_forex else ".2f"
+                        sym_u = str(row['symbol']).upper().strip()
+                        cme_roots = {"MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"}
+                        is_forex = sym_u.endswith('=X') or ('DX-Y' in sym_u)
+                        is_crypto = any(ext in sym_u for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF", "BTC", "ETH", "SOL", "NEAR", "KAS"])
+                        is_future = ("=F" in sym_u) or (sym_u.split()[0] in cme_roots)
+                        fmt = ".4f" if is_forex else (".4f" if (is_crypto and ep < 10.0) else ".2f")
                         dir_m = 1 if row['direction'] == 'Long' else -1
                         point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
                         qty = float(row['position_size'])
-                        sym_u = str(row['symbol']).upper().strip()
                         if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
                             raw_pnl = ((cur_p - ep) / cur_p) * qty * point_val * dir_m if cur_p > 0 else 0.0
                         elif sym_u.startswith("EURJPY"):
@@ -6231,7 +6372,44 @@ with tab_lab:
                                     st.toast(f"✅ Stop-Loss für {row['symbol']} auf {rec_sl:{fmt}} nachgezogen!", icon="🎯")
                                     st.rerun()
                             else:
-                                st.markdown(f"🛡️ **Status:** {sl_status}")
+                                c_val_col2 = row.get('current_risk_eur')
+                                current_risk_col2 = float(c_val_col2) if pd.notna(c_val_col2) else float(row.get('planned_risk_eur', 0.0))
+                                
+                                qty_col2 = float(row['position_size'])
+                                min_lot_col2 = 1.0 if is_future else (0.0001 if is_crypto else 0.01)
+                                
+                                if is_future:
+                                    sim_sold_col2 = int(round(qty_col2 * 0.5))
+                                    sim_rest_col2 = int(round(qty_col2)) - sim_sold_col2
+                                elif is_forex:
+                                    sim_sold_col2 = round(qty_col2 * 0.5, 2)
+                                    sim_rest_col2 = round(qty_col2 - sim_sold_col2, 2)
+                                else:
+                                    sim_sold_col2 = round(qty_col2 * 0.5, 4) if is_crypto else round(qty_col2 * 0.5, 2)
+                                    sim_rest_col2 = round(qty_col2 - sim_sold_col2, 4) if is_crypto else round(qty_col2 - sim_sold_col2, 2)
+                                    
+                                can_split = (sim_sold_col2 >= min_lot_col2) and (sim_rest_col2 >= min_lot_col2)
+
+                                if has_runner_split:
+                                    st.markdown("🛡️ **Status:** Net-BE gesichert (Trailing-Schutz aktiv ab +1.5 R)")
+                                elif exit_mode_val in ["PROP_DEFENSIVE", "TARGET_LOCKED", "DEFENSIVE_EMERGENCY"]:
+                                    if can_split:
+                                        if current_r >= 1.0:
+                                            st.markdown("⚡ **Signal:** +1.0 R erreicht → 50 % Scale-Out fällig!")
+                                        else:
+                                            st.markdown("🎯 **Plan:** 50 % Scale-Out ab +1.0 R (danach Net-BE)")
+                                    else:
+                                        if current_risk_col2 <= 0.0:
+                                            st.markdown("🛡️ **Status:** Net-BE gesichert (Trailing-Schutz aktiv ab +1.5 R)")
+                                        elif current_r >= 1.0:
+                                            st.markdown("⚡ **Signal:** +1.0 R erreicht → Stop auf Net-BE nachziehen (Einzellot)!")
+                                        else:
+                                            st.markdown("🎯 **Plan:** Stop auf Net-BE ab +1.0 R (Einzellot / kein Split)")
+                                else:
+                                    if (current_sl == sl or current_sl <= 0.0) and current_risk_col2 > 0:
+                                        st.markdown("🛡️ **Status:** Initial-Schutz (Kapitalerhalt)")
+                                    else:
+                                        st.markdown("🎯 **Status:** Freier Trendlauf (Trailing aktiv ab +1.5 R)")
                                 
                     with col3:
                         p_val = row.get('planned_risk_eur')
@@ -6239,8 +6417,12 @@ with tab_lab:
                         c_val = row.get('current_risk_eur')
                         c_risk = float(c_val) if pd.notna(c_val) else p_risk
 
-                        st.write(f"Initial-Risk: {p_risk:.2f} €")
-                        st.markdown(f"**1 R = {p_risk:.2f} €**")
+                        if has_runner_split:
+                            st.write(f"Initial-Risk (Runner): {p_risk:.2f} €")
+                            st.markdown(f"**1 R (Runner-Basis) = {p_risk:.2f} €**")
+                        else:
+                            st.write(f"Initial-Risk: {p_risk:.2f} €")
+                            st.markdown(f"**1 R = {p_risk:.2f} €**")
                         
                         if c_risk < p_risk:
                             if c_risk <= 0.0:
@@ -6266,10 +6448,10 @@ with tab_lab:
                             curr_opts = [curr, "€"] if curr not in ["€", "EUR"] else ["€"]
                             exit_curr = st.selectbox("In:", curr_opts, key=f"ex_c_{row['id']}_{idx}")
                             
-                        c_btn1, c_btn2 = st.columns(2)
+                        c_btn1, c_btn2, c_btn3 = st.columns(3)
                         
                         with c_btn1:
-                            if st.button("Trade schließen", key=f"btn_{row['id']}_{idx}", use_container_width=True):
+                            if st.button("Schließen", key=f"btn_{row['id']}_{idx}", use_container_width=True):
                                 full_journal = load_trade_journal()
                                 target_idx = full_journal[full_journal['id'] == row['id']].index[0]
                                 
@@ -6311,8 +6493,345 @@ with tab_lab:
                                 save_trade_journal(full_journal)
                                 st.success("Trade geschlossen!")
                                 st.rerun()
-                                
+
                         with c_btn2:
+                            qty = float(row['position_size'])
+                            
+                            # 1. Modus des Zielkontos ermitteln
+                            account_exec_mode = "CO_PILOT"
+                            for _, a_data in st.session_state.config.get("lab_accounts", {}).items():
+                                if a_data.get("name") == row['account_name']:
+                                    account_exec_mode = a_data.get("execution_mode", "CO_PILOT")
+                                    break
+                            
+                            def is_order_in_flight(orig_id: str) -> bool:
+                                pending_d = os.getenv("INVARIX_PENDING_DIR") or os.path.join(BASE_DIR, "signals", "01_pending")
+                                proc_d = os.getenv("INVARIX_PROCESSING_DIR") or os.path.join(BASE_DIR, "signals", "02_processing")
+                                for d in [pending_d, proc_d]:
+                                    if os.path.exists(d):
+                                        for f in os.listdir(d):
+                                            if f.endswith(".json"):
+                                                if f.startswith(f"{orig_id}_") or f"_{orig_id}_" in f or f"_{orig_id}." in f:
+                                                    return True
+                                return False
+
+                            in_flight = is_order_in_flight(str(row['id']))
+
+                            # Poka-Yoke Mengen-Sperre Vorabberechnung
+                            raw_em_so = str(row.get('exit_mode', '')).strip()
+                            if not raw_em_so or raw_em_so.lower() == 'nan':
+                                acc_prof_so = "prop_guard"
+                                for _, a_d_so in st.session_state.config.get("lab_accounts", {}).items():
+                                    if a_d_so.get("name") == row['account_name']:
+                                        acc_prof_so = a_d_so.get("exit_profile", "prop_guard")
+                                        break
+                                if acc_prof_so == "apex_lock": raw_em_so = "TARGET_LOCKED"
+                                elif acc_prof_so in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: raw_em_so = "PROP_DEFENSIVE"
+                                else: raw_em_so = "HOME_RUN_TREND" if "Trend" in str(row.get("setup_type", "")) else "ALPHA_CASHFLOW"
+
+                            def_split_idx = 0 if (raw_em_so in ["PROP_DEFENSIVE", "TARGET_LOCKED", "DEFENSIVE_EMERGENCY"] or is_crypto) else 1
+                            split_opts = {"50% (Prop / Defensiv)": 0.50, "30% (Alpha Cashflow)": 0.30}
+                            def_quote = list(split_opts.values())[def_split_idx]
+
+                            min_lot = 1.0 if is_future else (0.0001 if is_crypto else 0.01)
+                            
+                            sim_sold = round(qty * def_quote, 4 if is_crypto else (2 if is_forex else 0))
+                            if is_future: sim_sold = int(sim_sold)
+                            sim_rest = round(qty - sim_sold, 4 if is_crypto else (2 if is_forex else 0))
+                            if is_future: sim_rest = int(sim_rest)
+
+                            poka_yoke_locked = (sim_sold < min_lot or sim_rest < min_lot)
+
+                            so_disabled = in_flight or poka_yoke_locked
+                            
+                            if in_flight: popover_lbl = "⏳ Order in Ausführung..."
+                            elif poka_yoke_locked: popover_lbl = "🚫 Split unterschreitet Min-Lot"
+                            elif account_exec_mode == "LIVE_AUTO": popover_lbl = "⚖️ Scale-Out"
+                            else: popover_lbl = "⚖️ Co-Pilot Scale-Out"
+
+                            so_nonce = st.session_state.so_nonce_dict.get(orig_id_str, 0)
+
+                            with st.popover(popover_lbl, disabled=so_disabled, use_container_width=True, key=f"pop_so_{orig_id_str}_{so_nonce}"):
+                                if account_exec_mode == "LIVE_AUTO":
+                                    st.markdown("**⚖️ Teilverkauf & Runner auf Net-BE**")
+                                else:
+                                    st.markdown("**⚖️ Co-Pilot Scale-Out & Net-BE**")
+                                    
+                                sel_split_lbl = st.selectbox(
+                                    "Split-Quote:",
+                                    list(split_opts.keys()),
+                                    index=def_split_idx,
+                                    key=f"so_q_{row['id']}_{idx}"
+                                )
+                                
+                                split_quote_dyn = split_opts[sel_split_lbl]
+                                if is_future:
+                                    sold_qty_dyn = int(round(qty * split_quote_dyn))
+                                    rest_qty_dyn = int(round(qty)) - sold_qty_dyn
+                                elif is_forex:
+                                    sold_qty_dyn = round(qty * split_quote_dyn, 2)
+                                    rest_qty_dyn = round(qty - sold_qty_dyn, 2)
+                                else:
+                                    sold_qty_dyn = round(qty * split_quote_dyn, 4) if is_crypto else round(qty * split_quote_dyn, 2)
+                                    rest_qty_dyn = round(qty - sold_qty_dyn, 4) if is_crypto else round(qty - sold_qty_dyn, 2)
+                                    
+                                # Dynamische Net-BE Berechnung für das UI
+                                point_val_dyn = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
+                                orig_fees_dyn = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
+                                keep_fees_dyn = max(0.0, orig_fees_dyn * (1.0 - (sold_qty_dyn / qty))) if qty > 0 else 0.0
+                                
+                                is_long_dyn = (str(row['direction']).strip().upper() == 'LONG')
+                                denom_dyn = rest_qty_dyn * point_val_dyn * fx
+                                fee_offset_dyn = (keep_fees_dyn / denom_dyn) if denom_dyn > 0 else 0.0
+                                
+                                so_live_default = float(cur_p) if float(cur_p) > 0.0 else float(ep)
+                                
+                                if "=X" in sym_u:
+                                    fx_pair_dyn = sym_u.replace("=X", "")
+                                    if fx_pair_dyn in ["USDJPY", "USDCAD", "USDCHF"]:
+                                        fee_offset_dyn *= float(so_live_default)
+                                    elif fx_pair_dyn == "EURJPY":
+                                        fee_offset_dyn *= (float(so_live_default) * fx)
+
+                                raw_net_be_dyn = (ep + fee_offset_dyn) if is_long_dyn else (ep - fee_offset_dyn)
+                                be_decimals_dyn = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                                net_be_price_dyn = round(raw_net_be_dyn, be_decimals_dyn)
+
+                                if is_long_dyn:
+                                    new_runner_sl_dyn = max(current_sl, net_be_price_dyn) if current_sl > 0 else net_be_price_dyn
+                                else:
+                                    new_runner_sl_dyn = min(current_sl, net_be_price_dyn) if current_sl > 0 else net_be_price_dyn
+
+                                if is_future: asset_unit = "Kontrakte"
+                                elif is_forex: asset_unit = "Lots"
+                                elif is_crypto: asset_unit = "Coins"
+                                else: asset_unit = "Stück (Aktien)"
+
+                                if account_exec_mode != "LIVE_AUTO":
+                                    qty_fmt_sold = f"{sold_qty_dyn:g}" if is_future else (f"{sold_qty_dyn:.4f}" if is_crypto else f"{sold_qty_dyn:.2f}")
+                                    qty_fmt_rest = f"{rest_qty_dyn:g}" if is_future else (f"{rest_qty_dyn:.4f}" if is_crypto else f"{rest_qty_dyn:.2f}")
+                                    
+                                    st.info(
+                                        "**Handlungsanweisung für deinen Broker (Reihenfolge beachten!):**\n"
+                                        f"1. Im Broker schließen: **{qty_fmt_sold}** {asset_unit} (Gewinn sichern)\n"
+                                        f"2. Stop-Order im Broker auf **{qty_fmt_rest}** {asset_unit} anpassen & nachziehen auf: **{new_runner_sl_dyn:{fmt}}** {curr} (Net-Break-Even)"
+                                    )
+                                
+                                so_exit_price = st.number_input(
+                                    f"Exit-Kurs Tranche 1 ({curr}):",
+                                    value=so_live_default,
+                                    step=step_val,
+                                    format=fmt_str,
+                                    key=f"so_p_{row['id']}_{idx}"
+                                )
+                                
+                                btn_label = "⚡ Twin-Split ausführen" if account_exec_mode == "LIVE_AUTO" else "✅ Im Broker ausgeführt & Journal teilen"
+                                
+                                if st.button(btn_label, key=f"btn_so_exec_{row['id']}_{idx}", type="primary", use_container_width=True):
+                                    st.session_state.so_nonce_dict[orig_id_str] = so_nonce + 1
+                                    split_quote = split_opts[sel_split_lbl]
+                                    original_id = str(row['id']).strip()
+                                    
+                                    if is_future:
+                                        sold_qty = int(round(qty * split_quote))
+                                        rest_qty = int(round(qty)) - sold_qty
+                                    elif is_forex:
+                                        sold_qty = round(qty * split_quote, 2)
+                                        rest_qty = round(qty - sold_qty, 2)
+                                    else:
+                                        sold_qty = round(qty * split_quote, 4) if is_crypto else round(qty * split_quote, 2)
+                                        rest_qty = round(qty - sold_qty, 4) if is_crypto else round(qty - sold_qty, 2)
+                                        
+                                    if sold_qty < min_lot or rest_qty < min_lot:
+                                        st.error(f"Berechnete Teilmengen (Verkauf: {sold_qty}, Rest: {rest_qty}) unterschreiten das Minimum ({min_lot}).")
+                                        st.stop()
+
+                                    # Net-BE Berechnung für Runner (Tranche 2)
+                                    point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
+                                    orig_fees = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
+                                    keep_fees = max(0.0, orig_fees * (1.0 - (sold_qty / qty))) if qty > 0 else 0.0
+                                    
+                                    is_long_so = (str(row['direction']).strip().upper() == 'LONG')
+                                    denom_so = rest_qty * point_val * fx
+                                    fee_offset_so = (keep_fees / denom_so) if denom_so > 0 else 0.0
+                                    
+                                    if "=X" in sym_u:
+                                        fx_pair_so = sym_u.replace("=X", "")
+                                        if fx_pair_so in ["USDJPY", "USDCAD", "USDCHF"]:
+                                            fee_offset_so *= float(so_exit_price)
+                                        elif fx_pair_so == "EURJPY":
+                                            fee_offset_so *= (float(so_exit_price) * fx)
+
+                                    raw_net_be = (ep + fee_offset_so) if is_long_so else (ep - fee_offset_so)
+                                    be_decimals = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                                    net_be_price = round(raw_net_be, be_decimals)
+
+                                    if is_long_so:
+                                        new_runner_sl = max(current_sl, net_be_price) if current_sl > 0 else net_be_price
+                                    else:
+                                        new_runner_sl = min(current_sl, net_be_price) if current_sl > 0 else net_be_price
+
+                                    # 1. Alert-State aktualisieren
+                                    state_file_so = get_user_file("alert_state.json")
+                                    with file_lock(state_file_so):
+                                        a_state_so = {}
+                                        if os.path.exists(state_file_so):
+                                            try:
+                                                with open(state_file_so, "r", encoding="utf-8") as f_st:
+                                                    a_state_so = json.load(f_st)
+                                            except Exception:
+                                                pass
+                                        a_state_so[f"{original_id}_be"] = True
+                                        a_state_so[f"{original_id}_trail"] = True
+                                        st_dir = os.path.dirname(os.path.abspath(state_file_so))
+                                        fd_s, tmp_s = tempfile.mkstemp(prefix=".tmp_state_", dir=st_dir, suffix=".json")
+                                        try:
+                                            with os.fdopen(fd_s, "w", encoding="utf-8") as f_st_out:
+                                                json.dump(a_state_so, f_st_out, indent=4)
+                                                f_st_out.flush()
+                                                os.fsync(f_st_out.fileno())
+                                            os.replace(tmp_s, state_file_so)
+                                        except Exception:
+                                            if os.path.exists(tmp_s):
+                                                try: os.remove(tmp_s)
+                                                except OSError: pass
+                                                
+                                    if account_exec_mode == "LIVE_AUTO":
+                                        # 2. Spooler-Queue: Atomares Compound-Signal
+                                        pending_dir_so = os.getenv("INVARIX_PENDING_DIR") or os.path.join(BASE_DIR, "signals", "01_pending")
+                                        os.makedirs(pending_dir_so, exist_ok=True)
+
+                                        broker_acc_so = "AUTO_ROUTED"
+                                        acc_type_so = "ftmo" if is_forex else "apex"
+                                        for a_k, a_v in st.session_state.config.get("lab_accounts", {}).items():
+                                            if a_v.get("name") == row['account_name']:
+                                                broker_acc_so = a_v.get("broker_account_id") or a_v.get("broker_account") or "AUTO_ROUTED"
+                                                raw_at = str(a_v.get("account_type", "")).lower()
+                                                raw_bp = str(a_v.get("broker_profile", "")).lower()
+                                                if "ftmo" in raw_at or "ftmo" in raw_bp or is_forex: acc_type_so = "ftmo"
+                                                elif "apex" in raw_at or "apex" in raw_bp or is_future: acc_type_so = "apex"
+                                                break
+
+                                        ts_ms = int(time.time() * 1000)
+                                        ts_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                                        uname_so = st.session_state.get("username", "admin")
+
+                                        payload_scaleout = {
+                                            "action": "SCALE_OUT_AND_PROTECT",
+                                            "trade_id": original_id,
+                                            "symbol": str(row['symbol']).strip(),
+                                            "instrument": str(row['symbol']).strip(),
+                                            "close_qty": sold_qty,
+                                            "runner_qty": rest_qty,
+                                            "exit_price": float(so_exit_price),
+                                            "new_sl": float(new_runner_sl),
+                                            "account_id": broker_acc_so,
+                                            "account_name": str(row['account_name']).strip(),
+                                            "account_type": acc_type_so,
+                                            "username": uname_so,
+                                            "timestamp": ts_iso
+                                        }
+
+                                        f_sig_path = os.path.join(pending_dir_so, f"sig_{ts_ms}_scaleout_{original_id}.json")
+                                        fd_p, tmp_p = tempfile.mkstemp(prefix=".tmp_sig_", dir=pending_dir_so, suffix=".json")
+                                        try:
+                                            with os.fdopen(fd_p, "w", encoding="utf-8") as f_p:
+                                                json.dump(payload_scaleout, f_p, indent=4)
+                                                f_p.flush()
+                                                os.fsync(f_p.fileno())
+                                            os.replace(tmp_p, f_sig_path)
+                                        except Exception:
+                                            if os.path.exists(tmp_p):
+                                                try: os.remove(tmp_p)
+                                                except OSError: pass
+
+                                        st.toast("⚖️ Scale-Out Signal an Executor übermittelt. Ausführung läuft...", icon="✅")
+                                        st.rerun()
+                                    else:
+                                        # 2. Lokale UI-Aufteilung für CO_PILOT
+                                        full_journal = load_trade_journal()
+                                        
+                                        # Max SO-Nummer finden
+                                        import re
+                                        max_so = 0
+                                        for _, j_row in full_journal.iterrows():
+                                            j_id = str(j_row.get("id", ""))
+                                            if j_id.startswith(f"{original_id}_SO"):
+                                                match = re.search(r'_SO(\d+)$', j_id)
+                                                if match:
+                                                    max_so = max(max_so, int(match.group(1)))
+                                        next_so = max_so + 1
+                                        
+                                        target_idx = full_journal[full_journal['id'] == original_id].index[0]
+                                        t_row = full_journal.loc[target_idx].copy()
+                                        
+                                        ratio_sold = sold_qty / qty
+                                        orig_inv = float(t_row.get('invest_eur', 0.0) if pd.notna(t_row.get('invest_eur')) else 0.0)
+                                        orig_risk = float(t_row.get('planned_risk_eur', 0.0) if pd.notna(t_row.get('planned_risk_eur')) else 0.0)
+                                        
+                                        sold_inv = round(orig_inv * ratio_sold, 2)
+                                        sold_risk = round(orig_risk * ratio_sold, 2)
+                                        sold_fees = round(orig_fees * ratio_sold, 2)
+                                        
+                                        keep_inv = round(max(0.0, orig_inv - sold_inv), 2)
+                                        keep_risk = round(max(0.0, orig_risk - sold_risk), 2)
+                                        keep_fees_final = round(max(0.0, orig_fees - sold_fees), 2)
+                                        
+                                        # PnL Berechnung Tranche 1
+                                        if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]):
+                                            raw_pnl_so = ((so_exit_price - ep) / so_exit_price) * sold_qty * point_val * dir_m if so_exit_price > 0 else 0.0
+                                        elif sym_u.startswith("EURJPY"):
+                                            raw_pnl_so = (((so_exit_price - ep) / so_exit_price) / fx) * sold_qty * point_val * dir_m if (so_exit_price > 0 and fx > 0) else 0.0
+                                        else:
+                                            raw_pnl_so = (so_exit_price - ep) * sold_qty * point_val * dir_m
+                                            
+                                        pnl_so_eur = round((raw_pnl_so * fx) - sold_fees, 2)
+                                        pnl_so_pct = round(((so_exit_price / ep) - 1.0) * 100.0 * dir_m, 2) if ep > 0 else 0.0
+                                        r_mult_so = round(pnl_so_eur / sold_risk, 2) if sold_risk > 0 else 0.0
+                                        
+                                        # Tranche 1 (CLOSED)
+                                        tranche_1 = t_row.copy()
+                                        tranche_1['id'] = f"{original_id}_SO{next_so}"
+                                        tranche_1['status'] = 'CLOSED'
+                                        tranche_1['position_size'] = sold_qty
+                                        tranche_1['invest_eur'] = sold_inv
+                                        tranche_1['planned_risk_eur'] = sold_risk
+                                        tranche_1['current_risk_eur'] = 0.0
+                                        tranche_1['est_fees_eur'] = sold_fees
+                                        tranche_1['exit_price'] = float(so_exit_price)
+                                        tranche_1['exit_date'] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+                                        tranche_1['exit_reason'] = f"Scale-Out ({int(round(split_quote * 100))}%)"
+                                        tranche_1['pnl_eur'] = pnl_so_eur
+                                        tranche_1['pnl_pct'] = pnl_so_pct
+                                        tranche_1['r_multiple'] = r_mult_so
+                                        
+                                        # Runner (OPEN)
+                                        full_journal.at[target_idx, 'position_size'] = rest_qty
+                                        full_journal.at[target_idx, 'invest_eur'] = keep_inv
+                                        full_journal.at[target_idx, 'planned_risk_eur'] = keep_risk
+                                        full_journal.at[target_idx, 'est_fees_eur'] = keep_fees_final
+                                        full_journal.at[target_idx, 'current_sl'] = new_runner_sl
+                                        
+                                        is_risk_free = False
+                                        if is_long_so and new_runner_sl >= ep and ep > 0.0: is_risk_free = True
+                                        if not is_long_so and new_runner_sl <= ep and ep > 0.0: is_risk_free = True
+                                        
+                                        if is_risk_free:
+                                            full_journal.at[target_idx, 'current_risk_eur'] = 0.00
+                                        else:
+                                            eff_diff_runner = abs(ep - new_runner_sl)
+                                            if "=X" in sym_u:
+                                                eff_diff_runner = get_effective_forex_risk_pts(sym_u.replace("=X", ""), eff_diff_runner, new_runner_sl, fx)
+                                            new_raw_risk = eff_diff_runner * rest_qty * point_val * fx
+                                            full_journal.at[target_idx, 'current_risk_eur'] = round(new_raw_risk, 2)
+                                            
+                                        full_journal = pd.concat([full_journal, pd.DataFrame([tranche_1])], ignore_index=True)
+                                        save_trade_journal(full_journal)
+                                        
+                                        st.toast("✅ Co-Pilot Scale-Out verbucht: Tranche 1 geschlossen, Runner auf Net-BE!", icon="✅")
+                                        st.rerun()
+
+                        with c_btn3:
                             with st.popover("🗑️ Löschen", use_container_width=True):
                                 st.markdown("⚠️ **Trade restlos löschen?**")
                                 if st.button("✅ Ja, endgültig löschen", key=f"btn_del_yes_{row['id']}_{idx}", type="primary", use_container_width=True):
