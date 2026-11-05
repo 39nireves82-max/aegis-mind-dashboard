@@ -1475,22 +1475,24 @@ def calculate_sl_tp_crv(df, current_price, p_sell, tab_mode):
         else: crv_rating = f"🔴 Unattraktiv (1:{crv:.1f})"
             
     return sl, tp, crv_rating
-def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, atr_val, ema20_val=0, exit_mode="PROP_DEFENSIVE", is_crypto=False, direction="Long"):
+def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, atr_val, ema20_val=0, exit_mode="PROP_DEFENSIVE", is_crypto=False, direction="Long", net_be_price=None):
     risk = abs(entry_price - initial_sl)
     if risk <= 0: return initial_sl, "⚪ N/A"
     dir_m = 1 if direction == "Long" else -1
     open_profit = (current_price - entry_price) if direction == "Long" else (entry_price - current_price)
     current_r = open_profit / risk if risk > 0 else 0
     
+    eff_be = net_be_price if (net_be_price is not None and net_be_price > 0) else entry_price
+    
     if exit_mode == "DEFENSIVE_EMERGENCY":
         if current_r < 0.75:
             return initial_sl, "🚨 Slippage-Notfallmodus (Frühes BE ab +0.75 R)"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, entry_price) if direction == "Long" else min(initial_sl, entry_price)
+            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
             return new_sl, "🚨 Notfall-BE aktiv (50% Scale-Out & Netto-BE ab +0.75 R)"
         else:
             trail_base = current_price - (1.5 * atr_val * dir_m)
-            new_sl = max(entry_price, trail_base) if direction == "Long" else min(entry_price, trail_base)
+            new_sl = max(eff_be, trail_base) if direction == "Long" else min(eff_be, trail_base)
             return new_sl, "🚨 Notfall-Trail aktiv (Enger 1.5x ATR Schutz)"
 
     if is_crypto:
@@ -1498,7 +1500,7 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
             return initial_sl, "🛡️ Initial-Schutz (Krypto-DNA: Kein frühes BE)"
         else:
             trend_trail = current_price - (3.5 * atr_val * dir_m)
-            new_target_sl = max(entry_price, trend_trail) if direction == "Long" else min(entry_price, trend_trail)
+            new_target_sl = max(eff_be, trend_trail) if direction == "Long" else min(eff_be, trend_trail)
             if ema20_val > 0:
                 new_target_sl = max(new_target_sl, ema20_val * 0.98) if direction == "Long" else min(new_target_sl, ema20_val * 1.02)
             return new_target_sl, "🪙 Krypto-Trail aktiv (3.5x ATR, BE ab +1.5R)"
@@ -1518,10 +1520,10 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
         if current_r < 1.0:
             return initial_sl, "🛡️ Initial-Schutz"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, entry_price) if direction == "Long" else min(initial_sl, entry_price)
+            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
             return new_sl, "⚖️ Scale-Out 30% & Netto-BE ab +1.0 R"
             
-        new_target_sl = entry_price
+        new_target_sl = eff_be
         msg = "📈 Trail-Modus aktiv"
         
         if open_profit >= tight_trigger_profit:
@@ -1567,7 +1569,7 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
             new_target_sl = max(trend_trail, r25_floor) if direction == "Long" else min(trend_trail, r25_floor)
             return new_target_sl, "🚀 Home-Run aktiv (+2.5R gesichert auf +1.0R)"
         elif current_r >= 1.5:
-            new_target_sl = max(trend_trail, entry_price) if direction == "Long" else min(trend_trail, entry_price)
+            new_target_sl = max(trend_trail, eff_be) if direction == "Long" else min(trend_trail, eff_be)
             return new_target_sl, "🚀 Home-Run aktiv (Netto-BE ab +1.5R)"
         else:
             return initial_sl, "🛡️ Initial-Schutz (Trend)"
@@ -1576,11 +1578,11 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
         if current_r < 1.0:
             return initial_sl, "🛡️ Initial-Schutz"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, entry_price) if direction == "Long" else min(initial_sl, entry_price)
+            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
             return new_sl, "⚖️ Scale-Out 50% & Netto-BE ab +1.0 R"
         else:
             trail_base = current_price - (2.0 * atr_val * dir_m)
-            new_sl = max(entry_price, trail_base) if direction == "Long" else min(entry_price, trail_base)
+            new_sl = max(eff_be, trail_base) if direction == "Long" else min(eff_be, trail_base)
             return new_sl, "📈 Trail-Modus aktiv (2.0x ATR)"
 def run_monte_carlo_test(current_price, sl_price, tp_price, iterations=100):
     if current_price <= 0 or sl_price <= 0 or tp_price <= 0: return 0.0, "⚪ N/A"
@@ -3385,7 +3387,7 @@ with st.sidebar:
                 'signal_price': raw_cp, 'entry_price': real_fill_prop, 'currency': get_currency_symbol(active_sym),
                 'fx_rate': fx_usd_eur, 'position_size': qty_dyn,
                 'contract_type': c_type, 'point_value': pt_val, 'base_currency': "USD",
-                'invest_eur': 0, 'sl_price': raw_sl, 'current_sl': raw_sl, 'tp_price': raw_tp, 
+                'invest_eur': round(margin_eur, 2) if margin_eur > 0 else 0.0, 'sl_price': raw_sl, 'current_sl': raw_sl, 'tp_price': raw_tp, 
                 'planned_risk_eur': planned_risk_eur_real, 'current_risk_eur': planned_risk_eur_real, 'est_fees_eur': est_fees_eur_real,
                 'master_score': row_data.get("Sort_Score", 0), 'setup_type': row_data.get("Signal", ""),
                 'mc_robustness': "Prop-Firm Validated", 'atr_days': exp_days_t3,
@@ -6335,8 +6337,27 @@ with tab_lab:
                             sym_str = str(row['symbol']).upper()
                             is_crypto_asset = any(sym_str.endswith(ext) for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF"])
                             
+                            # Net-BE Berechnung für den Single-Button (Spalte 2)
+                            qty_col2 = float(row['position_size'])
+                            point_val_col2 = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
+                            orig_fees_col2 = float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
+                            denom_col2 = qty_col2 * point_val_col2 * fx
+                            fee_offset_col2 = (orig_fees_col2 / denom_col2) if denom_col2 > 0 else 0.0
+                            
+                            if "=X" in sym_u:
+                                fx_pair_col2 = sym_u.replace("=X", "")
+                                if fx_pair_col2 in ["USDJPY", "USDCAD", "USDCHF"]:
+                                    fee_offset_col2 *= float(cur_p)
+                                elif fx_pair_col2 == "EURJPY":
+                                    fee_offset_col2 *= (float(cur_p) * fx)
+
+                            is_long_col2 = (row['direction'] == 'Long')
+                            raw_net_be_col2 = (ep + fee_offset_col2) if is_long_col2 else (ep - fee_offset_col2)
+                            be_decimals_col2 = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                            net_be_price_col2 = round(raw_net_be_col2, be_decimals_col2)
+
                             # Trailing-Stop Kalkulation basiert weiterhin auf dem Original-Einstieg/SL!
-                            rec_sl, sl_status = calculate_trailing_stop(cur_p, ep, sl, tp, atr_proxy, exit_mode=exit_mode_val, is_crypto=is_crypto_asset, direction=row['direction'])
+                            rec_sl, sl_status = calculate_trailing_stop(cur_p, ep, sl, tp, atr_proxy, exit_mode=exit_mode_val, is_crypto=is_crypto_asset, direction=row['direction'], net_be_price=net_be_price_col2)
                             st.write("")
                             is_improved = (rec_sl > current_sl) if row['direction'] == 'Long' else (rec_sl < current_sl)
                             if is_improved:
@@ -6366,7 +6387,14 @@ with tab_lab:
                                     if new_risk <= 0.0:
                                         new_risk = 0.0
                                         
-                                    full_journal.at[t_idx, 'current_risk_eur'] = new_risk
+                                    is_risk_free = False
+                                    if t_dir == 'Long' and rec_sl >= net_be_price_col2 and t_entry > 0: is_risk_free = True
+                                    if t_dir == 'Short' and rec_sl <= net_be_price_col2 and t_entry > 0: is_risk_free = True
+                                    
+                                    if is_risk_free:
+                                        full_journal.at[t_idx, 'current_risk_eur'] = 0.00
+                                    else:
+                                        full_journal.at[t_idx, 'current_risk_eur'] = new_risk
                                         
                                     save_trade_journal(full_journal)
                                     st.toast(f"✅ Stop-Loss für {row['symbol']} auf {rec_sl:{fmt}} nachgezogen!", icon="🎯")
@@ -6542,16 +6570,40 @@ with tab_lab:
 
                             poka_yoke_locked = (sim_sold < min_lot or sim_rest < min_lot)
 
-                            so_disabled = in_flight or poka_yoke_locked
+                            can_split = not poka_yoke_locked
+
+                            popover_help = None
                             
-                            if in_flight: popover_lbl = "⏳ Order in Ausführung..."
-                            elif poka_yoke_locked: popover_lbl = "🚫 Split unterschreitet Min-Lot"
-                            elif account_exec_mode == "LIVE_AUTO": popover_lbl = "⚖️ Scale-Out"
-                            else: popover_lbl = "⚖️ Co-Pilot Scale-Out"
+                            # Defensive Null-Abfestigung (Fallback für leere oder alte Journaleinträge)
+                            if pd.isna(raw_em_so) or raw_em_so is None or str(raw_em_so).strip().lower() == 'nan':
+                                raw_em_so = ""
+                            else:
+                                raw_em_so = str(raw_em_so).strip()
+                                
+                            # 3-stufige Prioritäten-Hierarchie für den Button c_btn2
+                            if raw_em_so.upper() in ["HOME_RUN_TREND", "TARGET_LOCKED"]:
+                                # PRIORITÄT 1 (Regelwerk-Veto für Home-Run / Target-Locked)
+                                so_disabled = True
+                                popover_lbl = "⚪ Home-Run (Kein Split)"
+                                popover_help = "Dieses Setup läuft als ungeteilter Home-Run Runner. Ein Teilverkauf ist im Regelwerk nicht vorgesehen. Die risikofreie Absicherung erfolgt rein über den Stop-Loss."
+                            elif not can_split:
+                                # PRIORITÄT 2 (Mengenschutz für unteilbare Einzellots)
+                                so_disabled = True
+                                popover_lbl = "⚪ Einzellot (kein Split)"
+                                popover_help = "Einzellot kann nicht aufgeteilt werden. Die risikofreie Stop-Absicherung auf Net-BE erfolgt ab +1.0 R über den Button '🎯 SL übernehmen' in Spalte 2."
+                            else:
+                                # PRIORITÄT 3 (Standard-Freigabe für teilbare Positionen inkl. Order-Blocker)
+                                so_disabled = in_flight
+                                if in_flight:
+                                    popover_lbl = "⏳ Order in Ausführung..."
+                                elif account_exec_mode == "LIVE_AUTO":
+                                    popover_lbl = "⚖️ Scale-Out"
+                                else:
+                                    popover_lbl = "⚖️ Co-Pilot Scale-Out"
 
                             so_nonce = st.session_state.so_nonce_dict.get(orig_id_str, 0)
 
-                            with st.popover(popover_lbl, disabled=so_disabled, use_container_width=True, key=f"pop_so_{orig_id_str}_{so_nonce}"):
+                            with st.popover(popover_lbl, disabled=so_disabled, help=popover_help, use_container_width=True, key=f"pop_so_{orig_id_str}_{so_nonce}"):
                                 if account_exec_mode == "LIVE_AUTO":
                                     st.markdown("**⚖️ Teilverkauf & Runner auf Net-BE**")
                                 else:
@@ -7442,7 +7494,7 @@ with tab_lab:
                 elif val != '0.00 €': return ['background-color: #d4edda; color: #155724'] * len(row)
                 return [''] * len(row)
                 
-            st.dataframe(df_disp.style.apply(highlight_pnl, axis=1), use_container_width=True, hide_index=True)
+            st.dataframe(df_disp.style.apply(highlight_pnl, axis=1), use_container_width=True, hide_index=True, height=400)
             
             st.markdown("---")
             detail_opts = [f"{r['symbol']} ({r['exit_date']})" for _, r in df_closed_list.iterrows()]
