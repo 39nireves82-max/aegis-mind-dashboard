@@ -1640,12 +1640,12 @@ def calculate_position_size(entry_price, sl_price, tp_price, config, fx_rate=1.0
             if prop_guard:
                 status_msg = f"🛡️ Smart Sizing: Aktiv (Gedeckelt auf 1.0x / {target_risk_base:.2f} € durch Prop-Guard)"
             else:
-                status_msg = f"🔥 Alpha-Boost aktiv: +20% Risiko ({target_risk_base * 1.2:.2f} €) – Herausragendes CRV ({crv:.2f}:1 ≥ 2.00:1)"
+                status_msg = f"🔥 Alpha-Boost aktiv: +20% Risiko ({target_risk_base * 1.2:.2f} €) – Herausragendes CRV ({crv:.2f} : 1)"
         elif crv < 1.5:
             modifier = 0.5
-            status_msg = f"🛡️ Kapitalschutz aktiv: Risiko halbiert auf {target_risk_base * 0.5:.2f} € – Rechnerisches CRV ({crv:.2f}:1 < 1.50:1) bietet begrenzten Spielraum zum Ziel"
+            status_msg = f"🛡️ Kapitalschutz aktiv: Risiko halbiert auf {target_risk_base * 0.5:.2f} € – Rechnerisches CRV ({crv:.2f} : 1) bietet begrenzten Spielraum zum Ziel"
         else:
-            status_msg = f"🟢 Standard-Sizing aktiv: 1.0x Basis ({target_risk_base:.2f} €) – Solides CRV ({crv:.2f}:1 ≥ 1.50:1)"
+            status_msg = f"🟢 Standard-Sizing aktiv: 1.0x Basis ({target_risk_base:.2f} €) – Solides CRV ({crv:.2f} : 1)"
     fee_rate_pct = 0.0
     flat_fee_eur = 0.0
     if "1.49% Spread" in fee_mode or "Bitpanda Retail" in fee_mode:
@@ -6266,7 +6266,6 @@ with tab_lab:
 
                         cur_p_eur = cur_p * fx
                         pnl_temp = (cur_p - ep) / ep * 100 if row['direction'] == 'Long' else (ep - cur_p) / ep * 100
-                        icon = "🟢" if pnl_temp >= 0 else "🔴"
                         
                         sym_u = str(row['symbol']).upper().strip()
                         cme_roots = {"MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"}
@@ -6284,6 +6283,9 @@ with tab_lab:
                         else:
                             raw_pnl = (cur_p - ep) * qty * point_val * dir_m
                         net_pnl_eur = (raw_pnl * fx) - float(row.get('est_fees_eur', 0.0) if pd.notna(row.get('est_fees_eur')) else 0.0)
+                        
+                        icon = "🟢" if net_pnl_eur >= 0.0 else "🔴"
+                        
                         inv_eur = float(row.get('invest_eur', 0.0))
                         if inv_eur <= 0:
                             inv_eur = ep * qty * point_val * fx
@@ -6292,11 +6294,16 @@ with tab_lab:
                         open_risk_eur = float(row.get("planned_risk_eur", 0.0))
                         current_r = (net_pnl_eur / open_risk_eur) if open_risk_eur > 0 else 0.0
 
+                        if is_future or is_forex:
+                            pct_label = f"RoM: {net_pnl_pct:+.2f}% (Margin)"
+                        else:
+                            pct_label = f"Netto: {net_pnl_pct:+.2f}%"
+
                         if curr not in ["€", "EUR"]:
                             net_pnl_raw = net_pnl_eur / fx if fx > 0 else net_pnl_eur
-                            pnl_disp = f"**PnL:** {icon} {net_pnl_raw:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | Netto: {net_pnl_pct:+.2f}% | {current_r:+.2f} R)"
+                            pnl_disp = f"PnL: {icon} {net_pnl_raw:+.2f} {curr} (≈ {net_pnl_eur:+.2f} € | {pct_label} | {current_r:+.2f} R)"
                         else:
-                            pnl_disp = f"**PnL:** {icon} {net_pnl_eur:+.2f} € (Netto: {net_pnl_pct:+.2f}% | {current_r:+.2f} R)"
+                            pnl_disp = f"PnL: {icon} {net_pnl_eur:+.2f} € ({pct_label} | {current_r:+.2f} R)"
                         
                         st.markdown(f"**Kurs:** {cur_p:{fmt}} {curr} (≈ {cur_p_eur:.2f} € | Kurs: {pnl_temp:+.2f}%) | {pnl_disp}")
                         st.caption(f"Entry: {ep:{fmt}} {curr} (≈ {ep * fx:.2f} €) | Inv: {row['invest_eur']:.2f} €")
@@ -6310,9 +6317,25 @@ with tab_lab:
                         st.write(f"Initial-SL: {sl:{fmt}} {curr} (≈ {sl * fx:.2f} €)")
                         if current_sl != sl:
                             st.markdown(f"🛡️ **Aktueller SL:** `{current_sl:{fmt}} {curr}`")
+                        exit_mode_val_tmp = str(row.get('exit_mode', ''))
+                        if not exit_mode_val_tmp or exit_mode_val_tmp == 'nan':
+                            acc_prof_tmp = "prop_guard"
+                            for a_id, a_data in st.session_state.config.get("lab_accounts", {}).items():
+                                if a_data.get("name") == row['account_name']:
+                                    acc_prof_tmp = a_data.get("exit_profile", "prop_guard")
+                                    break
+                            if acc_prof_tmp == "apex_lock": exit_mode_val_tmp = "TARGET_LOCKED"
+                            elif acc_prof_tmp in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: exit_mode_val_tmp = "PROP_DEFENSIVE"
+                            else: exit_mode_val_tmp = "HOME_RUN_TREND" if "Trend" in str(row.get("setup_type", "")) else "ALPHA_CASHFLOW"
                             
-                        if tp <= 0.0:
-                            st.write(f"TP: ⚪ Kein TP (Home-Run Runner)")
+                        if has_runner_split or tp <= 0.0:
+                            if has_runner_split:
+                                st.write("TP: ⚪ Kein TP (Runner auf Trailing-Stop)")
+                                tp = 0.0
+                            elif exit_mode_val_tmp == "HOME_RUN_TREND":
+                                st.write("TP: ⚪ Kein TP (Home-Run Runner)")
+                            else:
+                                st.write("TP: ⚪ Kein fester TP (Trailing-Stop Chandelier)")
                         else:
                             st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
                         
@@ -6420,7 +6443,9 @@ with tab_lab:
 
                                 if has_runner_split:
                                     st.markdown("🛡️ **Status:** Net-BE gesichert (Trailing-Schutz aktiv ab +1.5 R)")
-                                elif exit_mode_val in ["PROP_DEFENSIVE", "TARGET_LOCKED", "DEFENSIVE_EMERGENCY"]:
+                                elif exit_mode_val == "TARGET_LOCKED":
+                                    st.markdown(f"🎯 **Plan:** Vollexit bei TP ({tp:{fmt}} {curr}) | Stop auf Net-BE ab +1.0 R")
+                                elif exit_mode_val in ["PROP_DEFENSIVE", "DEFENSIVE_EMERGENCY"]:
                                     if can_split:
                                         if current_r >= 1.0:
                                             st.markdown("⚡ **Signal:** +1.0 R erreicht → 50 % Scale-Out fällig!")
@@ -6460,7 +6485,10 @@ with tab_lab:
                         st.write(f"Score: {row['master_score']}")
                         
                     with col4:
-                        close_reason = st.selectbox("Grund:", ["🎯 Take Profit erreicht", "🛑 Stop Loss gegriffen", "🛑 Trailing-Stop gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"], key=f"rsn_{row['id']}")
+                        reason_opts = ["🎯 Take Profit erreicht", "🛑 Stop Loss gegriffen", "🛑 Trailing-Stop gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
+                        if tp <= 0.0:
+                            reason_opts = ["🛑 Trailing-Stop gegriffen", "🛑 Stop Loss gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
+                        close_reason = st.selectbox("Grund:", reason_opts, key=f"rsn_{row['id']}")
                         
                         def_price = ep
                         if "Take Profit" in close_reason: def_price = tp
@@ -6581,8 +6609,18 @@ with tab_lab:
                                 raw_em_so = str(raw_em_so).strip()
                                 
                             # 3-stufige Prioritäten-Hierarchie für den Button c_btn2
-                            if raw_em_so.upper() in ["HOME_RUN_TREND", "TARGET_LOCKED"]:
-                                # PRIORITÄT 1 (Regelwerk-Veto für Home-Run / Target-Locked)
+                            if has_runner_split:
+                                # PRIORITÄT 0 (Bereits geteilter Runner)
+                                so_disabled = True
+                                popover_lbl = "⚪ Runner aktiv (Bereits geteilt)"
+                                popover_help = "Für diese Position wurde der Teilverkauf bereits verbucht. Die Restposition läuft risikofrei auf Net-BE / Trailing-Stop und kann regulär über 'Schließen' beendet werden."
+                            elif raw_em_so.upper() == "TARGET_LOCKED":
+                                # PRIORITÄT 1a (Target-Lock Veto)
+                                so_disabled = True
+                                popover_lbl = "⚪ Target-Lock (Kein Split)"
+                                popover_help = "Dieses Setup zielt auf das feste Kursziel (Take Profit). Ein Teilverkauf ist im Regelwerk nicht vorgesehen. Die Stop-Absicherung auf Net-BE erfolgt über Spalte 2."
+                            elif raw_em_so.upper() == "HOME_RUN_TREND":
+                                # PRIORITÄT 1b (Home-Run Veto)
                                 so_disabled = True
                                 popover_lbl = "⚪ Home-Run (Kein Split)"
                                 popover_help = "Dieses Setup läuft als ungeteilter Home-Run Runner. Ein Teilverkauf ist im Regelwerk nicht vorgesehen. Die risikofreie Absicherung erfolgt rein über den Stop-Loss."
@@ -6590,7 +6628,7 @@ with tab_lab:
                                 # PRIORITÄT 2 (Mengenschutz für unteilbare Einzellots)
                                 so_disabled = True
                                 popover_lbl = "⚪ Einzellot (kein Split)"
-                                popover_help = "Einzellot kann nicht aufgeteilt werden. Die risikofreie Stop-Absicherung auf Net-BE erfolgt ab +1.0 R über den Button '🎯 SL übernehmen' in Spalte 2."
+                                popover_help = "Position kann nicht weiter aufgeteilt werden (Mindestmenge unterschritten). Die Stop-Absicherung auf Net-BE erfolgt ab +1.0 R über den Button '🎯 SL übernehmen' in Spalte 2."
                             else:
                                 # PRIORITÄT 3 (Standard-Freigabe für teilbare Positionen inkl. Order-Blocker)
                                 so_disabled = in_flight
@@ -6863,6 +6901,7 @@ with tab_lab:
                                         full_journal.at[target_idx, 'planned_risk_eur'] = keep_risk
                                         full_journal.at[target_idx, 'est_fees_eur'] = keep_fees_final
                                         full_journal.at[target_idx, 'current_sl'] = new_runner_sl
+                                        full_journal.at[target_idx, 'tp_price'] = 0.0
                                         
                                         is_risk_free = False
                                         if is_long_so and new_runner_sl >= ep and ep > 0.0: is_risk_free = True
@@ -6933,11 +6972,20 @@ with tab_lab:
                         st.toast(f"🗑️ Konto '{deleted_name}' erfolgreich gelöscht!", icon="✅")
                         st.rerun()
 
+        bound_capital = float(pd.to_numeric(df_open['invest_eur'], errors='coerce').sum()) if not df_open.empty else 0.0
+        bound_capital = max(0.0, bound_capital)
+        free_liquidity = max(0.0, current_cap - bound_capital)
+        
+        pct_free = (free_liquidity / current_cap * 100) if current_cap > 0 else 0.0
+        pct_bound = (bound_capital / current_cap * 100) if current_cap > 0 else 0.0
+
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Basis-Kapital", f"{effective_base_cap:,.2f} €", delta=f"{total_deposits - total_withdrawals:+,.2f} € Netto-Zufluss" if (total_deposits or total_withdrawals) else None)
         m2.metric("Aktueller Kontostand", f"{current_cap:,.2f} €", f"{floating_pnl:+.2f} € offen", delta_color="normal")
         m3.metric("Gesamt PnL (Netto)", f"{total_pnl:,.2f} €", f"{(total_pnl/effective_base_cap)*100:+.2f} %" if effective_base_cap > 0 else "0.00 %")
-        m4.metric("Offene Trades", f"{len(open_trades_data)} / 3")
+        m4.metric("Offene Trades", f"{len(open_trades_data)} / 3", delta=f"{bound_capital:,.2f} € gebunden", delta_color="off")
+        
+        st.caption(f"💶 **Freie Liquidität:** {free_liquidity:,.2f} € ({pct_free:.1f}%) &nbsp; | &nbsp; 🔒 **Gebundenes Kapital (Margin/Kaufwert):** {bound_capital:,.2f} € ({pct_bound:.1f}%)")
 
         with st.expander("💸 Kapital-Zufluss / Entnahme buchen (Privateinlage / Entnahme)", expanded=False):
             with st.form("form_cash_flow", border=False):
@@ -6999,11 +7047,35 @@ with tab_lab:
                     st.rerun()
 
         with st.expander(f"⚙️ Kontodaten bearbeiten: {active_acc['name']}", expanded=False):
-            with st.form(f"form_acc_{active_acc['id']}"):
+            # Formular durch Container ersetzt für sofortigen Rerun (Live-State Bindung)
+            with st.container():
+                tax_key = f"tax_in_{active_acc['id']}"
+                cat_map = {"prop_firm": "🏢 Fremdkapital / Prop-Challenge", "private": "👤 Privates Vermögensdepot"}
+                cat_rev_map = {v: k for k, v in cat_map.items()}
+                
+                if tax_key in st.session_state:
+                    live_tax_cat = cat_rev_map.get(st.session_state[tax_key], active_acc.get("tax_category", "private"))
+                else:
+                    live_tax_cat = active_acc.get("tax_category", "private")
+
                 c_s1, c_s2, c_s3, c_s4 = st.columns(4)
                 with c_s1: new_name = st.text_input("Kontoname", value=active_acc.get("name", ""), key=f"name_{active_acc['id']}")
                 with c_s2: new_cap = st.number_input("Startkapital (€)", value=float(active_acc.get("account_size", 10000.0)), step=1000.0, key=f"cap_{active_acc['id']}")
-                with c_s3: new_risk = st.number_input("Risiko pro Trade (%)", value=float(active_acc.get("risk_pct", 1.0)), step=0.1, key=f"risk_{active_acc['id']}")
+                with c_s3: 
+                    if live_tax_cat == "prop_firm":
+                        prof_key = f"prof_{active_acc['id']}"
+                        live_prof_raw = st.session_state.get(prof_key, "")
+                        live_prof = "apex_lock" if "Apex" in live_prof_raw else ("ftmo_swing" if "FTMO" in live_prof_raw else active_acc.get("exit_profile", ""))
+                        
+                        if live_prof == "apex_lock":
+                            st.info("🛡️ Risiko: Max. 125,00 $ (10 % Tages-Deckel) — gesichert über RESONO")
+                        elif live_prof == "ftmo_swing":
+                            st.info("🛡️ Risiko: Max. 5 % Tages-Deckel — gesichert über RESONO")
+                        else:
+                            st.info("🛡️ Risiko: 10 % bzw. 5 % Tages-Deckel — autonom gesichert über RESONO")
+                        new_risk = float(active_acc.get("risk_pct", 1.0))
+                    else:
+                        new_risk = st.number_input("Risiko pro Trade (%)", value=float(active_acc.get("risk_pct", 1.0)), step=0.1, key=f"risk_{active_acc['id']}")
                 with c_s4: 
                     broker_options = [
                         "Apex / Tradovate (Futures Insti-Rate)",
@@ -7032,11 +7104,11 @@ with tab_lab:
                 c_s5, c_s6, c_s7, c_s8 = st.columns(4)
                 with c_s5: new_years = st.slider("Backtest-Jahre", min_value=1, max_value=6, value=int(active_acc.get("years", 5)), key=f"years_{active_acc['id']}")
                 with c_s6: 
-                    acc_tax_cat = active_acc.get("tax_category", "private")
+                    # Umstellung auf Live-State Variable (live_tax_cat) statt statischem State
                     tk_list = active_acc.get("tickers", [])
                     tk_str = " ".join(tk_list).upper()
                     if "NQ=F" in tk_str or "MNQ" in tk_str: def_score = 60
-                    elif "CL=F" in tk_str or "MCL" in tk_str: def_score = 65 if acc_tax_cat == "prop_firm" else 70
+                    elif "CL=F" in tk_str or "MCL" in tk_str: def_score = 65 if live_tax_cat == "prop_firm" else 70
                     elif "EURUSD=X" in tk_str: def_score = 70
                     elif "=X" in tk_str or "DX-Y" in tk_str: def_score = 60
                     else: def_score = 70
@@ -7061,7 +7133,7 @@ with tab_lab:
                 if cur_prof == "prop_guard": cur_prof = "defensive_swing"
                 elif cur_prof == "apex_commodity_scale": cur_prof = "commodity_scale"
                 
-                available_profiles = prop_profiles if acc_tax_cat == "prop_firm" else private_profiles
+                available_profiles = prop_profiles if live_tax_cat == "prop_firm" else private_profiles
                 labels = list(available_profiles.keys())
                 default_label = labels[0]
                 for lbl, key_val in available_profiles.items():
@@ -7070,14 +7142,12 @@ with tab_lab:
                         break
                         
                 with c_s8:
-                    selected_label = st.selectbox("Exit-Profil", labels, index=labels.index(default_label), key=f"prof_{active_acc['id']}")
+                    selected_label = st.selectbox("Exit-Profil", labels, index=labels.index(default_label) if default_label in labels else 0, key=f"prof_{active_acc['id']}")
                     chosen_exit_profile = available_profiles[selected_label]
                 
                 c_s9, c_s10, c_s11, c_s12 = st.columns(4)
                 with c_s9:
-                    cat_map = {"prop_firm": "🏢 Fremdkapital / Prop-Challenge", "private": "👤 Privates Vermögensdepot"}
-                    cat_rev_map = {v: k for k, v in cat_map.items()}
-                    new_cat_label = st.selectbox("Konto-Kategorie (Zweck)", list(cat_map.values()), index=list(cat_map.keys()).index(acc_tax_cat), key=f"tax_in_{active_acc['id']}")
+                    new_cat_label = st.selectbox("Konto-Kategorie (Zweck)", list(cat_map.values()), index=list(cat_map.keys()).index(live_tax_cat), key=tax_key)
                     new_tax_cat_val = cat_rev_map[new_cat_label]
                 with c_s10:
                     def_dir = "both" if chosen_exit_profile in ["prop_guard", "defensive_swing", "apex_lock"] else "long"
@@ -7096,7 +7166,7 @@ with tab_lab:
                         
                     new_exec_mode = st.selectbox("Ausführungs-Modus", exec_opts, index=exec_opts.index(cur_exec), key=f"exec_{active_acc['id']}")
 
-                if st.form_submit_button("💾 Kontodaten speichern", use_container_width=True):
+                if st.button("💾 Kontodaten speichern", use_container_width=True, key=f"btn_save_acc_{active_acc['id']}"):
                     active_acc.update({
                         "name": new_name, 
                         "account_size": new_cap, 
