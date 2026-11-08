@@ -130,6 +130,8 @@ logging.basicConfig(
 
 class TelegramReporter:
     """Asynchrones 4-Stufen-Telegram-Meldenetz (HTML)."""
+    DAEMON_PREFIX = "⚙️ <b>[INVARIX EXECUTION DAEMON]</b>\n"
+
     def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id
@@ -154,19 +156,19 @@ class TelegramReporter:
             logging.error(f"Fehler beim Senden der Telegram-Nachricht: {e}")
 
     async def report_step_1_signal(self, symbol: str, direction: str, resono_status: str, account_type: str):
-        msg = f"🔍 <b>Stufe 1: Signal & Risiko-Check</b>\nTicker: {symbol} | {direction}\nKonto: {account_type}\nRESONO: <code>{resono_status}</code>"
+        msg = f"{self.DAEMON_PREFIX}🔍 <b>Stufe 1: Signal & Risiko-Check</b>\nTicker: {symbol} | {direction}\nKonto: {account_type}\nRESONO: <code>{resono_status}</code>"
         await self.send_message(msg)
 
     async def report_step_2_order(self, account_id: str, symbol: str, qty: float, entry: float, sl: float, tp: float):
-        msg = f"⚡ <b>Stufe 2: Order Platziert</b>\nKonto: {account_id}\nAsset: {symbol} | Qty: {qty}\nEntry: {entry} | SL: {sl} | TP: {tp}"
+        msg = f"{self.DAEMON_PREFIX}⚡ <b>Stufe 2: Order Platziert</b>\nKonto: {account_id}\nAsset: {symbol} | Qty: {qty}\nEntry: {entry} | SL: {sl} | TP: {tp}"
         await self.send_message(msg)
 
     async def report_step_3_ghost(self, account_id: str, order_id: str):
-        msg = f"🧹 <b>Stufe 3: Ghost-Order Säuberung</b>\nKonto: {account_id}\nVerwaiste OCO-Order storniert: <code>{order_id}</code>"
+        msg = f"{self.DAEMON_PREFIX}🧹 <b>Stufe 3: Ghost-Order Säuberung</b>\nKonto: {account_id}\nVerwaiste OCO-Order storniert: <code>{order_id}</code>"
         await self.send_message(msg)
 
     async def report_step_4_alert(self, alert_msg: str):
-        msg = f"🚨 <b>Stufe 4: SYSTEM-ALARM / KILL SWITCH</b>\n{alert_msg}"
+        msg = f"{self.DAEMON_PREFIX}🚨 <b>Stufe 4: SYSTEM-ALARM / KILL SWITCH</b>\n{alert_msg}"
         await self.send_message(msg)
 
     async def report_step_2b_trailing(self, account_id: str, symbol: str, old_sl: float, new_sl: float, current_risk_eur: float):
@@ -175,7 +177,7 @@ class TelegramReporter:
         else:
             risk_str = f"{float(current_risk_eur):.2f} €"
         
-        msg = f"🎯 <b>Stufe 2b: Trailing-Stop Modifiziert</b>\nKonto: <code>{account_id}</code>\nAsset: <code>{symbol}</code>\nStop: <code>{old_sl}</code> ➔ <b>{new_sl}</b>\nRestrisiko: <b>{risk_str}</b>"
+        msg = f"{self.DAEMON_PREFIX}🎯 <b>Stufe 2b: Trailing-Stop Modifiziert</b>\nKonto: <code>{account_id}</code>\nAsset: <code>{symbol}</code>\nStop: <code>{old_sl}</code> ➔ <b>{new_sl}</b>\nRestrisiko: <b>{risk_str}</b>"
         await self.send_message(msg)
 
 
