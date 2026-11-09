@@ -15,4 +15,4 @@ __pycache__/
 # Temporäre Daten & Backups
 *.bak
 *.tmp
-users_backup*/
+users_backup*/signals/  

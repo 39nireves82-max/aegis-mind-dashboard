@@ -13,6 +13,35 @@ from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
 
+import time
+from contextlib import contextmanager
+
+class JournalLock:
+    """Prozesssicheres File-Locking für parallele Dateizugriffe (Auflage 10)."""
+    def __init__(self, journal_path: Path, timeout: float = 3.0):
+        self.lock_file = journal_path.with_suffix(".lock")
+        self.timeout = timeout
+
+    def __enter__(self):
+        start_time = time.time()
+        while True:
+            try:
+                with open(self.lock_file, "x"):
+                    break
+            except FileExistsError:
+                if time.time() - start_time >= self.timeout:
+                    logging.warning(f"File-Lock Timeout ({self.timeout}s) für {self.lock_file.name}! Übernehme Lock.")
+                    break
+                time.sleep(0.05)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.lock_file.exists():
+            try:
+                self.lock_file.unlink()
+            except OSError:
+                pass
+
 # Zwei-Stufen .env-Suchkaskade (Lokal vs. RSI Bot Nachbarordner)
 script_dir = Path(__file__).resolve().parent
 local_env = script_dir / ".env"
@@ -111,7 +140,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "dummy_token")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "dummy_chat_id")
 NT8_HOST = os.getenv("NT8_HOST", "127.0.0.1")
 NT8_PORT = int(os.getenv("NT8_PORT", "50005"))
-NT8_ACCOUNT = os.getenv("NT8_ACCOUNT", "DEMO9530978")
+NT8_ACCOUNT = os.getenv("NT8_ACCOUNT", "DEMO9866266")
 NT8_EXECUTION_TIMEOUT = float(os.getenv("NT8_EXECUTION_TIMEOUT", "5.0"))
 
 # MT5 Konfiguration
@@ -180,6 +209,14 @@ class TelegramReporter:
         msg = f"{self.DAEMON_PREFIX}🎯 <b>Stufe 2b: Trailing-Stop Modifiziert</b>\nKonto: <code>{account_id}</code>\nAsset: <code>{symbol}</code>\nStop: <code>{old_sl}</code> ➔ <b>{new_sl}</b>\nRestrisiko: <b>{risk_str}</b>"
         await self.send_message(msg)
 
+    async def report_step_flatten(self, account_id: str, symbol: str, exit_price: float, exit_reason: str, pnl_str: str):
+        msg = f"{self.DAEMON_PREFIX}🛑 <b>HARD-FLATTEN VOLLZOGEN</b>\n• Konto: <code>{account_id}</code>\n• Asset: <code>{symbol}</code>\n• Exit-Kurs: <b>{exit_price}</b>\n• Grund: <i>{exit_reason}</i>\n• Realisierter PnL: <b>{pnl_str}</b>"
+        await self.send_message(msg)
+
+    async def report_signal_rejected(self, account_id: str, symbol: str, reason: str, detail: str = ""):
+        msg = f"{self.DAEMON_PREFIX}⚠️ <b>Signal abgewiesen (04_rejected)</b>\n• Konto: <code>{account_id}</code>\n• Asset: <code>{symbol}</code>\n• Grund: <b>{reason}</b>\n• Detail: <i>{detail}</i>"
+        await self.send_message(msg)
+
 
 class BaseBrokerAdapter(ABC):
     """Abstrakte asynchrone Basisklasse für alle Broker-Adapter."""
@@ -201,6 +238,9 @@ class BaseBrokerAdapter(ABC):
 
     @abstractmethod
     async def flatten_account(self, account_id: str) -> bool: pass
+
+    @abstractmethod
+    async def flatten_position(self, account_id: str, symbol: str, **kwargs) -> dict: pass
 
     @abstractmethod
     async def get_open_positions(self, account_id: str) -> list: pass
@@ -233,6 +273,9 @@ class TradovateAdapter(BaseBrokerAdapter):
         return {"status": "MODIFIED", "new_sl": float(new_sl)}
 
     async def flatten_account(self, account_id: str) -> bool: return True
+    async def flatten_position(self, account_id: str, symbol: str, **kwargs) -> dict:
+        logging.info(f"TradovateAdapter: Simuliere Flatten für {symbol} auf {account_id}.")
+        return {"status": "FILLED", "price": float(kwargs.get("current_price", 0.0)), "qty": 1.0}
     async def get_open_positions(self, account_id: str) -> list: return []
     async def get_working_orders(self, account_id: str) -> list: return []
 
@@ -755,6 +798,27 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
 
         logging.warning(f"NinjaTraderAdapter: FLATTEN für Konto '{account_id}' fehlgeschlagen: {res}")
         return False
+    async def flatten_position(self, account_id: str, symbol: str, **kwargs) -> dict:
+        if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+            account_id = NT8_ACCOUNT
+
+        clean_sym = symbol.strip().upper().split()[0]
+        correlation_id = str(uuid.uuid4())
+        cmd = {
+            "command": "FLATTEN_POSITION",
+            "account": account_id,
+            "instrument": clean_sym,
+            "correlation_id": correlation_id
+        }
+        res = await self._send_command(cmd)
+        status = res.get("status")
+
+        if status == "FILLED":
+            return {"status": "FILLED", "price": float(res.get("price", 0.0)), "qty": float(res.get("qty", 0.0))}
+        elif status in ("ALREADY_FLAT", "NO_ACTIVE_POSITION"):
+            return {"status": "ALREADY_FLAT"}
+            
+        return {"status": "FAILED", "reason": res.get("reason", "NT8_REJECT")}
 
     async def get_open_positions(self, account_id: str) -> list: return []
     async def get_working_orders(self, account_id: str) -> list: return []
@@ -1239,6 +1303,88 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
                     overall_success = False
 
         return overall_success
+    async def flatten_position(self, account_id: str, symbol: str, order_id: str = "", **kwargs) -> dict:
+        if not await self._ensure_connected():
+            return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
+
+        resolved_sym = await self._resolve_broker_symbol(symbol)
+        target_pos = None
+        clean_order_id = str(order_id).strip() if order_id else ""
+
+        positions = await asyncio.to_thread(mt5.positions_get, symbol=resolved_sym) or []
+        
+        # 1. Prio: Suche über exakte Order ID (Ticket)
+        if clean_order_id and clean_order_id.isdigit():
+            for pos in positions:
+                if str(pos.ticket) == clean_order_id:
+                    target_pos = pos
+                    break
+        
+        # 2. Prio: Suche über Magic Number
+        if target_pos is None:
+            for pos in positions:
+                if getattr(pos, "magic", 0) == self.MAGIC_NUMBER:
+                    target_pos = pos
+                    break
+                    
+        # 3. Prio: Erste offene Position für dieses Symbol
+        if target_pos is None and positions:
+            target_pos = positions[0]
+
+        if target_pos is None:
+            # Idempotenz & Säuberung eventuell noch schwebender Orders für dieses Instrument
+            orders = await asyncio.to_thread(mt5.orders_get, symbol=resolved_sym) or []
+            for ord_obj in orders:
+                if getattr(ord_obj, "magic", 0) == self.MAGIC_NUMBER:
+                    await self.cancel_order(str(ord_obj.ticket))
+            return {"status": "ALREADY_FLAT"}
+
+        sym_info = await asyncio.to_thread(mt5.symbol_info, resolved_sym)
+        if sym_info is None:
+            return {"status": "FAILED", "reason": "NO_SYMBOL_INFO"}
+
+        close_type = mt5.ORDER_TYPE_SELL if target_pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        filling_type, filling_str = self._resolve_filling_mode(sym_info)
+
+        # Retry-Loop für Re-Quotes & Latenzen
+        for attempt in range(5):
+            tick = await asyncio.to_thread(mt5.symbol_info_tick, resolved_sym)
+            if tick is None:
+                return {"status": "FAILED", "reason": "NO_TICK_DATA"}
+
+            close_price = tick.bid if target_pos.type == mt5.POSITION_TYPE_BUY else tick.ask
+            if close_price <= 0.0:
+                close_price = tick.last
+            close_price = round(close_price, sym_info.digits)
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "position": int(target_pos.ticket),
+                "symbol": resolved_sym,
+                "volume": float(target_pos.volume),
+                "type": close_type,
+                "price": close_price,
+                "deviation": 100, # 10 Pips Notfall-Toleranz
+                "magic": self.MAGIC_NUMBER,
+                "comment": "INVARIX HARD FLATTEN",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
+
+            res = await asyncio.to_thread(mt5.order_send, request)
+            if res is None:
+                err = await asyncio.to_thread(mt5.last_error)
+                return {"status": "FAILED", "reason": str(err)}
+
+            if res.retcode == mt5.TRADE_RETCODE_DONE:
+                return {"status": "FILLED", "price": float(getattr(res, "price", 0.0) or close_price), "qty": float(target_pos.volume), "ticket": int(target_pos.ticket)}
+            elif res.retcode in (10004, 10015, 10021):
+                logging.warning(f"FTMOBrokerAdapter: Requote/Preis-Fehler beim Flatten ({res.retcode}). Retry {attempt+1}/5...")
+                await asyncio.sleep(0.25)
+            else:
+                return {"status": "FAILED", "retcode": res.retcode, "reason": res.comment}
+        
+        return {"status": "FAILED", "reason": "MAX_RETRIES_REACHED"}
 
     async def get_open_positions(self, account_id: str) -> list:
         if not await self._ensure_connected():
@@ -1642,6 +1788,11 @@ class ExecutorDaemon:
             try:
                 with open(orphaned, 'r', encoding='utf-8') as f:
                     payload = json.load(f)
+                if str(payload.get("action", "")).strip().upper() == "FLATTEN_POSITION":
+                    logging.info(f"Kaltstart-Recovery: Notfall-Schließung {orphaned.name} wird nach 01_pending zurückgeführt.")
+                    orphaned.replace(self.dir_pending / orphaned.name)
+                    continue
+
                 payload["rejection_reason"] = "ORPHANED_ON_STARTUP"
                 self._archive_signal(payload, orphaned, self.dir_rejected)
             except Exception as e:
@@ -1664,18 +1815,19 @@ class ExecutorDaemon:
                     with open(processing_path, 'r', encoding='utf-8') as f:
                         signal_payload = json.load(f)
 
-                    # a) TTL-Schutzschild
+                    action = str(signal_payload.get("action", "ENTRY")).strip().upper()
+
+                    # a) TTL-Schutzschild (Bypass für FLATTEN_POSITION)
                     sig_time_str = signal_payload.get("timestamp")
-                    if sig_time_str:
+                    if sig_time_str and action != "FLATTEN_POSITION":
                         sig_time = datetime.fromisoformat(sig_time_str.replace('Z', '+00:00'))
                         age = (datetime.now(timezone.utc) - sig_time).total_seconds()
                         if age > 180:
                             signal_payload["rejection_reason"] = "EXPIRED_TTL"
                             logging.warning(f"Signal {filepath.name} abgewiesen: TTL überschritten ({age:.1f}s)")
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            await self.reporter.report_signal_rejected(signal_payload.get("account_id", "UNKNOWN"), signal_payload.get("symbol", "UNKNOWN"), "EXPIRED_TTL", f"Alter: {age:.1f}s")
                             continue
-
-                    action = str(signal_payload.get("action", "ENTRY")).strip().upper()
 
                     if action == "PARTIAL_CLOSE":
                         raw_qty = _parse_float_safe(signal_payload.get("qty"), fallback=0.0)
@@ -2181,6 +2333,97 @@ class ExecutorDaemon:
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
                             continue
 
+                    elif action == "FLATTEN_POSITION":
+                        username = signal_payload.get("username", "admin")
+                        target_symbol = (signal_payload.get("instrument") or signal_payload.get("symbol") or "").strip().upper()
+                        clean_target_sym = target_symbol.split()[0].replace("=X", "")
+                        target_account = signal_payload.get("account") or signal_payload.get("account_id") or ""
+                        req_trade_id = str(signal_payload.get("trade_id", "")).strip()
+                        exit_reason = signal_payload.get("exit_reason", "HARD_FLATTEN")
+
+                        raw_type = str(signal_payload.get("account_type", "")).strip().lower()
+                        if raw_type in self.active_adapters:
+                            target_account_type = raw_type
+                        else:
+                            target_account_type = "ftmo" if "=X" in target_symbol else "apex"
+
+                        adapter = self.active_adapters.get(target_account_type)
+                        if not adapter:
+                            signal_payload["rejection_reason"] = f"NO_ADAPTER_FOR_{target_account_type.upper()}"
+                            self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            await self.reporter.report_signal_rejected(target_account, target_symbol, signal_payload["rejection_reason"])
+                            continue
+
+                        flat_res = await adapter.flatten_position(target_account, target_symbol, order_id=req_trade_id)
+                        
+                        if flat_res.get("status") in ("FILLED", "ALREADY_FLAT"):
+                            journal_path = script_dir / "users" / username / "trade_journal.csv"
+                            with JournalLock(journal_path):
+                                if journal_path.exists():
+                                    with open(journal_path, 'r', encoding='utf-8') as f:
+                                        reader = csv.reader(f)
+                                        raw_rows = list(reader)
+                                    
+                                    if raw_rows:
+                                        header = raw_rows[0]
+                                        rows = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                                        
+                                        matched_row = None
+                                        for r in reversed(rows):
+                                            if str(r.get("status", "")).strip().upper() == "OPEN":
+                                                if req_trade_id and str(r.get("id", "")) == req_trade_id:
+                                                    matched_row = r
+                                                    break
+                                                elif clean_target_sym and str(r.get("symbol", "")).strip().upper().split()[0].replace("=X", "") == clean_target_sym:
+                                                    if not target_account or target_account in str(r.get("account_name", "")):
+                                                        matched_row = r
+                                                        break
+                                        
+                                        realized_pnl = "0.00 €"
+                                        exec_price = float(flat_res.get("price", 0.0))
+                                        if matched_row:
+                                            if exec_price <= 0.0:
+                                                exec_price = float(signal_payload.get("current_price") or matched_row.get("entry_price", 0.0))
+                                            
+                                            matched_row["status"] = "CLOSED"
+                                            matched_row["exit_date"] = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+                                            matched_row["exit_reason"] = exit_reason
+                                            matched_row["exit_price"] = str(exec_price)
+                                            matched_row["current_risk_eur"] = "0.00"
+                                            
+                                            entry_price = _parse_float_safe(matched_row.get("entry_price"), fallback=0.0)
+                                            pos_size = _parse_float_safe(matched_row.get("position_size"), fallback=1.0)
+                                            pt_val = _parse_float_safe(matched_row.get("point_value"), fallback=1.0)
+                                            fx = _parse_float_safe(matched_row.get("fx_rate"), fallback=1.0)
+                                            is_long = str(matched_row.get("direction", "")).strip().upper() == "LONG"
+                                            
+                                            eff_diff = abs(entry_price - exec_price)
+                                            if "=X" in target_symbol:
+                                                eff_diff = get_effective_forex_risk_pts(clean_target_sym, eff_diff, exec_price, fx)
+                                                
+                                            pnl_raw = eff_diff * pos_size * pt_val * fx
+                                            is_profit = (is_long and exec_price > entry_price) or (not is_long and exec_price < entry_price)
+                                            matched_row["pnl_eur"] = str(round(pnl_raw, 2)) if is_profit else str(round(-pnl_raw, 2))
+                                            realized_pnl = f"{matched_row['pnl_eur']} €"
+                                            
+                                            tmp_path = journal_path.with_suffix(".tmp")
+                                            with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+                                                writer = csv.DictWriter(f, fieldnames=header)
+                                                writer.writeheader()
+                                                writer.writerows(rows)
+                                            tmp_path.replace(journal_path)
+
+                            await self.reporter.report_step_flatten(target_account, target_symbol, exec_price, exit_reason, realized_pnl)
+                            signal_payload["status"] = flat_res.get("status")
+                            signal_payload["broker_res"] = flat_res
+                            self._archive_signal(signal_payload, processing_path, self.dir_executed)
+                        else:
+                            signal_payload["rejection_reason"] = flat_res.get("reason", "BROKER_FLATTEN_REJECTED")
+                            signal_payload["broker_res"] = flat_res
+                            self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            await self.reporter.report_signal_rejected(target_account, target_symbol, signal_payload["rejection_reason"])
+                        continue
+
                     else:
                         # Defensive Schlüssel-Abfrage (Key Fallbacks)
                         safe_symbol = signal_payload.get('instrument') or signal_payload.get('symbol') or ""
@@ -2226,6 +2469,7 @@ class ExecutorDaemon:
                         if result and result.get("status") == "DENIED":
                             signal_payload["rejection_reason"] = result.get("reason", "RESONO_DENIED")
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            await self.reporter.report_signal_rejected(safe_account, safe_symbol, "RESONO_DENIED", signal_payload["rejection_reason"])
                         elif result and result.get("status") == "APPROVED":
                             broker_res = result.get("broker_res", {})
                             b_status = broker_res.get("status")
@@ -2249,13 +2493,16 @@ class ExecutorDaemon:
                             elif b_status == "MARKET_CLOSED":
                                 signal_payload["rejection_reason"] = "MARKET_CLOSED"
                                 self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                                await self.reporter.report_signal_rejected(safe_account, safe_symbol, "MARKET_CLOSED")
                             elif b_status == "VOLUME_TOO_SMALL":
                                 signal_payload["rejection_reason"] = "VOLUME_TOO_SMALL"
                                 signal_payload["rejection_detail"] = broker_res.get("reason", "")
                                 self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                                await self.reporter.report_signal_rejected(safe_account, safe_symbol, "VOLUME_TOO_SMALL", signal_payload["rejection_detail"])
                             else:
                                 signal_payload["rejection_reason"] = broker_res.get("reason", "BROKER_REJECTED")
                                 self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                                await self.reporter.report_signal_rejected(safe_account, safe_symbol, "BROKER_REJECTED", signal_payload["rejection_reason"])
                         else:
                             signal_payload["rejection_reason"] = "UNKNOWN_ERROR"
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
@@ -2289,114 +2536,115 @@ class ExecutorDaemon:
         username = payload.get("username", "admin")  # Fallback auf admin
         journal_path = script_dir / "users" / username / "trade_journal.csv"
 
-        # Sicherstellen, dass die Nutzerstruktur existiert
-        journal_path.parent.mkdir(parents=True, exist_ok=True)
-        master_header = [
-            'id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction',
-            'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type',
-            'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur',
-            'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode',
-            'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes',
-            'strategy_version', 'execution_type'
-        ]
+        with JournalLock(journal_path):
+            # Sicherstellen, dass die Nutzerstruktur existiert
+            journal_path.parent.mkdir(parents=True, exist_ok=True)
+            master_header = [
+                'id', 'account_name', 'entry_date', 'exit_date', 'symbol', 'name', 'direction',
+                'signal_price', 'entry_price', 'currency', 'fx_rate', 'position_size', 'contract_type',
+                'point_value', 'base_currency', 'invest_eur', 'sl_price', 'current_sl', 'tp_price', 'planned_risk_eur',
+                'current_risk_eur', 'est_fees_eur', 'master_score', 'setup_type', 'mc_robustness', 'atr_days', 'exit_mode',
+                'status', 'exit_price', 'pnl_eur', 'pnl_pct', 'r_multiple', 'exit_reason', 'notes',
+                'strategy_version', 'execution_type'
+            ]
 
-        valid_rows = []
-        current_header = master_header
+            valid_rows = []
+            current_header = master_header
 
-        # 1. Dynamische Header-Erkennung & Bereinigung defekter Zeilen
-        if journal_path.exists():
+            # 1. Dynamische Header-Erkennung & Bereinigung defekter Zeilen
+            if journal_path.exists():
+                try:
+                    with open(journal_path, 'r', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        rows = list(reader)
+                        if rows:
+                            file_header = rows[0]
+                            # Wenn die Datei noch das alte Schema hat, auf 36 Spalten migrieren
+                            current_header = master_header
+                            for r in rows[1:]:
+                                if len(r) == len(file_header):
+                                    row_dict = dict(zip(file_header, r))
+                                    status_val = str(row_dict.get('status', '')).strip().upper()
+                                    if status_val in ['OPEN', 'CLOSED']:
+                                        if 'current_sl' not in row_dict:
+                                            row_dict['current_sl'] = row_dict.get('sl_price', '')
+                                        if 'current_risk_eur' not in row_dict:
+                                            row_dict['current_risk_eur'] = row_dict.get('planned_risk_eur', '')
+                                        valid_rows.append(row_dict)
+                except Exception as e:
+                    logging.error(f"Fehler beim Lesen des Journals zur Bereinigung: {e}")
+
+            # 2. Relevante Payload-Daten entpacken & Metadaten generieren
+            trade_id = payload.get("broker_order_id") or payload.get("signal_id", f"AUTO_{int(datetime.now(timezone.utc).timestamp())}")
+            entry_date = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+
+            symbol = (payload.get("symbol") or payload.get("instrument") or "").upper()
+            clean_sym = symbol.split()[0] if symbol else ""
+            direction = str(payload.get("direction", "")).title()
+            entry_price = float(payload.get("execution_price") or payload.get("entry", 0.0))
+            sl_price = float(payload.get("sl_price") or payload.get("sl", 0.0))
+            tp_price = float(payload.get("tp_price") or payload.get("tp", 0.0))
+            position_size = float(payload.get("qty") or payload.get("shares_contracts", 1))
+
+            usd_symbols = ["NQ", "MNQ", "ES", "MES", "CL", "MCL", "GC", "MGC", "YM", "MYM", "RTY", "M2K"]
+            currency = "$" if any(x in clean_sym for x in usd_symbols) else "€"
+            base_currency = "USD" if currency == "$" else "EUR"
+            contract_type = "Micro" if clean_sym in ["MNQ", "MES", "MCL", "MGC", "MYM", "M2K"] else ("Lot" if "=X" in symbol else "")
+
+            point_value = get_point_value(clean_sym, contract_type)
+
+            fx_rate = 1.0
+            est_fees_eur = 0.0 if "=X" in symbol else 1.0
+            
+            eff_diff = get_effective_forex_risk_pts(clean_sym, abs(entry_price - sl_price), entry_price, fx_rate)
+            planned_risk_eur = eff_diff * position_size * point_value * fx_rate
+
+            # 3. Leeres Schema-Template erzeugen und befüllen
+            new_row = {col: "" for col in current_header}
+            updates = {
+                "id": trade_id,
+                "account_name": payload.get("account_name", payload.get("account_id", payload.get("account", ""))),
+                "entry_date": entry_date,
+                "symbol": symbol,
+                "name": symbol,
+                "direction": direction,
+                "signal_price": float(payload.get("current_price") or payload.get("entry", 0.0)),
+                "entry_price": entry_price,
+                "currency": currency,
+                "fx_rate": fx_rate,
+                "position_size": position_size,
+                "contract_type": contract_type,
+                "point_value": point_value,
+                "base_currency": base_currency,
+                "sl_price": sl_price,
+                "current_sl": sl_price,
+                "tp_price": tp_price,
+                "planned_risk_eur": planned_risk_eur,
+                "current_risk_eur": planned_risk_eur,
+                "est_fees_eur": est_fees_eur,
+                "exit_mode": payload.get("setup_type", "SETUP_B"),
+                "status": "OPEN",
+                "strategy_version": "v1.0.0",
+                "execution_type": "DAEMON_AUTO"
+            }
+
+            for k, v in updates.items():
+                if k in new_row:
+                    new_row[k] = v
+
+            valid_rows.append(new_row)
+
+            # 4. Sicheres, atomares Zurückschreiben inkl. Header
             try:
-                with open(journal_path, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    rows = list(reader)
-                    if rows:
-                        file_header = rows[0]
-                        # Wenn die Datei noch das alte Schema hat, auf 36 Spalten migrieren
-                        current_header = master_header
-                        for r in rows[1:]:
-                            if len(r) == len(file_header):
-                                row_dict = dict(zip(file_header, r))
-                                status_val = str(row_dict.get('status', '')).strip().upper()
-                                if status_val in ['OPEN', 'CLOSED']:
-                                    if 'current_sl' not in row_dict:
-                                        row_dict['current_sl'] = row_dict.get('sl_price', '')
-                                    if 'current_risk_eur' not in row_dict:
-                                        row_dict['current_risk_eur'] = row_dict.get('planned_risk_eur', '')
-                                    valid_rows.append(row_dict)
+                tmp_journal = journal_path.with_suffix(".tmp")
+                with open(tmp_journal, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=current_header)
+                    writer.writeheader()
+                    writer.writerows(valid_rows)
+                tmp_journal.replace(journal_path)
+                logging.info(f"Trade {trade_id} atomar ins Journal von '{username}' (DAEMON_AUTO) geschrieben.")
             except Exception as e:
-                logging.error(f"Fehler beim Lesen des Journals zur Bereinigung: {e}")
-
-        # 2. Relevante Payload-Daten entpacken & Metadaten generieren
-        trade_id = payload.get("broker_order_id") or payload.get("signal_id", f"AUTO_{int(datetime.now(timezone.utc).timestamp())}")
-        entry_date = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
-
-        symbol = (payload.get("symbol") or payload.get("instrument") or "").upper()
-        clean_sym = symbol.split()[0] if symbol else ""
-        direction = str(payload.get("direction", "")).title()
-        entry_price = float(payload.get("execution_price") or payload.get("entry", 0.0))
-        sl_price = float(payload.get("sl_price") or payload.get("sl", 0.0))
-        tp_price = float(payload.get("tp_price") or payload.get("tp", 0.0))
-        position_size = float(payload.get("qty") or payload.get("shares_contracts", 1))
-
-        usd_symbols = ["NQ", "MNQ", "ES", "MES", "CL", "MCL", "GC", "MGC", "YM", "MYM", "RTY", "M2K"]
-        currency = "$" if any(x in clean_sym for x in usd_symbols) else "€"
-        base_currency = "USD" if currency == "$" else "EUR"
-        contract_type = "Micro" if clean_sym in ["MNQ", "MES", "MCL", "MGC", "MYM", "M2K"] else ("Lot" if "=X" in symbol else "")
-
-        point_value = get_point_value(clean_sym, contract_type)
-
-        fx_rate = 1.0
-        est_fees_eur = 0.0 if "=X" in symbol else 1.0
-        
-        eff_diff = get_effective_forex_risk_pts(clean_sym, abs(entry_price - sl_price), entry_price, fx_rate)
-        planned_risk_eur = eff_diff * position_size * point_value * fx_rate
-
-        # 3. Leeres Schema-Template erzeugen und befüllen
-        new_row = {col: "" for col in current_header}
-        updates = {
-            "id": trade_id,
-            "account_name": payload.get("account_name", payload.get("account_id", payload.get("account", ""))),
-            "entry_date": entry_date,
-            "symbol": symbol,
-            "name": symbol,
-            "direction": direction,
-            "signal_price": float(payload.get("current_price") or payload.get("entry", 0.0)),
-            "entry_price": entry_price,
-            "currency": currency,
-            "fx_rate": fx_rate,
-            "position_size": position_size,
-            "contract_type": contract_type,
-            "point_value": point_value,
-            "base_currency": base_currency,
-            "sl_price": sl_price,
-            "current_sl": sl_price,
-            "tp_price": tp_price,
-            "planned_risk_eur": planned_risk_eur,
-            "current_risk_eur": planned_risk_eur,
-            "est_fees_eur": est_fees_eur,
-            "exit_mode": payload.get("setup_type", "SETUP_B"),
-            "status": "OPEN",
-            "strategy_version": "v1.0.0",
-            "execution_type": "DAEMON_AUTO"
-        }
-
-        for k, v in updates.items():
-            if k in new_row:
-                new_row[k] = v
-
-        valid_rows.append(new_row)
-
-        # 4. Sicheres, atomares Zurückschreiben inkl. Header
-        try:
-            tmp_journal = journal_path.with_suffix(".tmp")
-            with open(tmp_journal, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=current_header)
-                writer.writeheader()
-                writer.writerows(valid_rows)
-            tmp_journal.replace(journal_path)
-            logging.info(f"Trade {trade_id} atomar ins Journal von '{username}' (DAEMON_AUTO) geschrieben.")
-        except Exception as e:
-            logging.error(f"Fehler beim Schreiben in trade_journal.csv: {e}")
+                logging.error(f"Fehler beim Schreiben in trade_journal.csv: {e}")
 
     async def trigger_kill_switch(self):
         """Notbremse für den programmatischen Abbruch."""
@@ -2493,7 +2741,7 @@ async def run_test_battery():
     spooler_task = asyncio.create_task(daemon.watch_signal_queue())
 
     logging.info("--- STARTING TEST 1: Apex MNQ Long (Einzelkonto) ---")
-    await daemon.process_signal("apex", "DEMO9530978", "MNQ", "LONG", 1, 31230.0, 31200.0, 31290.0, current_price=31230.0, score=60, setup_type="SETUP_B", is_fleet=False, balance=51500.0, trailing_threshold=49000.0)
+    await daemon.process_signal("apex", "DEMO9866266", "MNQ", "LONG", 1, 31230.0, 31200.0, 31290.0, current_price=31230.0, score=60, setup_type="SETUP_B", is_fleet=False, balance=51500.0, trailing_threshold=49000.0)
 
     logging.info("--- STARTING TEST 2: FTMO EURUSD Long (Dynamische Tick-Ausführung) ---")
     await daemon.process_signal("ftmo", "FTMO_100K_01", "EURUSD=X", "LONG", 2.5, 1.0850, 1.0820, 1.0910, current_price=1.0850, score=70, setup_type="SETUP_B", daily_buffer=4000.0, max_dd_buffer=8000.0)
@@ -2550,7 +2798,7 @@ async def run_test_battery():
         logging.info("Test 6: Seede synthetischen OPEN MNQ-Trade für isolierten Wochenend-Test...")
         seed_payload = {
             "broker_order_id": "TEST_SEED_12345",
-            "account_name": "DEMO9530978",
+            "account_name": "DEMO9866266",
             "symbol": "MNQ",
             "direction": "Short",
             "execution_price": 31230.0,
@@ -2565,7 +2813,7 @@ async def run_test_battery():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": "MODIFY_STOP",
         "account_type": "apex",
-        "account_id": "DEMO9530978",
+        "account_id": "DEMO9866266",
         "symbol": "MNQ",
         "new_sl": 31240.0,
         "username": "admin"
@@ -2619,6 +2867,72 @@ async def run_test_battery():
                         logging.info("Test 6: Temporärer Test-Seed TEST_SEED_12345 atomar aus dem Journal entfernt.")
             except Exception as e:
                 logging.error(f"Test 6: Fehler beim Journal-Teardown: {e}")
+                
+    logging.info("--- STARTING TEST 7: FLATTEN_POSITION ---")
+    try:
+        # Seede synthetischen Trade
+        seed_payload = {
+            "broker_order_id": "TEST_FLATTEN_99999",
+            "account_name": "DEMO9866266",
+            "symbol": "MNQ",
+            "direction": "LONG",
+            "execution_price": 31200.0,
+            "sl_price": 31100.0,
+            "tp_price": 31300.0,
+            "qty": 1,
+            "username": "admin"
+        }
+        daemon._write_to_journal(seed_payload)
+
+        test_flatten_signal = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": "FLATTEN_POSITION",
+            "account_type": "apex",
+            "account_id": "DEMO9866266",
+            "symbol": "MNQ",
+            "trade_id": "TEST_FLATTEN_99999",
+            "exit_reason": "TEST_EOD_FLATTEN",
+            "username": "admin"
+        }
+        
+        unique_flat_name = f"sig_flat_{uuid.uuid4().hex[:8]}.json"
+        flat_file = daemon.dir_pending / unique_flat_name
+        
+        with open(flat_file, "w", encoding="utf-8") as f:
+            json.dump(test_flatten_signal, f, indent=4)
+
+        await asyncio.sleep(4.0)
+        
+        exec_file = daemon.dir_executed / unique_flat_name
+        rej_file = daemon.dir_rejected / unique_flat_name
+        
+        if exec_file.exists():
+            logging.info("Test 7: FLATTEN_POSITION erfolgreich verarbeitet (in 03_executed).")
+        elif rej_file.exists():
+            with open(rej_file, 'r', encoding='utf-8') as f:
+                rej_data = json.load(f)
+            logging.info(f"Test 7: FLATTEN_POSITION technisch abgeschlossen (Gateway Reject/ALREADY_FLAT: {rej_data.get('rejection_reason', '')}).")
+        else:
+            logging.warning("Test 7: Timeout bei FLATTEN_POSITION.")
+
+    finally:
+        if journal_path.exists():
+            with JournalLock(journal_path):
+                with open(journal_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    raw_rows = list(reader)
+                if raw_rows:
+                    header = raw_rows[0]
+                    rows_dict = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                    clean_rows = [r for r in rows_dict if str(r.get("id", "")) != "TEST_FLATTEN_99999"]
+                    
+                    tmp_journal = journal_path.with_suffix(".tmp")
+                    with open(tmp_journal, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=header)
+                        writer.writeheader()
+                        writer.writerows(clean_rows)
+                    tmp_journal.replace(journal_path)
+                    logging.info("Test 7: Temporärer Test-Seed TEST_FLATTEN_99999 restlos aus dem Journal entfernt.")
 
     logging.info("Beende Testbatterie, räume Tasks auf...")
     daemon.kill_event.set()
