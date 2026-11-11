@@ -133,6 +133,7 @@ def get_effective_forex_risk_pts(symbol: str, raw_pts: float, current_price: flo
         return raw_pts
 
 # Konfiguration laden
+NODE_ORIGIN = os.getenv("NODE_ORIGIN", "NETCUP-EXEC").strip()
 EXECUTOR_MODE = os.getenv("EXECUTOR_MODE", "DRY_RUN")
 EXECUTOR_POLLING_INTERVAL = int(os.getenv("EXECUTOR_POLLING_INTERVAL", "10"))
 EXECUTOR_KILL_SWITCH = os.getenv("EXECUTOR_KILL_SWITCH", "KILL_SWITCH")
@@ -159,7 +160,7 @@ logging.basicConfig(
 
 class TelegramReporter:
     """Asynchrones 4-Stufen-Telegram-Meldenetz (HTML)."""
-    DAEMON_PREFIX = "⚙️ <b>[INVARIX EXECUTION DAEMON]</b>\n"
+    DAEMON_PREFIX = f"⚙️ <b>[INVARIX EXECUTION DAEMON | {NODE_ORIGIN}]</b>\n"
 
     def __init__(self, token: str, chat_id: str):
         self.token = token
@@ -211,6 +212,10 @@ class TelegramReporter:
 
     async def report_step_flatten(self, account_id: str, symbol: str, exit_price: float, exit_reason: str, pnl_str: str):
         msg = f"{self.DAEMON_PREFIX}🛑 <b>HARD-FLATTEN VOLLZOGEN</b>\n• Konto: <code>{account_id}</code>\n• Asset: <code>{symbol}</code>\n• Exit-Kurs: <b>{exit_price}</b>\n• Grund: <i>{exit_reason}</i>\n• Realisierter PnL: <b>{pnl_str}</b>"
+        await self.send_message(msg)
+
+    async def report_step_3_broker_exit(self, account_id: str, symbol: str, exit_price: float, exit_reason: str, pnl_str: str):
+        msg = f"{self.DAEMON_PREFIX}🎯 <b>Stufe 3: Broker-Sync (SL/TP Ausstieg)</b>\n• Konto: <code>{account_id}</code>\n• Asset: <code>{symbol}</code>\n• Exit-Kurs: <b>{exit_price}</b>\n• Grund: <i>{exit_reason}</i>\n• Realisierter PnL: <b>{pnl_str}</b>\n• Restrisiko: <b>0.00 € (Geschlossen)</b>"
         await self.send_message(msg)
 
     async def report_signal_rejected(self, account_id: str, symbol: str, reason: str, detail: str = ""):
@@ -820,7 +825,22 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
             
         return {"status": "FAILED", "reason": res.get("reason", "NT8_REJECT")}
 
-    async def get_open_positions(self, account_id: str) -> list: return []
+    async def get_open_positions(self, account_id: str) -> list | None:
+        if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+            account_id = NT8_ACCOUNT
+        res = await self._send_command({"command": "GET_POSITIONS", "account": account_id}, timeout=5.0)
+        if res.get("status") == "OK":
+            return res.get("positions", [])
+        return None
+
+    async def get_recent_executions(self, account_id: str) -> list:
+        if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+            account_id = NT8_ACCOUNT
+        res = await self._send_command({"command": "GET_POSITIONS", "account": account_id}, timeout=5.0)
+        if res.get("status") == "OK":
+            return res.get("executions", [])
+        return []
+
     async def get_working_orders(self, account_id: str) -> list: return []
 
     async def partial_close(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
@@ -1386,7 +1406,46 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         
         return {"status": "FAILED", "reason": "MAX_RETRIES_REACHED"}
 
-    async def get_open_positions(self, account_id: str) -> list:
+    async def get_open_positions(self, account_id: str) -> list | None:
+        if not await self._ensure_connected():
+            return None
+        positions = await asyncio.to_thread(mt5.positions_get)
+        if positions is None:
+            return None
+        return [pos._asdict() for pos in positions]
+
+    async def get_closed_deal_info(self, symbol: str, ticket: int = 0) -> dict | None:
+        if not await self._ensure_connected():
+            return None
+            
+        from datetime import timedelta
+        date_from = datetime.now(timezone.utc) - timedelta(hours=48)
+        date_to = datetime.now(timezone.utc) + timedelta(hours=1)
+        deals = await asyncio.to_thread(mt5.history_deals_get, date_from, date_to)
+        
+        if deals is None or len(deals) == 0:
+            return None
+            
+        clean_sym = symbol.replace("=X", "")
+        
+        valid_deals = []
+        for d in deals:
+            if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT):
+                if (ticket > 0 and d.position_id == ticket) or (clean_sym in d.symbol):
+                    valid_deals.append(d)
+                    
+        if not valid_deals:
+            return None
+            
+        latest_deal = max(valid_deals, key=lambda x: x.time)
+        return {
+            "price": float(latest_deal.price),
+            "profit": float(latest_deal.profit),
+            "time": latest_deal.time,
+            "comment": str(latest_deal.comment)
+        }
+
+    async def get_working_orders(self, account_id: str) -> list:
         if not await self._ensure_connected():
             return []
         positions = await asyncio.to_thread(mt5.positions_get)
@@ -1645,6 +1704,145 @@ class ExecutorDaemon:
             except asyncio.TimeoutError:
                 pass
 
+    async def sync_broker_exits(self) -> int:
+        """Führt exakt einen synchronen Durchlauf aus und gibt die Anzahl modifizierter Trades zurück."""
+        journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
+        if not journal_path.exists():
+            return 0
+            
+        modified_count = 0
+        try:
+            with JournalLock(journal_path):
+                with open(journal_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    raw_rows = list(reader)
+                    
+                if not raw_rows:
+                    return 0
+                    
+                header = raw_rows[0]
+                rows = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                
+                open_trades = [r for r in rows if str(r.get("status", "")).strip().upper() == "OPEN"]
+                if not open_trades:
+                    return 0
+                    
+                # Broker-Abfrage (Schutzschild)
+                ftmo_positions = await self.ftmo.get_open_positions("FTMO")
+                apex_positions = await self.nt8.get_open_positions(NT8_ACCOUNT)
+                
+                modified = False
+                
+                # Einzelabgleich für jeden offenen Journal-Trade
+                for trade in open_trades:
+                    trade_id = str(trade.get("id", "")).strip()
+                    symbol = str(trade.get("symbol", "")).strip().upper()
+                    clean_sym = symbol.split()[0].replace("=X", "")
+                    account = str(trade.get("account_name", "")).strip()
+                    
+                    is_ftmo = "=X" in symbol or "FTMO" in account
+                    
+                    exit_detected = False
+                    real_exit_price = 0.0
+                    
+                    if is_ftmo:
+                        if ftmo_positions is None:
+                            continue  # Verbindung unsicher, überspringen
+                        
+                        still_open = False
+                        for pos in ftmo_positions:
+                            if str(pos.get("ticket")) == trade_id or clean_sym in pos.get("symbol", "").upper():
+                                still_open = True
+                                break
+                                
+                        if not still_open:
+                            exit_detected = True
+                            deal_info = await self.ftmo.get_closed_deal_info(clean_sym, int(trade_id) if trade_id.isdigit() else 0)
+                            if deal_info:
+                                real_exit_price = deal_info.get("price", 0.0)
+                    else:
+                        if apex_positions is None:
+                            continue  # Verbindung unsicher, überspringen
+                            
+                        still_open = False
+                        for pos in apex_positions:
+                            pos_instr = str(pos.get("instrument", "")).upper()
+                            pos_sym = str(pos.get("symbol", "")).upper()
+                            if clean_sym in pos_instr or clean_sym in pos_sym:
+                                still_open = True
+                                break
+                                
+                        if not still_open:
+                            exit_detected = True
+                            recent_execs = await self.nt8.get_recent_executions(NT8_ACCOUNT)
+                            for ex in recent_execs:
+                                ex_instr = str(ex.get("instrument", "")).upper()
+                                ex_sym = str(ex.get("symbol", "")).upper()
+                                ex_name = str(ex.get("order_name", "")).upper()
+                                
+                                if clean_sym in ex_instr or clean_sym in ex_sym:
+                                    if ex_name in ("SL", "TP", "EXIT", "CLOSE"):
+                                        real_exit_price = float(ex.get("price", 0.0))
+                                        break
+                    
+                    # Schließungs-Verbuchung & PnL
+                    if exit_detected:
+                        if real_exit_price <= 0.0:
+                            real_exit_price = _parse_float_safe(trade.get("current_sl"))
+                            if real_exit_price <= 0.0:
+                                real_exit_price = _parse_float_safe(trade.get("entry_price"))
+                        
+                        trade["status"] = "CLOSED"
+                        trade["exit_date"] = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+                        trade["exit_reason"] = "BROKER_SL_TP_HIT"
+                        trade["exit_price"] = str(real_exit_price)
+                        trade["current_risk_eur"] = "0.00"
+                        
+                        entry_price = _parse_float_safe(trade.get("entry_price"), fallback=0.0)
+                        pos_size = _parse_float_safe(trade.get("position_size"), fallback=1.0)
+                        pt_val = _parse_float_safe(trade.get("point_value"), fallback=1.0)
+                        fx = _parse_float_safe(trade.get("fx_rate"), fallback=1.0)
+                        is_long = str(trade.get("direction", "")).strip().upper() == "LONG"
+                        
+                        eff_diff = abs(entry_price - real_exit_price)
+                        if is_ftmo:
+                            eff_diff = get_effective_forex_risk_pts(clean_sym, eff_diff, real_exit_price, fx)
+                            
+                        pnl_raw = eff_diff * pos_size * pt_val * fx
+                        is_profit = (is_long and real_exit_price > entry_price) or (not is_long and real_exit_price < entry_price)
+                        trade["pnl_eur"] = str(round(pnl_raw, 2)) if is_profit else str(round(-pnl_raw, 2))
+                        
+                        realized_pnl = f"{trade['pnl_eur']} €"
+                        modified = True
+                        modified_count += 1
+                        
+                        await self.reporter.report_step_3_broker_exit(account, symbol, real_exit_price, "BROKER_SL_TP_HIT", realized_pnl)
+                        
+                if modified:
+                    tmp_path = journal_path.with_suffix(".tmp")
+                    with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=header)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    tmp_path.replace(journal_path)
+        except Exception as e:
+            logging.error(f"Fehler im sync_broker_exits: {e}")
+            
+        return modified_count
+
+    async def position_exit_sync_guard(self):
+        """Zyklischer Abgleich von Broker-Ausstiegen (SL/TP) mit dem Journal."""
+        logging.info("Position Exit Sync Guard aktiv (Intervall: 15s).")
+        while not self.kill_event.is_set():
+            try:
+                await self.sync_broker_exits()
+            except Exception as e:
+                logging.error(f"Fehler im position_exit_sync_guard: {e}")
+            try:
+                await asyncio.wait_for(self.kill_event.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                pass
+
     async def process_signal(
         self,
         account_type: str,
@@ -1660,9 +1858,10 @@ class ExecutorDaemon:
         setup_type: str = "SETUP_B",
         is_fleet: bool = False,
         balance: float = 50000.0,
+        account_size: float = None,
         trailing_threshold: float = 47500.0,
-        daily_buffer: float = 2500.0,
-        max_dd_buffer: float = 5000.0
+        daily_buffer: float = None,
+        max_dd_buffer: float = None
     ):
         """Routet ein Signal durch RESONO und führt es bei Freigabe aus."""
         if self.kill_event.is_set():
@@ -1716,9 +1915,12 @@ class ExecutorDaemon:
 
         if account_type == "apex":
             resolved_phase = "funded_pa" if "PA" in str(account_id).upper() else "evaluation"
+            dyn_acc_size = account_size if account_size and account_size > 0 else (balance if balance > 0 else 50000.0)
+            dyn_balance = balance if balance > 0 else dyn_acc_size
             acc_data = {
                 "account_id": account_id,
-                "current_balance": balance,
+                "account_size": dyn_acc_size,
+                "current_balance": dyn_balance,
                 "high_watermark": trailing_threshold + 2500.0,
                 "account_type": resolved_phase,
                 "has_open_position": has_open_pos
@@ -1738,12 +1940,16 @@ class ExecutorDaemon:
                 reason = res_eval.get("ui_reason", "Blockiert")
 
         elif account_type == "ftmo":
+            dyn_acc_size = account_size if account_size and account_size > 0 else (balance if balance > 0 else 100000.0)
+            dyn_balance = balance if balance > 0 else dyn_acc_size
+            dyn_daily_buf = daily_buffer if daily_buffer is not None else (dyn_acc_size * 0.05)
+            dyn_max_dd_buf = max_dd_buffer if max_dd_buffer is not None else (dyn_acc_size * 0.10)
             ftmo_acc_data = {
                 "account_id": account_id,
-                "account_size": 100000.0,
-                "current_balance": 100000.0,
-                "daily_buffer": daily_buffer,
-                "max_dd_buffer": max_dd_buffer,
+                "account_size": dyn_acc_size,
+                "current_balance": dyn_balance,
+                "daily_buffer": dyn_daily_buf,
+                "max_dd_buffer": dyn_max_dd_buf,
                 "has_open_position": has_open_pos
             }
             res_eval = evaluate_ftmo_risk(ftmo_acc_data, signal_data)
@@ -2447,6 +2653,16 @@ class ExecutorDaemon:
                         entry_val = float(signal_payload.get("entry") or signal_payload.get("current_price") or signal_payload.get("price") or 0.0)
                         signal_payload["entry"] = entry_val
 
+                        raw_acc_size = signal_payload.get("account_size") if signal_payload.get("account_size") is not None else signal_payload.get("balance")
+                        parsed_acc_size = _parse_float_safe(raw_acc_size, fallback=0.0)
+                        acc_size_arg = parsed_acc_size if parsed_acc_size > 0 else None
+
+                        raw_daily_buf = signal_payload.get("daily_buffer")
+                        daily_buf_arg = _parse_float_safe(raw_daily_buf, fallback=None) if raw_daily_buf is not None else None
+
+                        raw_max_dd_buf = signal_payload.get("max_dd_buffer")
+                        max_dd_buf_arg = _parse_float_safe(raw_max_dd_buf, fallback=None) if raw_max_dd_buf is not None else None
+
                         result = await self.process_signal(
                             account_type=raw_acc_type,
                             account_id=safe_account,
@@ -2461,9 +2677,10 @@ class ExecutorDaemon:
                             setup_type=signal_payload.get("setup_type", "SETUP_B"),
                             is_fleet=signal_payload.get("is_fleet", False),
                             balance=float(signal_payload.get("balance", 50000.0)),
+                            account_size=acc_size_arg,
                             trailing_threshold=float(signal_payload.get("trailing_threshold", 47500.0)),
-                            daily_buffer=float(signal_payload.get("daily_buffer", 2500.0)),
-                            max_dd_buffer=float(signal_payload.get("max_dd_buffer", 5000.0))
+                            daily_buffer=daily_buf_arg,
+                            max_dd_buffer=max_dd_buf_arg
                         )
 
                         if result and result.get("status") == "DENIED":
@@ -2689,13 +2906,14 @@ async def run_daemon():
         f"MT5 (FTMO): {'CONNECTED' if ftmo_connected else 'STANDBY/RECONNECTING'}"
     )
 
-    # Drei permanente Hintergrund-Dienste starten
+    # Vier permanente Hintergrund-Dienste starten
     service_tasks = [
         asyncio.create_task(daemon.watch_signal_queue(), name="watch_signal_queue"),
         asyncio.create_task(daemon.kill_switch_watcher(), name="kill_switch_watcher"),
         asyncio.create_task(daemon.ghost_order_guard(), name="ghost_order_guard"),
+        asyncio.create_task(daemon.position_exit_sync_guard(), name="position_exit_sync_guard"),
     ]
-    logging.info("Alle 3 Hintergrund-Dienste aktiv. Daemon läuft im permanenten 24/7-Modus.")
+    logging.info("Alle 4 Hintergrund-Dienste aktiv. Daemon läuft im permanenten 24/7-Modus.")
 
     try:
         # Prozess dauerhaft aktiv halten, bis kill_event durch Signal oder Kill-Switch ausgelöst wird
@@ -2744,7 +2962,7 @@ async def run_test_battery():
     await daemon.process_signal("apex", "DEMO9866266", "MNQ", "LONG", 1, 31230.0, 31200.0, 31290.0, current_price=31230.0, score=60, setup_type="SETUP_B", is_fleet=False, balance=51500.0, trailing_threshold=49000.0)
 
     logging.info("--- STARTING TEST 2: FTMO EURUSD Long (Dynamische Tick-Ausführung) ---")
-    await daemon.process_signal("ftmo", "FTMO_100K_01", "EURUSD=X", "LONG", 2.5, 1.0850, 1.0820, 1.0910, current_price=1.0850, score=70, setup_type="SETUP_B", daily_buffer=4000.0, max_dd_buffer=8000.0)
+    await daemon.process_signal("ftmo", "FTMO_100K_01", "EURUSD=X", "LONG", 2.5, 1.0850, 1.0820, 1.0910, current_price=1.0850, score=70, setup_type="SETUP_B", balance=100000.0, account_size=100000.0, daily_buffer=4000.0, max_dd_buffer=8000.0)
 
     logging.info("--- STARTING TEST 3: RESONO Veto (Blockiert) ---")
     # Simulation eines Vetos durch Manipulation des lokalen Mocks für diesen Testlauf
@@ -2933,6 +3151,63 @@ async def run_test_battery():
                         writer.writerows(clean_rows)
                     tmp_journal.replace(journal_path)
                     logging.info("Test 7: Temporärer Test-Seed TEST_FLATTEN_99999 restlos aus dem Journal entfernt.")
+
+    logging.info("--- STARTING TEST 8: Broker-Sync Guard Test ---")
+    try:
+        # Seede synthetischen OPEN Trade
+        seed_payload = {
+            "broker_order_id": "TEST_SYNC_88888",
+            "account_name": "DEMO9866266",
+            "symbol": "MNQ",
+            "direction": "LONG",
+            "execution_price": 31200.0,
+            "sl_price": 31100.0,
+            "tp_price": 31300.0,
+            "qty": 1,
+            "username": "admin"
+        }
+        daemon._write_to_journal(seed_payload)
+        
+        # Vorab den aktuellen Broker-Status abfragen
+        apex_pos = await daemon.nt8.get_open_positions(NT8_ACCOUNT)
+        
+        # Direkt den Einzeldurchlauf ausführen
+        await daemon.sync_broker_exits()
+        
+        # Verifizieren
+        if journal_path.exists():
+            with open(journal_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                sync_trade = next((row for row in reader if str(row.get("id")) == "TEST_SYNC_88888"), None)
+            
+            if sync_trade:
+                if sync_trade.get("status") == "CLOSED" and sync_trade.get("exit_reason") == "BROKER_SL_TP_HIT" and sync_trade.get("current_risk_eur") == "0.00":
+                    logging.info("Test 8: Broker-Sync Guard erfolgreich. Trade als CLOSED und genullt verbucht.")
+                elif sync_trade.get("status") == "OPEN" and apex_pos is None:
+                    logging.info(f"Test 8: Poka-Yoke Schutzschild aktiv (Konto '{NT8_ACCOUNT}' auf lokalem NT8 nicht vorhanden -> Trade vorschriftsmäßig vor Phantom-Close geschützt).")
+                else:
+                    logging.warning(f"Test 8: Unerwarteter Status: {sync_trade.get('status')}")
+            else:
+                logging.warning("Test 8: Synthetischer Trade nicht im Journal gefunden.")
+        
+    finally:
+        if journal_path.exists():
+            with JournalLock(journal_path):
+                with open(journal_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    raw_rows = list(reader)
+                if raw_rows:
+                    header = raw_rows[0]
+                    rows_dict = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                    clean_rows = [r for r in rows_dict if str(r.get("id", "")) != "TEST_SYNC_88888"]
+                    
+                    tmp_journal = journal_path.with_suffix(".tmp")
+                    with open(tmp_journal, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=header)
+                        writer.writeheader()
+                        writer.writerows(clean_rows)
+                    tmp_journal.replace(journal_path)
+                    logging.info("Test 8: Synthetischer Test-Seed TEST_SYNC_88888 restlos aus dem Journal entfernt.")
 
     logging.info("Beende Testbatterie, räume Tasks auf...")
     daemon.kill_event.set()
