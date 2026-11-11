@@ -273,7 +273,7 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
     inklusive Sniper-Rehabilitationsmodus in der Roten Zone.
     """
     import math
-    account_size = float(account_dict.get("account_size", account_dict.get("initial_balance", 50000.0)))
+    account_size = float(account_dict.get("account_size", account_dict.get("initial_balance", account_dict.get("current_balance", 100000.0))))
     current_balance = float(account_dict.get("current_balance", account_size))
     
     raw_symbol = str(signal_dict.get("ticker", signal_dict.get("symbol", "EURUSD"))).strip().upper()
@@ -326,10 +326,13 @@ def evaluate_ftmo_risk(account_dict: Dict[str, Any], signal_dict: Dict[str, Any]
         day_start = float(account_dict.get("day_start_balance", account_size))
         daily_buffer = max(0.0, current_balance - (day_start - daily_limit))
     else:
-        daily_buffer = daily_limit
+        daily_buffer = account_size * 0.05
 
-    max_loss_threshold = account_size * 0.90
-    max_dd_buffer = max(0.0, current_balance - max_loss_threshold)
+    if "max_dd_buffer" in account_dict and account_dict.get("max_dd_buffer") is not None:
+        max_dd_buffer = float(account_dict.get("max_dd_buffer"))
+    else:
+        max_loss_threshold = account_size * 0.90
+        max_dd_buffer = max(0.0, current_balance - max_loss_threshold)
 
     # 1. FLASCHENHALS-PUFFER
     effective_buffer = max(0.0, min(daily_buffer, max_dd_buffer))
