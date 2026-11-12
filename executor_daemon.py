@@ -7,6 +7,7 @@ import logging
 import json
 import csv
 import uuid
+import html
 from collections import deque
 import yfinance as yf
 from dotenv import load_dotenv
@@ -137,7 +138,13 @@ NODE_ORIGIN = os.getenv("NODE_ORIGIN", "NETCUP-EXEC").strip()
 EXECUTOR_MODE = os.getenv("EXECUTOR_MODE", "DRY_RUN")
 EXECUTOR_POLLING_INTERVAL = int(os.getenv("EXECUTOR_POLLING_INTERVAL", "10"))
 EXECUTOR_KILL_SWITCH = os.getenv("EXECUTOR_KILL_SWITCH", "KILL_SWITCH")
+KILL_SWITCH_PATH = Path(EXECUTOR_KILL_SWITCH)
+if not KILL_SWITCH_PATH.is_absolute():
+    KILL_SWITCH_PATH = script_dir / KILL_SWITCH_PATH
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "dummy_token")
+OPS_TELEGRAM_BOT_TOKEN = os.getenv("OPS_TELEGRAM_BOT_TOKEN", "").strip()
+if not OPS_TELEGRAM_BOT_TOKEN:
+    OPS_TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "dummy_chat_id")
 NT8_HOST = os.getenv("NT8_HOST", "127.0.0.1")
 NT8_PORT = int(os.getenv("NT8_PORT", "50005"))
@@ -805,8 +812,8 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
             "correlation_id": str(uuid.uuid4())
         }
         res = await self._send_command(cmd)
-        status = res.get("status")
-        if status in ("SUBMITTED", "FILLED"):
+        status = str(res.get("status", "")).upper()
+        if status in ("SUBMITTED", "FILLED", "OK", "ALREADY_FLAT", "NO_ACTIVE_POSITION", "FLAT"):
             logging.info(f"NinjaTraderAdapter: FLATTEN für Konto '{account_id}' synchron mit {status} quittiert.")
             return True
 
@@ -1269,52 +1276,67 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
                 pos_type = pos.type
 
                 sym_info = await asyncio.to_thread(mt5.symbol_info, sym)
-                tick = await asyncio.to_thread(mt5.symbol_info_tick, sym)
-                if sym_info is None or tick is None:
-                    logging.error(f"FTMOBrokerAdapter: Keine Symbol-/Tick-Daten zum Schließen von Position {ticket} ({sym}).")
+                if sym_info is None:
+                    logging.error(f"FTMOBrokerAdapter: Keine Symbol-Daten zum Schließen von Position {ticket} ({sym}).")
                     overall_success = False
                     continue
 
-                # Gegen-Order bestimmen: Long -> Verkauf zum Bid | Short -> Rückkauf zum Ask
-                if pos_type == mt5.POSITION_TYPE_BUY:
-                    close_type = mt5.ORDER_TYPE_SELL
-                    close_price = tick.bid if tick.bid > 0.0 else tick.last
-                else:
-                    close_type = mt5.ORDER_TYPE_BUY
-                    close_price = tick.ask if tick.ask > 0.0 else tick.last
-
-                if close_price <= 0.0:
-                    logging.error(f"FTMOBrokerAdapter: Ungültiger Schließkurs (0.0) für Position {ticket} ({sym}). Markt geschlossen?")
-                    overall_success = False
-                    continue
-
-                close_price = round(close_price, sym_info.digits)
                 filling_type, filling_str = self._resolve_filling_mode(sym_info)
+                pos_closed = False
 
-                close_req = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "position": ticket,
-                    "symbol": sym,
-                    "volume": volume,
-                    "type": close_type,
-                    "price": close_price,
-                    "deviation": 20,
-                    "magic": self.MAGIC_NUMBER,
-                    "comment": "INVARIX FLATTEN",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": filling_type,
-                }
+                for attempt in range(5):
+                    tick = await asyncio.to_thread(mt5.symbol_info_tick, sym)
+                    if tick is None:
+                        logging.error(f"FTMOBrokerAdapter: Keine Tick-Daten für Position {ticket} ({sym}). Versuch {attempt+1}/5.")
+                        await asyncio.sleep(0.25)
+                        continue
 
-                res = await asyncio.to_thread(mt5.order_send, close_req)
-                if res is not None and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    logging.info(
-                        f"FTMOBrokerAdapter: Position {ticket} ({sym}, {volume} Lots) erfolgreich geschlossen "
-                        f"zum Kurs {close_price} (Filling: {filling_str})."
-                    )
-                else:
-                    ret = getattr(res, "retcode", "None")
-                    comment = getattr(res, "comment", "No response")
-                    logging.error(f"FTMOBrokerAdapter: Fehler beim Schließen von Position {ticket} ({sym}). Retcode: {ret}, Comment: {comment}")
+                    # Gegen-Order bestimmen: Long -> Verkauf zum Bid | Short -> Rückkauf zum Ask
+                    if pos_type == mt5.POSITION_TYPE_BUY:
+                        close_type = mt5.ORDER_TYPE_SELL
+                        close_price = tick.bid if tick.bid > 0.0 else tick.last
+                    else:
+                        close_type = mt5.ORDER_TYPE_BUY
+                        close_price = tick.ask if tick.ask > 0.0 else tick.last
+
+                    if close_price <= 0.0:
+                        logging.error(f"FTMOBrokerAdapter: Ungültiger Schließkurs (0.0) für Position {ticket} ({sym}). Markt geschlossen?")
+                        break
+
+                    close_price = round(close_price, sym_info.digits)
+
+                    close_req = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "position": ticket,
+                        "symbol": sym,
+                        "volume": volume,
+                        "type": close_type,
+                        "price": close_price,
+                        "deviation": 100,
+                        "magic": self.MAGIC_NUMBER,
+                        "comment": "INVARIX FLATTEN",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": filling_type,
+                    }
+
+                    res = await asyncio.to_thread(mt5.order_send, close_req)
+                    if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, 10036):
+                        logging.info(
+                            f"FTMOBrokerAdapter: Position {ticket} ({sym}, {volume} Lots) erfolgreich geschlossen "
+                            f"zum Kurs {close_price} (Filling: {filling_str})."
+                        )
+                        pos_closed = True
+                        break
+                    elif res is not None and res.retcode in (10004, 10015, 10020, 10021):
+                        logging.warning(f"FTMOBrokerAdapter: Requote/Preis-Fehler beim Flatten ({res.retcode}). Retry {attempt+1}/5...")
+                        await asyncio.sleep(0.25)
+                    else:
+                        ret = getattr(res, "retcode", "None") if res else "None"
+                        comment = getattr(res, "comment", "No response") if res else "No response"
+                        logging.error(f"FTMOBrokerAdapter: Fehler beim Schließen von Position {ticket} ({sym}). Retcode: {ret}, Comment: {comment}")
+                        break
+                
+                if not pos_closed:
                     overall_success = False
 
         # 2. Alle verwaisten schwebenden Orders (Pending Orders) stornieren
@@ -1677,6 +1699,10 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
 class ExecutorDaemon:
     def __init__(self):
         self.reporter = TelegramReporter(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        self.ops_token = OPS_TELEGRAM_BOT_TOKEN
+        self.ops_reporter = TelegramReporter(self.ops_token, TELEGRAM_CHAT_ID)
+        self.kill_in_progress = False
+        self.kill_confirm_deadline = 0.0
         self.nt8 = NinjaTraderAdapter()
         self.ftmo = FTMOBrokerAdapter()
         self.kill_event = asyncio.Event()
@@ -1695,7 +1721,9 @@ class ExecutorDaemon:
         """Überwacht die Trigger-Datei asynchron. Intervall < 1s."""
         logging.info("Kill-Switch-Watcher aktiv.")
         while not self.kill_event.is_set():
-            if os.path.exists(EXECUTOR_KILL_SWITCH):
+            if self.kill_in_progress:
+                break
+            if KILL_SWITCH_PATH.exists():
                 logging.critical("KILL SWITCH DATEI ERKANNT! Initiiere System-Stopp.")
                 self.kill_event.set()
                 await self.reporter.report_step_4_alert("Manueller Kill-Switch ausgelöst. Alle Adapter eingefroren.")
@@ -1851,6 +1879,8 @@ class ExecutorDaemon:
         """Zyklischer Abgleich von Broker-Ausstiegen (SL/TP) mit dem Journal."""
         logging.info("Position Exit Sync Guard aktiv (Intervall: 15s).")
         while not self.kill_event.is_set():
+            if self.kill_in_progress:
+                break
             try:
                 await self.sync_broker_exits()
             except Exception as e:
@@ -2023,8 +2053,10 @@ class ExecutorDaemon:
                 orphaned.replace(self.dir_rejected / orphaned.name)
 
         while not self.kill_event.is_set():
+            if self.kill_in_progress:
+                break
             for filepath in sorted(self.dir_pending.glob("*.json")):
-                if self.kill_event.is_set():
+                if self.kill_event.is_set() or self.kill_in_progress:
                     break
 
                 # Atomares Verschieben nach 02_processing
@@ -2885,7 +2917,318 @@ class ExecutorDaemon:
         self.kill_event.set()
         await self.reporter.report_step_4_alert("Programmatischer Kill-Switch ausgelöst.")
         logging.critical("DAEMON GESTOPPT: Kill-Event gesetzt.")
+    async def telegram_ops_listener(self):
+        """Passiver Long-Polling-Listener für Telegram Ops-Befehle."""
+        if not self.ops_token or self.ops_token == "dummy_token" or TELEGRAM_CHAT_ID == "dummy_chat_id":
+            logging.info("Telegram Ops-Listener inaktiv (kein Token oder Chat-ID).")
+            return
 
+        url = f"https://api.telegram.org/bot{self.ops_token}"
+        timeout = aiohttp.ClientTimeout(total=8.0, connect=3.0)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            offset = 0
+            # Startup Queue-Flush
+            try:
+                async with session.get(f"{url}/getUpdates", params={"offset": -1, "timeout": 0}) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("ok") and data.get("result"):
+                            offset = data["result"][-1]["update_id"] + 1
+            except Exception as e:
+                logging.warning(f"Ops-Listener: Fehler beim Startup-Flush: {e}")
+
+            logging.info("Telegram Ops-Listener aktiv und bereit für Befehle.")
+            while not self.kill_event.is_set():
+                try:
+                    params = {"offset": offset, "timeout": 5, "allowed_updates": ["message"]}
+                    async with session.get(f"{url}/getUpdates", json=params) as resp:
+                        if resp.status == 409:
+                            logging.error("Ops-Listener: HTTP 409 Conflict (Doppelte Bot-Instanz?). Warte 10s...")
+                            try:
+                                await asyncio.wait_for(self.kill_event.wait(), timeout=10.0)
+                            except asyncio.TimeoutError:
+                                pass
+                            continue
+                        
+                        resp.raise_for_status()
+                        data = await resp.json()
+                        
+                        if not data.get("ok"):
+                            continue
+                            
+                        for update in data.get("result", []):
+                            update_id = update["update_id"]
+                            offset = update_id + 1
+                            
+                            msg = update.get("message")
+                            if not msg:
+                                continue
+                                
+                            if msg.get("from", {}).get("is_bot"):
+                                continue
+                                
+                            chat_id = str(msg.get("chat", {}).get("id", "")).strip()
+                            if chat_id != str(TELEGRAM_CHAT_ID).strip():
+                                logging.warning(f"Ops-Listener: Sicherheitswarnung! Fremder Zugriff von Chat-ID {chat_id} abgewiesen.")
+                                continue
+                                
+                            text = str(msg.get("text", "")).strip()
+                            if not text.startswith("/"):
+                                continue
+                                
+                            raw_cmd = text.split()[0].lower()
+                            cmd = raw_cmd.split("@")[0]
+                            
+                            await self._handle_ops_command(cmd, msg)
+
+                except asyncio.TimeoutError:
+                    pass
+                except Exception as e:
+                    logging.warning(f"Ops-Listener: Netzwerkfehler/Exception: {e}. Warte 2s...")
+                    try:
+                        await asyncio.wait_for(self.kill_event.wait(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+    async def _handle_ops_command(self, cmd: str, msg: dict):
+        try:
+            if cmd == "/status":
+                await self._cmd_status()
+            elif cmd == "/fleet":
+                await self._cmd_fleet()
+            elif cmd == "/kill":
+                await self._cmd_kill_arm()
+            elif cmd == "/kill_confirm":
+                await self._cmd_kill_confirm()
+            else:
+                escaped_cmd = html.escape(cmd)
+                await self.ops_reporter.send_message(f"Unbekannter Befehl: <code>{escaped_cmd}</code>\nGültig: /status, /fleet, /kill")
+        except Exception as e:
+            logging.error(f"Fehler im Ops-Handler für {cmd}: {e}")
+            await self.ops_reporter.send_message(f"⚠️ Fehler bei der Ausführung: <code>{html.escape(str(e))}</code>")
+
+    async def _cmd_status(self):
+        nt8_status = "VERBUNDEN" if self.nt8.connected else "GETRENNT"
+        
+        mt5_status = "NICHT VERFÜGBAR"
+        mt5_login_str = str(MT5_LOGIN)
+        mt5_server_str = str(MT5_SERVER)
+        if MT5_AVAILABLE and MT5_LOGIN:
+            await self.ftmo._ensure_connected()
+            t_info = await asyncio.to_thread(mt5.terminal_info)
+            if t_info and getattr(t_info, "connected", False):
+                mt5_status = "VERBUNDEN"
+            else:
+                mt5_status = "GETRENNT"
+
+        kill_switch_status = "AKTIV (GESPERRT)" if KILL_SWITCH_PATH.exists() else "INAKTIV (FREI)"
+        
+        pending_count = len(list(self.dir_pending.glob("*.json")))
+        rejected_count = len(list(self.dir_rejected.glob("*.json")))
+        
+        report = (
+            f"📊 <b>SYSTEM STATUS</b>\n"
+            f"Node: <code>{html.escape(NODE_ORIGIN)}</code>\n"
+            f"Modus: <code>{html.escape(EXECUTOR_MODE)}</code>\n"
+            f"Notaus: <b>{kill_switch_status}</b>\n\n"
+            f"⚙️ <b>NINJATRADER 8</b>\n"
+            f"Status: {nt8_status}\n"
+            f"Host: <code>{html.escape(NT8_HOST)}:{NT8_PORT}</code>\n"
+            f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n\n"
+            f"⚙️ <b>METATRADER 5</b>\n"
+            f"Status: {mt5_status}\n"
+            f"Login: <code>{html.escape(mt5_login_str)}</code>\n"
+            f"Server: <code>{html.escape(mt5_server_str)}</code>\n\n"
+            f"📂 <b>QUEUES</b>\n"
+            f"Pending: {pending_count}\n"
+            f"Rejected: {rejected_count}"
+        )
+        await self.ops_reporter.send_message(report)
+
+    async def _cmd_fleet(self):
+        cfg_path = script_dir / "users" / "admin" / "ticker_config.json"
+        apex_size, apex_dd = 50000.0, 2500.0
+        ftmo_size, ftmo_max_dd_pct, ftmo_daily_pct = 80000.0, 0.10, 0.05
+        
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, 'r', encoding='utf-8-sig') as f:
+                    cfg = json.load(f)
+                lab_accs = cfg.get("lab_accounts", {})
+                
+                acc_list = lab_accs if isinstance(lab_accs, list) else []
+                if isinstance(lab_accs, dict):
+                    for k, v in lab_accs.items():
+                        if isinstance(v, dict):
+                            v_copy = v.copy()
+                            v_copy["_key"] = k
+                            acc_list.append(v_copy)
+                            
+                for acc in acc_list:
+                    check_str = f"{acc.get('_key','')} {acc.get('name','')} {acc.get('broker','')} {acc.get('account_type','')}".lower()
+                    if "apex" in check_str:
+                        apex_size = float(acc.get("account_size", apex_size))
+                        apex_dd = float(acc.get("max_trailing_dd", apex_dd))
+                    if "ftmo" in check_str:
+                        ftmo_size = float(acc.get("account_size", ftmo_size))
+                        ftmo_max_dd_pct = float(acc.get("max_drawdown_pct", ftmo_max_dd_pct))
+                        ftmo_daily_pct = float(acc.get("daily_loss_limit_pct", ftmo_daily_pct))
+            except Exception as e:
+                logging.error(f"Fehler beim Lesen der ticker_config.json: {e}")
+
+        apex_info = (
+            f"🏎️ <b>APEX (Futures)</b>\n"
+            f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+            f"Größe: {apex_size:,.2f} USD\n"
+            f"Max DD: {apex_dd:,.2f} USD\n"
+            f"<i>(Live-Equity Sync für NT8 folgt in Patch 2.6)</i>\n"
+        )
+        
+        ftmo_info = "🌍 <b>FTMO (Forex)</b>\nStatus: Keine Verbindung\n"
+        if MT5_AVAILABLE and MT5_LOGIN:
+            await self.ftmo._ensure_connected()
+            acc_info = await asyncio.to_thread(mt5.account_info)
+            if acc_info:
+                bal = float(acc_info.balance)
+                eq = float(acc_info.equity)
+                prof = float(acc_info.profit)
+                curr = str(acc_info.currency)
+                
+                max_dd_limit = ftmo_size * ftmo_max_dd_pct
+                daily_limit = ftmo_size * ftmo_daily_pct
+                
+                rem_max_dd = max_dd_limit + (eq - ftmo_size)
+                rem_daily = daily_limit + prof
+                eff_buf = min(rem_max_dd, rem_daily)
+                
+                ftmo_info = (
+                    f"🌍 <b>FTMO (Forex)</b>\n"
+                    f"Balance: {bal:,.2f} {html.escape(curr)}\n"
+                    f"Equity: {eq:,.2f} {html.escape(curr)}\n"
+                    f"Max-DD Puffer: {rem_max_dd:,.2f} {html.escape(curr)}\n"
+                    f"Daily Puffer: {rem_daily:,.2f} {html.escape(curr)}\n"
+                    f"Bottleneck: <b>{eff_buf:,.2f} {html.escape(curr)}</b>\n"
+                )
+
+        journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
+        trades_info = ""
+        total_risk = 0.0
+        
+        if journal_path.exists():
+            with JournalLock(journal_path):
+                try:
+                    with open(journal_path, 'r', encoding='utf-8-sig') as f:
+                        reader = csv.reader(f)
+                        raw_rows = list(reader)
+                    if raw_rows:
+                        header = raw_rows[0]
+                        rows = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                        
+                        open_trades = [r for r in rows if str(r.get("status")).strip().upper() == "OPEN"]
+                        for t in open_trades:
+                            sym = html.escape(str(t.get("symbol", "")))
+                            dir_str = html.escape(str(t.get("direction", "")))
+                            acc = html.escape(str(t.get("account_name", "")))
+                            qty = html.escape(str(t.get("position_size", "")))
+                            c_sl = html.escape(str(t.get("current_sl") or t.get("sl_price", "")))
+                            r_eur = _parse_float_safe(t.get("current_risk_eur"), fallback=0.0)
+                            
+                            total_risk += r_eur
+                            trades_info += f"• <code>{sym}</code> ({dir_str}) auf <code>{acc}</code> | Qty: {qty} | SL: {c_sl} | Risk: {r_eur:.2f} €\n"
+                except Exception as e:
+                    logging.error(f"Fehler beim Lesen des Journals für /fleet: {e}")
+                    
+        if not trades_info:
+            trades_info = "Keine offenen Trades."
+            
+        report = (
+            f"📋 <b>FLEET STATUS</b>\n\n"
+            f"{apex_info}\n"
+            f"{ftmo_info}\n"
+            f"💼 <b>OFFENE TRADES (Journal)</b>\n"
+            f"{trades_info}\n"
+            f"Gesamtes Restrisiko: <b>{total_risk:.2f} €</b>"
+        )
+        
+        await self.ops_reporter.send_message(report)
+
+    async def _cmd_kill_arm(self):
+        import time
+        self.kill_confirm_deadline = time.monotonic() + 30.0
+        logging.critical("NOTBREMSE SCHARFGESCHALTET via Telegram. Warte auf /kill_confirm...")
+        await self.ops_reporter.send_message(
+            "⚠️ <b>KRITISCH: NOTBREMSE SCHARFGESCHALTET</b>\n"
+            "Bitte bestätige den Systemabbruch innerhalb von 30 Sekunden mit dem Befehl:\n"
+            "<code>/kill_confirm</code>"
+        )
+        
+    async def _cmd_kill_confirm(self):
+        import time
+        if self.kill_confirm_deadline <= 0.0 or time.monotonic() > self.kill_confirm_deadline:
+            self.kill_confirm_deadline = 0.0
+            await self.ops_reporter.send_message("Das Zeitfenster für /kill_confirm ist abgelaufen oder wurde nicht initiiert. Bitte sende zuerst <code>/kill</code>.")
+            return
+            
+        self.kill_confirm_deadline = 0.0
+        self.kill_in_progress = True
+        
+        try:
+            with open(KILL_SWITCH_PATH, "w") as f:
+                f.write(f"TELEGRAM KILL SWITCH TRIGGERED AT {datetime.now(timezone.utc).isoformat()}")
+        except Exception as e:
+            logging.error(f"Fehler beim Schreiben des Kill-Switch: {e}")
+            
+        ftmo_acc = str(MT5_LOGIN) if MT5_LOGIN > 0 else "FTMO"
+        res = await asyncio.gather(
+            self.nt8.flatten_account(NT8_ACCOUNT),
+            self.ftmo.flatten_account(ftmo_acc),
+            return_exceptions=True
+        )
+        nt8_res = res[0] if not isinstance(res[0], Exception) else f"Fehler: {res[0]}"
+        mt5_res = res[1] if not isinstance(res[1], Exception) else f"Fehler: {res[1]}"
+        
+        journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
+        closed_count = 0
+        if journal_path.exists():
+            with JournalLock(journal_path):
+                with open(journal_path, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.reader(f)
+                    raw_rows = list(reader)
+                if raw_rows:
+                    header = raw_rows[0]
+                    rows = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
+                    for r in rows:
+                        if str(r.get("status")).strip().upper() == "OPEN":
+                            r["status"] = "CLOSED"
+                            r["exit_date"] = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+                            r["exit_reason"] = "KILL_SWITCH_EMERGENCY"
+                            r["current_risk_eur"] = "0.00"
+                            ep = str(r.get("exit_price", "")).strip()
+                            if not ep:
+                                csl = str(r.get("current_sl", "")).strip()
+                                r["exit_price"] = csl if csl else str(r.get("entry_price", "")).strip()
+                            closed_count += 1
+                            
+                    tmp_path = journal_path.with_suffix(".tmp")
+                    with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=header)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    tmp_path.replace(journal_path)
+                    
+        report = (
+            f"🚨 <b>SYSTEM-NOTAUS VOLLZOGEN</b>\n"
+            f"Sperrdatei: <code>{html.escape(str(KILL_SWITCH_PATH.name))}</code> AKTIV\n"
+            f"NT8 Flatten: {html.escape(str(nt8_res))}\n"
+            f"MT5 Flatten: {html.escape(str(mt5_res))}\n"
+            f"Journal: {closed_count} offene Trades als CLOSED markiert."
+        )
+        await self.ops_reporter.send_message(report)
+        if self.ops_token != TELEGRAM_BOT_TOKEN:
+            await self.reporter.report_step_4_alert(f"<b>TELEGRAM KILL SWITCH BESTÄTIGT</b>\n{closed_count} Trades geschlossen. System friert ein.")
+            
+        self.kill_event.set()
 
 async def run_daemon():
     """
@@ -2929,9 +3272,9 @@ async def run_daemon():
         asyncio.create_task(daemon.kill_switch_watcher(), name="kill_switch_watcher"),
         asyncio.create_task(daemon.ghost_order_guard(), name="ghost_order_guard"),
         asyncio.create_task(daemon.position_exit_sync_guard(), name="position_exit_sync_guard"),
+    asyncio.create_task(daemon.telegram_ops_listener(), name="telegram_ops_listener"),
     ]
-    logging.info("Alle 4 Hintergrund-Dienste aktiv. Daemon läuft im permanenten 24/7-Modus.")
-
+    logging.info("Alle 5 Hintergrund-Dienste aktiv. Daemon läuft im permanenten 24/7-Modus.")
     try:
         # Prozess dauerhaft aktiv halten, bis kill_event durch Signal oder Kill-Switch ausgelöst wird
         await daemon.kill_event.wait()
