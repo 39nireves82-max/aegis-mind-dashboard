@@ -315,6 +315,16 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         "M2K": "RTY=F",
     }
 
+    def _resolve_micro_symbol(self, symbol: str) -> str:
+        """Übersetzt Yahoo-Ticker deterministisch in NT8 Micro-Symbole."""
+        clean_sym = symbol.strip().upper().split()[0]
+        clean_sym = clean_sym.replace("=F", "").replace("=X", "")
+        if clean_sym in ("NQ", "MNQ"):
+            return "MNQ"
+        if clean_sym in ("CL", "MCL"):
+            return "MCL"
+        return clean_sym
+
     def __init__(self, execution_timeout: float = NT8_EXECUTION_TIMEOUT):
         self.host = NT8_HOST
         self.port = NT8_PORT
@@ -647,8 +657,8 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
             logging.info(f"NinjaTraderAdapter: Platzhalter-Konto '{account_id}' dynamisch aufgelöst auf reales Zielkonto '{resolved_account}'.")
             account_id = resolved_account
 
-        # Root-Ticker isolieren (z. B. "MNQ 06-26" -> "MNQ")
-        clean_sym = symbol.strip().upper().split()[0]
+        # Root-Ticker isolieren und auf Micro-Kontrakt mappen
+        clean_sym = self._resolve_micro_symbol(symbol)
         mapped_sym = self.YFINANCE_MAPPING.get(clean_sym, clean_sym)
 
         ref_price = 0.0
@@ -737,13 +747,12 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
             "command": "PLACE_ORDER",
             "correlation_id": correlation_id,
             "account": account_id,
-            "instrument": symbol,
+            "instrument": clean_sym,
             "direction": dir_upper,
             "qty": int(qty),
             "sl_price": float(sl_price),
             "tp_price": float(tp_price)
         }
-
         # PHASE 1: Sende PLACE_ORDER und warte auf synchrone SUBMITTED-Quittung inkl. oco_id
         logging.info(f"NinjaTraderAdapter: [Phase 1] Sende Bracket Order für {symbol} auf {account_id} an NT8 (correlation_id={correlation_id})...")
         res = await self._send_command(cmd)
@@ -807,7 +816,7 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
             account_id = NT8_ACCOUNT
 
-        clean_sym = symbol.strip().upper().split()[0]
+        clean_sym = self._resolve_micro_symbol(symbol)
         correlation_id = str(uuid.uuid4())
         cmd = {
             "command": "FLATTEN_POSITION",
@@ -852,12 +861,13 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         if close_qty <= 0:
             return {"status": "FAILED", "reason": "INVALID_PARTIAL_QTY"}
 
+        clean_sym = self._resolve_micro_symbol(symbol)
         correlation_id = str(uuid.uuid4())
         cmd = {
             "command": "PLACE_ORDER",
             "correlation_id": correlation_id,
             "account": account_id,
-            "instrument": symbol,
+            "instrument": clean_sym,
             "direction": close_dir,
             "qty": close_qty,
             "sl_price": 0.0,
@@ -887,7 +897,7 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
             account_id = NT8_ACCOUNT
 
-        clean_sym = symbol.strip().upper().split()[0]
+        clean_sym = self._resolve_micro_symbol(symbol)
         cmd = {
             "command": "MODIFY_ORDER",
             "account": account_id,
@@ -1737,7 +1747,14 @@ class ExecutorDaemon:
                 for trade in open_trades:
                     trade_id = str(trade.get("id", "")).strip()
                     symbol = str(trade.get("symbol", "")).strip().upper()
-                    clean_sym = symbol.split()[0].replace("=X", "")
+                    # Basis-Bereinigung
+                    clean_sym = symbol.split()[0].replace("=X", "").replace("=F", "")
+                    # Deterministische Micro-Zuordnung für NT8 Abgleich
+                    if clean_sym in ("NQ", "MNQ"):
+                        clean_sym = "MNQ"
+                    elif clean_sym in ("CL", "MCL"):
+                        clean_sym = "MCL"
+
                     account = str(trade.get("account_name", "")).strip()
                     
                     is_ftmo = "=X" in symbol or "FTMO" in account
@@ -2958,6 +2975,16 @@ async def run_test_battery():
     guard_task = asyncio.create_task(daemon.ghost_order_guard())
     spooler_task = asyncio.create_task(daemon.watch_signal_queue())
 
+    # --- Symbol Mapping Assertions ---
+    assert daemon.nt8._resolve_micro_symbol("NQ=F") == "MNQ", "Symbol mapping failed for NQ=F"
+    assert daemon.nt8._resolve_micro_symbol("MNQ=F") == "MNQ", "Symbol mapping failed for MNQ=F"
+    assert daemon.nt8._resolve_micro_symbol("NQ") == "MNQ", "Symbol mapping failed for NQ"
+    assert daemon.nt8._resolve_micro_symbol("CL=F") == "MCL", "Symbol mapping failed for CL=F"
+    assert daemon.nt8._resolve_micro_symbol("MCL=F") == "MCL", "Symbol mapping failed for MCL=F"
+    assert daemon.nt8._resolve_micro_symbol("CL") == "MCL", "Symbol mapping failed for CL"
+    assert daemon.nt8._resolve_micro_symbol("GC=F") == "GC", "Symbol mapping failed for GC=F"
+    logging.info("Test 0b: NinjaTraderAdapter Symbol-Mapping Assertions erfolgreich.")
+
     logging.info("--- STARTING TEST 1: Apex MNQ Long (Einzelkonto) ---")
     await daemon.process_signal("apex", "DEMO9866266", "MNQ", "LONG", 1, 31230.0, 31200.0, 31290.0, current_price=31230.0, score=60, setup_type="SETUP_B", is_fleet=False, balance=51500.0, trailing_threshold=49000.0)
 
@@ -2979,7 +3006,7 @@ async def run_test_battery():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "account_type": "apex",
         "account_id": "DEMO_SPOOLER",
-        "symbol": "MNQ",
+        "symbol": "NQ=F",
         "direction": "SHORT",
         "qty": 1,
         "entry": 31230.0,
