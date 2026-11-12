@@ -1067,8 +1067,12 @@ def is_market_open_mez(symbol, category_hint=""):
         return True
         
     # 4. Aktien / ETFs: Geschlossen Sa/So sowie werktags vor 09:00 Uhr bzw. ab 22:00 Uhr MEZ
-    if wd in [5, 6] or hr < 9 or hr >= 22:
-        return False
+    if sym_u.endswith(".DE"):
+        if wd in [5, 6] or hr < 9 or (hr > 17) or (hr == 17 and now_dt.minute >= 30):
+            return False
+    else:
+        if wd in [5, 6] or hr < 9 or hr >= 22:
+            return False
         
     return True
 
@@ -2292,10 +2296,18 @@ with st.sidebar:
             sig = st.session_state["inbox_order_payload"]
             sym = str(sig.get("symbol", "")).strip()
             
+            sig_id = str(sig.get("id", f"{sym}_{sig.get('timestamp', '')}_{sig.get('current_price', '')}"))
+            
+            if st.session_state.get("_last_inbox_sig_id") != sig_id:
+                st.session_state["_last_inbox_sig_id"] = sig_id
+                st.session_state["active_order_ticker"] = None
+                st.session_state["active_futures_order"] = None
+                
             # Poka-Yoke: Wenn der Nutzer aktiv einen anderen Ticker in der Tabelle wählt, Inbox-Payload freigeben
             active_check = st.session_state.get("active_futures_order") or st.session_state.get("active_order_ticker")
             if active_check and active_check != sym:
                 st.session_state["inbox_order_payload"] = None
+                st.session_state["_last_inbox_sig_id"] = None
             else:
                 is_short = sig.get("direction", "").upper() == "SHORT"
                 cp = float(sig.get("current_price", 0.0))
@@ -2411,6 +2423,8 @@ with st.sidebar:
         if st.button("🗑️ Order-Desk leeren / Auswahl aufheben", use_container_width=True, key="global_clear_swing"):
             st.session_state.active_order_ticker = None
             st.session_state.active_futures_order = None
+            st.session_state["inbox_order_payload"] = None
+            st.session_state["_last_inbox_sig_id"] = None
             st.toast("Order-Desk geleert.", icon="ℹ️")
             st.rerun()
             
@@ -2650,6 +2664,9 @@ with st.sidebar:
                 st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
             btn_help_swing = None if market_open_swing else "Achtung: Ausführung und Fills erfolgen erst zur nächsten Marktöffnung."
             
+            if rec_text == "🔴 Aktuell kein Einstieg" and not admin_bypass_swing:
+                btn_disabled = True
+                btn_help_swing = "Gesperrt: Setup ungültig ('🔴 Aktuell kein Einstieg')."
             st_step_swing, st_fmt_swing = get_number_input_args(einstieg_val, active_sym)
             real_fill_swing = st.number_input("Tatsächlicher Fill-Preis (Broker)", value=float(einstieg_val), step=st_step_swing, format=st_fmt_swing, key=f"fill_swing_{active_sym}", help="Übertrage hier nach der Broker-Ausführung deinen echten Kurs. Standardmäßig mit dem Signal-Kurs vorausgefüllt.")
             
@@ -2720,9 +2737,7 @@ with st.sidebar:
                                 json.dump(alert_state, f, indent=4)
                         except Exception:
                             pass
-                    st.session_state["inbox_order_payload"] = None
-                st.toast("✅ Trade erfolgreich im Journal archiviert!", icon="📝")
-                st.session_state["inbox_order_payload"] = None
+                st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
                 st.rerun()
 
     elif desk_type == "prop":
@@ -2731,6 +2746,8 @@ with st.sidebar:
         if st.button("🗑️ Order-Desk leeren / Auswahl aufheben", use_container_width=True, key="global_clear_prop"):
             st.session_state.active_order_ticker = None
             st.session_state.active_futures_order = None
+            st.session_state["inbox_order_payload"] = None
+            st.session_state["_last_inbox_sig_id"] = None
             st.toast("Order-Desk geleert.", icon="ℹ️")
             st.rerun()
                             
@@ -3012,17 +3029,17 @@ with st.sidebar:
         is_shrt_eval = row_data.get('_raw_is_short', False)
         trade_dir = "short" if is_shrt_eval else "long"
         if acc_dir != "both" and acc_dir != trade_dir:
-            profile_conflict_blocked_prop = True
             dir_block_reason = f"Konto erlaubt nur {acc_dir.upper()} — Signal ist {trade_dir.upper()}."
 
         if admin_bypass_prop or is_private_prop:
             profile_conflict_blocked_prop = False
+            dir_block_reason = ""
 
         res_allowed_early = st.session_state.current_resono_res.get("allowed", True)
         resono_reason_early = st.session_state.current_resono_res.get("ui_reason", "")
         
         # 4. Rendering des horizontalen Kompakt-Banners
-        if profile_conflict_blocked_prop and not admin_bypass_prop and not is_private_prop:
+        if profile_conflict_blocked_prop and asset_block_reason and not admin_bypass_prop and not is_private_prop:
             st.error(f"🔴 **Asset-Veto:** {asset_block_reason}")
         elif dir_block_reason and not admin_bypass_prop and not is_private_prop:
             st.error(f"🔴 **Richtungs-Veto:** {dir_block_reason}")
@@ -3303,6 +3320,9 @@ with st.sidebar:
             
         if profile_conflict_blocked_prop or is_trade_blocked:
             sperrgruende.append("Profil-/Asset-Konflikt für dieses Konto")
+
+        if dir_block_reason:
+            sperrgruende.append(dir_block_reason)
             
         if not res_allowed and not has_open_pos and resono_reason and not is_private_prop:
             sperrgruende.append(resono_reason)
@@ -3419,9 +3439,7 @@ with st.sidebar:
                             json.dump(alert_state, f, indent=4)
                     except Exception:
                         pass
-                st.session_state["inbox_order_payload"] = None
             st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
-            st.session_state["inbox_order_payload"] = None
             st.rerun()
     
 #endregion
@@ -6339,12 +6357,16 @@ with tab_lab:
                         else:
                             st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
                         
-                        if (tp > ep or tp <= 0.0) and ep > sl:
+                        is_long_col2 = (row['direction'] == 'Long')
+                        tp_condition_col2 = (tp > ep) if is_long_col2 else (tp < ep)
+                        sl_condition_col2 = (sl > 0.0) and ((ep > sl) if is_long_col2 else (ep < sl))
+                        
+                        if (tp_condition_col2 or tp <= 0.0) and sl_condition_col2:
                             if tp <= 0.0:
                                 risk_per_share = abs(ep - sl)
                                 atr_proxy = (risk_per_share / 1.8) if risk_per_share > 0 else (abs(cur_p - sl) * 0.5)
                             else:
-                                atr_proxy = (tp - ep) / max(1.0, float(row.get('atr_days', 10.0)))
+                                atr_proxy = abs(tp - ep) / max(1.0, float(row.get('atr_days', 10.0)))
                                 
                             exit_mode_val = str(row.get('exit_mode', ''))
                             if not exit_mode_val or exit_mode_val == 'nan':
@@ -6488,11 +6510,23 @@ with tab_lab:
                         reason_opts = ["🎯 Take Profit erreicht", "🛑 Stop Loss gegriffen", "🛑 Trailing-Stop gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
                         if tp <= 0.0:
                             reason_opts = ["🛑 Trailing-Stop gegriffen", "🛑 Stop Loss gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
-                        close_reason = st.selectbox("Grund:", reason_opts, key=f"rsn_{row['id']}")
+                        is_long_col4 = (row['direction'] == 'Long')
+                        def_idx = len(reason_opts) - 1 # Manueller Exit
+                        
+                        if tp > 0.0:
+                            if (cur_p >= tp if is_long_col4 else cur_p <= tp): def_idx = 0
+                            elif (current_sl > sl if is_long_col4 else current_sl < sl) and (cur_p <= current_sl if is_long_col4 else cur_p >= current_sl): def_idx = 2
+                            elif sl > 0.0 and (cur_p <= current_sl if is_long_col4 else cur_p >= current_sl): def_idx = 1
+                        else:
+                            if (current_sl > sl if is_long_col4 else current_sl < sl) and (cur_p <= current_sl if is_long_col4 else cur_p >= current_sl): def_idx = 0
+                            elif sl > 0.0 and (cur_p <= current_sl if is_long_col4 else cur_p >= current_sl): def_idx = 1
+                            
+                        close_reason = st.selectbox("Grund:", reason_opts, index=def_idx, key=f"rsn_{row['id']}")
                         
                         def_price = ep
                         if "Take Profit" in close_reason: def_price = tp
                         elif "Stop Loss" in close_reason or "Trailing" in close_reason: def_price = current_sl
+                        elif "Manueller Exit" in close_reason or "Time-Stop" in close_reason: def_price = cur_p if cur_p > 0.0 else ep
                         
                         c_ex1, c_ex2 = st.columns([2, 1])
                         with c_ex1:
