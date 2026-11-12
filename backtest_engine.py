@@ -711,15 +711,11 @@ def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", t
         if direction == "Long":
             sl = recent_bars["Low"].min()
             if sl >= c_p: sl = c_p * 0.95
-            if asset_class == "FOREX" and atr > 0.0:
-                sl -= (0.5 * atr)
             temp_tp = recent_bars["High"].max()
             risk, reward = c_p - sl, temp_tp - c_p
         else:
             sl = recent_bars["High"].max()
             if sl <= c_p: sl = c_p * 1.05
-            if asset_class == "FOREX" and atr > 0.0:
-                sl += (0.5 * atr)
             temp_tp = recent_bars["Low"].min()
             risk, reward = sl - c_p, c_p - temp_tp
     else:
