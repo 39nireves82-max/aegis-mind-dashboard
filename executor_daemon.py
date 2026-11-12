@@ -260,6 +260,13 @@ class BaseBrokerAdapter(ABC):
     @abstractmethod
     async def get_working_orders(self, account_id: str) -> list: pass
 
+    async def get_account_info(self, account_id: str = "") -> dict | None:
+        """
+        Asynchroner Standard-Abruf für Live-Kontostände. 
+        Gibt None zurück, wenn nicht implementiert oder nicht verbunden.
+        """
+        return None
+
 
 class TradovateAdapter(BaseBrokerAdapter):
     """Adapter für CME Futures (Apex). DRY_RUN Simulation."""
@@ -858,6 +865,39 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         return []
 
     async def get_working_orders(self, account_id: str) -> list: return []
+
+    async def get_account_info(self, account_id: str = "") -> dict | None:
+        if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+            account_id = NT8_ACCOUNT
+
+        cmd = {
+            "command": "GET_ACCOUNT_INFO",
+            "account": account_id,
+            "correlation_id": str(uuid.uuid4())
+        }
+        res = await self._send_command(cmd, timeout=5.0)
+
+        if res.get("status") == "OK":
+            c_val = _parse_float_safe(res.get("cash_value"), fallback=0.0)
+            u_pnl = _parse_float_safe(res.get("unrealized_pnl"), fallback=0.0)
+            nl_val = _parse_float_safe(res.get("net_liquidation"), fallback=0.0)
+            
+            if nl_val <= 0.0 and c_val > 0.0:
+                nl_val = c_val + u_pnl
+                
+            return {
+                "account": str(res.get("account", account_id)).strip(),
+                "currency": str(res.get("currency", "USD")).strip(),
+                "balance": c_val,
+                "equity": nl_val,
+                "realized_pnl": _parse_float_safe(res.get("realized_pnl"), fallback=0.0),
+                "unrealized_pnl": u_pnl,
+                "daily_pnl": _parse_float_safe(res.get("daily_pnl"), fallback=0.0)
+            }
+            
+        if res.get("reason") != "BROKER_CONNECTION_LOST":
+            logging.warning(f"NinjaTraderAdapter: get_account_info für '{account_id}' fehlgeschlagen: {res.get('reason')}")
+        return None
 
     async def partial_close(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
         if not account_id or account_id in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
@@ -1493,6 +1533,42 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
             return []
         return [ord_item._asdict() for ord_item in orders]
 
+    async def get_account_info(self, account_id: str = "") -> dict | None:
+        if not await self._ensure_connected():
+            return None
+
+        acc_info = await asyncio.to_thread(mt5.account_info)
+        if acc_info is None:
+            return None
+
+        # Täglichen realisierten PnL aus Deals ermitteln
+        from datetime import datetime, time, timezone
+        import time as time_mod
+        
+        now_utc = datetime.now(timezone.utc)
+        today_midnight = datetime.combine(now_utc.date(), time(0, 0, 0), tzinfo=timezone.utc)
+        
+        realized_pnl = 0.0
+        deals = await asyncio.to_thread(mt5.history_deals_get, today_midnight, now_utc)
+        if deals:
+            for d in deals:
+                if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT):
+                    realized_pnl += float(d.profit) + float(d.swap) + float(d.commission)
+
+        floating_pnl = float(acc_info.profit)
+        daily_pnl = realized_pnl + floating_pnl
+
+        return {
+            "account": str(acc_info.login),
+            "server": str(acc_info.server),
+            "currency": str(acc_info.currency) or "EUR",
+            "balance": float(acc_info.balance),
+            "equity": float(acc_info.equity),
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": floating_pnl,
+            "daily_pnl": daily_pnl
+        }
+
     async def partial_close(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
         if not await self._ensure_connected():
             return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
@@ -1716,6 +1792,149 @@ class ExecutorDaemon:
 
         for d in [self.dir_pending, self.dir_processing, self.dir_executed, self.dir_rejected]:
             d.mkdir(parents=True, exist_ok=True)
+
+    def _load_lab_accounts_config(self) -> tuple[dict, dict]:
+        cfg_path = script_dir / "users" / "admin" / "ticker_config.json"
+        apex_cfg = {}
+        ftmo_cfg = {}
+        
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, 'r', encoding='utf-8-sig') as f:
+                    cfg = json.load(f)
+                lab_accs = cfg.get("lab_accounts", {})
+                
+                acc_list = lab_accs if isinstance(lab_accs, list) else []
+                if isinstance(lab_accs, dict):
+                    for k, v in lab_accs.items():
+                        if isinstance(v, dict):
+                            v_copy = v.copy()
+                            v_copy["_key"] = k
+                            acc_list.append(v_copy)
+                            
+                for acc in acc_list:
+                    check_str = f"{acc.get('_key','')} {acc.get('name','')} {acc.get('broker','')} {acc.get('account_type','')}".lower()
+                    if "apex" in check_str:
+                        apex_cfg = acc
+                    if "ftmo" in check_str:
+                        ftmo_cfg = acc
+            except Exception as e:
+                logging.error(f"Fehler beim Lesen der ticker_config.json: {e}")
+                
+        return apex_cfg, ftmo_cfg
+
+    def _update_apex_high_watermark(self, account_id: str, account_size: float, live_equity: float) -> float:
+        """Persistiert den High Watermark atomar. Schützt den Floor gegen synthethische Abstürze."""
+        state_path = script_dir / "users" / "admin" / "nt8_account_state.json"
+        state_data = {}
+        
+        if state_path.exists():
+            try:
+                with open(state_path, 'r', encoding='utf-8') as f:
+                    state_data = json.load(f)
+            except Exception:
+                pass
+                
+            if not isinstance(state_data, dict):
+                state_data = {}
+                
+        if account_id not in state_data or not isinstance(state_data[account_id], dict):
+            state_data[account_id] = {}
+            
+        stored_hw = _parse_float_safe(state_data[account_id].get("high_watermark"), fallback=account_size)
+        
+        new_hw = max(stored_hw, account_size, live_equity)
+        
+        if new_hw > stored_hw:
+            state_data[account_id]["high_watermark"] = new_hw
+            state_data[account_id]["last_update"] = datetime.now(timezone.utc).isoformat()
+            try:
+                tmp_path = state_path.with_suffix(".tmp")
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    json.dump(state_data, f, indent=4)
+                tmp_path.replace(state_path)
+            except Exception as e:
+                logging.error(f"Fehler beim Speichern von nt8_account_state.json: {e}")
+                
+        return new_hw
+
+    async def _resolve_live_risk_state(self, account_type: str, account_id: str, fb_balance: float = 0.0, fb_trailing_threshold: float = 0.0) -> dict:
+        apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+        
+        if account_type == "apex":
+            cfg_size = float(apex_cfg.get("account_size", 50000.0))
+            cfg_daily_lim = float(apex_cfg.get("daily_loss_limit", cfg_size * 0.025))
+            cfg_trail_dd = float(apex_cfg.get("max_trailing_dd", cfg_size * 0.050))
+            
+            nt8_info = await self.nt8.get_account_info(account_id)
+            if nt8_info:
+                live_eq = nt8_info.get("equity", cfg_size)
+                daily_pnl = nt8_info.get("daily_pnl", 0.0)
+                
+                hw = self._update_apex_high_watermark(account_id, cfg_size, live_eq)
+                
+                ko_floor = hw - cfg_trail_dd
+                if cfg_size == 50000.0 and ko_floor > 50100.0:
+                    ko_floor = 50100.0
+                    
+                max_dd_buf = max(0.0, live_eq - ko_floor)
+                daily_buf = max(0.0, min(cfg_daily_lim, cfg_daily_lim + min(0.0, daily_pnl)))
+                
+                return {
+                    "live_connected": True,
+                    "account_size": cfg_size,
+                    "current_balance": live_eq,
+                    "high_watermark": hw,
+                    "max_dd_buffer": max_dd_buf,
+                    "daily_buffer": daily_buf,
+                    "live_daily_pnl": daily_pnl,
+                    "raw_info": nt8_info
+                }
+            else:
+                return {
+                    "live_connected": False,
+                    "account_size": cfg_size,
+                    "current_balance": fb_balance if fb_balance > 0 else cfg_size,
+                    "high_watermark": fb_trailing_threshold + cfg_trail_dd if fb_trailing_threshold > 0 else cfg_size,
+                    "max_dd_buffer": 0.0,
+                    "daily_buffer": cfg_daily_lim,
+                    "live_daily_pnl": 0.0
+                }
+                
+        elif account_type == "ftmo":
+            cfg_size = float(ftmo_cfg.get("account_size", 80000.0))
+            cfg_daily_lim = float(ftmo_cfg.get("daily_loss_limit_pct", 0.05)) * cfg_size
+            cfg_max_dd_lim = float(ftmo_cfg.get("max_drawdown_pct", 0.10)) * cfg_size
+            
+            mt5_info = await self.ftmo.get_account_info(account_id)
+            if mt5_info:
+                live_eq = mt5_info.get("equity", cfg_size)
+                daily_pnl = mt5_info.get("daily_pnl", 0.0)
+                
+                max_dd_floor = cfg_size - cfg_max_dd_lim
+                max_dd_buf = max(0.0, live_eq - max_dd_floor)
+                daily_buf = max(0.0, min(cfg_daily_lim, cfg_daily_lim + min(0.0, daily_pnl)))
+                
+                return {
+                    "live_connected": True,
+                    "account_size": cfg_size,
+                    "current_balance": live_eq,
+                    "max_dd_buffer": max_dd_buf,
+                    "daily_buffer": daily_buf,
+                    "live_daily_pnl": daily_pnl,
+                    "raw_info": mt5_info
+                }
+            else:
+                return {
+                    "live_connected": False,
+                    "account_size": cfg_size,
+                    "current_balance": fb_balance if fb_balance > 0 else cfg_size,
+                    "max_dd_buffer": cfg_max_dd_lim,
+                    "daily_buffer": cfg_daily_lim,
+                    "live_daily_pnl": 0.0
+                }
+                
+        return {"live_connected": False}
 
     async def kill_switch_watcher(self):
         """Überwacht die Trigger-Datei asynchron. Intervall < 1s."""
@@ -1960,15 +2179,27 @@ class ExecutorDaemon:
             except Exception as e:
                 logging.error(f"Fehler beim Lesen des Journals in process_signal: {e}")
 
+        # --- ZENTRALER LIVE-PUFFER SYNC ---
+        live_state = await self._resolve_live_risk_state(account_type, account_id, balance, trailing_threshold)
+        dyn_acc_size = live_state.get("account_size") or (account_size if account_size and account_size > 0 else balance)
+        dyn_balance = live_state.get("current_balance") or (balance if balance > 0 else dyn_acc_size)
+        
+        logging.info(
+            f"RESONO PRE-CHECK | {account_type.upper()}: "
+            f"Live-Connected={live_state.get('live_connected')} | "
+            f"Eq={dyn_balance:,.2f} | "
+            f"DailyBuf={live_state.get('daily_buffer', 0.0):,.2f} | "
+            f"MaxDdBuf={live_state.get('max_dd_buffer', 0.0):,.2f}"
+        )
+
         if account_type == "apex":
             resolved_phase = "funded_pa" if "PA" in str(account_id).upper() else "evaluation"
-            dyn_acc_size = account_size if account_size and account_size > 0 else (balance if balance > 0 else 50000.0)
-            dyn_balance = balance if balance > 0 else dyn_acc_size
             acc_data = {
                 "account_id": account_id,
                 "account_size": dyn_acc_size,
                 "current_balance": dyn_balance,
-                "high_watermark": trailing_threshold + 2500.0,
+                "high_watermark": live_state.get("high_watermark") or (trailing_threshold + 2500.0),
+                "daily_buffer": live_state.get("daily_buffer"),
                 "account_type": resolved_phase,
                 "has_open_position": has_open_pos
             }
@@ -1987,16 +2218,24 @@ class ExecutorDaemon:
                 reason = res_eval.get("ui_reason", "Blockiert")
 
         elif account_type == "ftmo":
-            dyn_acc_size = account_size if account_size and account_size > 0 else (balance if balance > 0 else 100000.0)
-            dyn_balance = balance if balance > 0 else dyn_acc_size
-            dyn_daily_buf = daily_buffer if daily_buffer is not None else (dyn_acc_size * 0.05)
-            dyn_max_dd_buf = max_dd_buffer if max_dd_buffer is not None else (dyn_acc_size * 0.10)
+            resolved_daily_buf = live_state.get("daily_buffer")
+            if resolved_daily_buf is None:
+                resolved_daily_buf = daily_buffer if daily_buffer is not None else (dyn_acc_size * 0.05)
+            elif daily_buffer is not None:
+                resolved_daily_buf = min(resolved_daily_buf, daily_buffer)
+                
+            resolved_max_dd_buf = live_state.get("max_dd_buffer")
+            if resolved_max_dd_buf is None:
+                resolved_max_dd_buf = max_dd_buffer if max_dd_buffer is not None else (dyn_acc_size * 0.10)
+            elif max_dd_buffer is not None:
+                resolved_max_dd_buf = min(resolved_max_dd_buf, max_dd_buffer)
+
             ftmo_acc_data = {
                 "account_id": account_id,
                 "account_size": dyn_acc_size,
                 "current_balance": dyn_balance,
-                "daily_buffer": dyn_daily_buf,
-                "max_dd_buffer": dyn_max_dd_buf,
+                "daily_buffer": resolved_daily_buf,
+                "max_dd_buffer": resolved_max_dd_buf,
                 "has_open_position": has_open_pos
             }
             res_eval = evaluate_ftmo_risk(ftmo_acc_data, signal_data)
@@ -3047,69 +3286,61 @@ class ExecutorDaemon:
         await self.ops_reporter.send_message(report)
 
     async def _cmd_fleet(self):
-        cfg_path = script_dir / "users" / "admin" / "ticker_config.json"
-        apex_size, apex_dd = 50000.0, 2500.0
-        ftmo_size, ftmo_max_dd_pct, ftmo_daily_pct = 80000.0, 0.10, 0.05
+        apex_live = await self._resolve_live_risk_state("apex", NT8_ACCOUNT)
+        apex_size = apex_live.get("account_size", 50000.0)
         
-        if cfg_path.exists():
-            try:
-                with open(cfg_path, 'r', encoding='utf-8-sig') as f:
-                    cfg = json.load(f)
-                lab_accs = cfg.get("lab_accounts", {})
-                
-                acc_list = lab_accs if isinstance(lab_accs, list) else []
-                if isinstance(lab_accs, dict):
-                    for k, v in lab_accs.items():
-                        if isinstance(v, dict):
-                            v_copy = v.copy()
-                            v_copy["_key"] = k
-                            acc_list.append(v_copy)
-                            
-                for acc in acc_list:
-                    check_str = f"{acc.get('_key','')} {acc.get('name','')} {acc.get('broker','')} {acc.get('account_type','')}".lower()
-                    if "apex" in check_str:
-                        apex_size = float(acc.get("account_size", apex_size))
-                        apex_dd = float(acc.get("max_trailing_dd", apex_dd))
-                    if "ftmo" in check_str:
-                        ftmo_size = float(acc.get("account_size", ftmo_size))
-                        ftmo_max_dd_pct = float(acc.get("max_drawdown_pct", ftmo_max_dd_pct))
-                        ftmo_daily_pct = float(acc.get("daily_loss_limit_pct", ftmo_daily_pct))
-            except Exception as e:
-                logging.error(f"Fehler beim Lesen der ticker_config.json: {e}")
+        if apex_live.get("live_connected"):
+            eq = apex_live.get("current_balance", 0.0)
+            hw = apex_live.get("high_watermark", 0.0)
+            d_pnl = apex_live.get("live_daily_pnl", 0.0)
+            d_buf = apex_live.get("daily_buffer", 0.0)
+            md_buf = apex_live.get("max_dd_buffer", 0.0)
+            eff_buf = min(d_buf, md_buf)
+            
+            apex_info = (
+                f"🏎️ <b>APEX (Futures)</b>\n"
+                f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                f"Equity: {eq:,.2f} USD\n"
+                f"High-Watermark: {hw:,.2f} USD\n"
+                f"Tages-PnL: {d_pnl:,.2f} USD\n"
+                f"Max-DD Puffer: {md_buf:,.2f} USD\n"
+                f"Daily Puffer: {d_buf:,.2f} USD\n"
+                f"Bottleneck: <b>{eff_buf:,.2f} USD</b>\n"
+            )
+        else:
+            cfg_trail = apex_size * 0.05
+            apex_info = (
+                f"🏎️ <b>APEX (Futures)</b>\n"
+                f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                f"Status: Keine NT8 Live-Verbindung.\n"
+                f"Größe (Basis): {apex_size:,.2f} USD\n"
+                f"Max DD (Basis): {cfg_trail:,.2f} USD\n"
+            )
 
-        apex_info = (
-            f"🏎️ <b>APEX (Futures)</b>\n"
-            f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
-            f"Größe: {apex_size:,.2f} USD\n"
-            f"Max DD: {apex_dd:,.2f} USD\n"
-            f"<i>(Live-Equity Sync für NT8 folgt in Patch 2.6)</i>\n"
-        )
+        ftmo_acc = str(MT5_LOGIN) if MT5_LOGIN > 0 else "FTMO"
+        ftmo_live = await self._resolve_live_risk_state("ftmo", ftmo_acc)
         
-        ftmo_info = "🌍 <b>FTMO (Forex)</b>\nStatus: Keine Verbindung\n"
-        if MT5_AVAILABLE and MT5_LOGIN:
-            await self.ftmo._ensure_connected()
-            acc_info = await asyncio.to_thread(mt5.account_info)
-            if acc_info:
-                bal = float(acc_info.balance)
-                eq = float(acc_info.equity)
-                prof = float(acc_info.profit)
-                curr = str(acc_info.currency)
-                
-                max_dd_limit = ftmo_size * ftmo_max_dd_pct
-                daily_limit = ftmo_size * ftmo_daily_pct
-                
-                rem_max_dd = max_dd_limit + (eq - ftmo_size)
-                rem_daily = daily_limit + prof
-                eff_buf = min(rem_max_dd, rem_daily)
-                
-                ftmo_info = (
-                    f"🌍 <b>FTMO (Forex)</b>\n"
-                    f"Balance: {bal:,.2f} {html.escape(curr)}\n"
-                    f"Equity: {eq:,.2f} {html.escape(curr)}\n"
-                    f"Max-DD Puffer: {rem_max_dd:,.2f} {html.escape(curr)}\n"
-                    f"Daily Puffer: {rem_daily:,.2f} {html.escape(curr)}\n"
-                    f"Bottleneck: <b>{eff_buf:,.2f} {html.escape(curr)}</b>\n"
-                )
+        if ftmo_live.get("live_connected"):
+            eq = ftmo_live.get("current_balance", 0.0)
+            d_pnl = ftmo_live.get("live_daily_pnl", 0.0)
+            d_buf = ftmo_live.get("daily_buffer", 0.0)
+            md_buf = ftmo_live.get("max_dd_buffer", 0.0)
+            eff_buf = min(d_buf, md_buf)
+            raw_info = ftmo_live.get("raw_info", {})
+            bal = raw_info.get("balance", eq)
+            curr = raw_info.get("currency", "EUR")
+            
+            ftmo_info = (
+                f"🌍 <b>FTMO (Forex)</b>\n"
+                f"Balance: {bal:,.2f} {html.escape(curr)}\n"
+                f"Equity: {eq:,.2f} {html.escape(curr)}\n"
+                f"Tages-PnL: {d_pnl:,.2f} {html.escape(curr)}\n"
+                f"Max-DD Puffer: {md_buf:,.2f} {html.escape(curr)}\n"
+                f"Daily Puffer: {d_buf:,.2f} {html.escape(curr)}\n"
+                f"Bottleneck: <b>{eff_buf:,.2f} {html.escape(curr)}</b>\n"
+            )
+        else:
+            ftmo_info = "🌍 <b>FTMO (Forex)</b>\nStatus: Keine MT5 Live-Verbindung.\n"
 
         journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
         trades_info = ""
