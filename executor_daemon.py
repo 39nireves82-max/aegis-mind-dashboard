@@ -1503,8 +1503,12 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         valid_deals = []
         for d in deals:
             if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT):
-                if (ticket > 0 and d.position_id == ticket) or (clean_sym in d.symbol):
-                    valid_deals.append(d)
+                if ticket > 0:
+                    if d.position_id == ticket:
+                        valid_deals.append(d)
+                else:
+                    if clean_sym in d.symbol:
+                        valid_deals.append(d)
                     
         if not valid_deals:
             return None
@@ -1970,7 +1974,7 @@ class ExecutorDaemon:
         modified_count = 0
         try:
             with JournalLock(journal_path):
-                with open(journal_path, 'r', encoding='utf-8') as f:
+                with open(journal_path, 'r', encoding='utf-8-sig') as f:
                     reader = csv.reader(f)
                     raw_rows = list(reader)
                     
@@ -2015,9 +2019,14 @@ class ExecutorDaemon:
                         
                         still_open = False
                         for pos in ftmo_positions:
-                            if str(pos.get("ticket")) == trade_id or clean_sym in pos.get("symbol", "").upper():
-                                still_open = True
-                                break
+                            if trade_id.isdigit():
+                                if str(pos.get("ticket")) == trade_id or str(pos.get("identifier", "")) == trade_id:
+                                    still_open = True
+                                    break
+                            else:
+                                if str(pos.get("ticket")) == trade_id or clean_sym in pos.get("symbol", "").upper():
+                                    still_open = True
+                                    break
                                 
                         if not still_open:
                             exit_detected = True
@@ -2164,20 +2173,73 @@ class ExecutorDaemon:
         resono_status = "DENIED"
         reason = "Unbekannter Fehler"
         
+        # Symbol Normalisierung
+        clean_target_sym = symbol.strip().upper().split()[0].replace("=X", "").replace("=F", "")
+        if clean_target_sym in ("NQ", "MNQ"):
+            clean_target_sym = "MNQ"
+        elif clean_target_sym in ("CL", "MCL"):
+            clean_target_sym = "MCL"
+
+        apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+        
         has_open_pos = False
+        duplicate_symbol_open = False
         journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
+        
         if journal_path.exists():
             try:
-                with open(journal_path, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if str(row.get("status", "")).strip().upper() == "OPEN":
-                            r_acc = str(row.get("account_name", "")).strip()
-                            if account_id in r_acc or r_acc in account_id or r_acc in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
-                                has_open_pos = True
-                                break
+                with JournalLock(journal_path):
+                    with open(journal_path, 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if str(row.get("status", "")).strip().upper() == "OPEN":
+                                r_acc = str(row.get("account_name", "")).strip().lower()
+                                r_sym = str(row.get("symbol", "")).strip().upper().split()[0].replace("=X", "").replace("=F", "")
+                                if r_sym in ("NQ", "MNQ"):
+                                    r_sym = "MNQ"
+                                elif r_sym in ("CL", "MCL"):
+                                    r_sym = "MCL"
+                                    
+                                if account_type == "apex":
+                                    cfg_name = str(apex_cfg.get("name", "")).lower()
+                                    if "apex" in r_acc or account_id.lower() in r_acc or (cfg_name and cfg_name in r_acc) or r_acc in account_id.lower() or r_acc in ["auto_routed", "demo_spooler", "auto"]:
+                                        has_open_pos = True
+                                elif account_type == "ftmo":
+                                    cfg_name = str(ftmo_cfg.get("name", "")).lower()
+                                    if "ftmo" in r_acc or account_id.lower() in r_acc or (cfg_name and cfg_name in r_acc) or r_acc in account_id.lower() or r_acc in ["auto_routed", "demo_spooler", "auto"]:
+                                        has_open_pos = True
+                                        if r_sym == clean_target_sym:
+                                            duplicate_symbol_open = True
             except Exception as e:
                 logging.error(f"Fehler beim Lesen des Journals in process_signal: {e}")
+
+        # Live-Positionen prüfen
+        if account_type == "apex":
+            nt8_positions = await self.nt8.get_open_positions(account_id)
+            if nt8_positions:
+                has_open_pos = True
+            
+            if has_open_pos:
+                await self.reporter.report_step_1_signal(symbol, direction, "VETO_OCCUPIED", account_type)
+                return {"status": "DENIED", "resono_status": "VETO_OCCUPIED", "reason": "Konto belegt: Maximal 1 offener Trade auf Apex erlaubt"}
+                
+        elif account_type == "ftmo":
+            ftmo_positions = await self.ftmo.get_open_positions(account_id)
+            if ftmo_positions:
+                has_open_pos = True
+                for pos in ftmo_positions:
+                    pos_sym = str(pos.get("symbol", "")).upper().replace("=X", "")
+                    if pos_sym == clean_target_sym:
+                        duplicate_symbol_open = True
+                        break
+                        
+            if duplicate_symbol_open:
+                await self.reporter.report_step_1_signal(symbol, direction, "VETO_DUPLICATE_SYMBOL", account_type)
+                return {"status": "DENIED", "resono_status": "VETO_DUPLICATE_SYMBOL", "reason": f"Bereits offene Position in {clean_target_sym} vorhanden"}
+            
+            # Für FTMO geben wir an RESONO explizit has_open_position=False weiter,
+            # wenn das Symbol frei ist, damit Trades parallel laufen können.
+            has_open_pos = False
 
         # --- ZENTRALER LIVE-PUFFER SYNC ---
         live_state = await self._resolve_live_risk_state(account_type, account_id, balance, trailing_threshold)
@@ -3099,10 +3161,37 @@ class ExecutorDaemon:
             point_value = get_point_value(clean_sym, contract_type)
 
             fx_rate = 1.0
+            if "=X" in symbol and clean_sym.endswith("USD"):
+                if clean_sym == "EURUSD":
+                    if entry_price > 0.0:
+                        fx_rate = 1.0 / entry_price
+                else:
+                    if MT5_AVAILABLE:
+                        try:
+                            tick = mt5.symbol_info_tick("EURUSD")
+                            if tick is None:
+                                tick = mt5.symbol_info_tick("EURUSD=X")
+                            if tick and tick.bid > 0.0:
+                                fx_rate = 1.0 / tick.bid
+                            elif tick and tick.last > 0.0:
+                                fx_rate = 1.0 / tick.last
+                        except Exception as e:
+                            logging.error(f"Fehler bei FX-Rate Abruf für {clean_sym}: {e}")
+
             est_fees_eur = 0.0 if "=X" in symbol else 1.0
             
             eff_diff = get_effective_forex_risk_pts(clean_sym, abs(entry_price - sl_price), entry_price, fx_rate)
             planned_risk_eur = eff_diff * position_size * point_value * fx_rate
+
+            provided_exit = payload.get("exit_mode") or payload.get("setup_type", "")
+            valid_exits = ["TARGET_LOCKED", "HOME_RUN_TREND", "ALPHA_CASHFLOW"]
+            acc_type = payload.get("account_type", "").lower()
+            is_prop = acc_type in ("apex", "ftmo") or "=X" in symbol or "=F" in symbol
+            
+            if is_prop and provided_exit not in valid_exits:
+                exit_mode_val = "PROP_DEFENSIVE"
+            else:
+                exit_mode_val = provided_exit if provided_exit else "SETUP_B"
 
             # 3. Leeres Schema-Template erzeugen und befüllen
             new_row = {col: "" for col in current_header}
@@ -3127,7 +3216,7 @@ class ExecutorDaemon:
                 "planned_risk_eur": planned_risk_eur,
                 "current_risk_eur": planned_risk_eur,
                 "est_fees_eur": est_fees_eur,
-                "exit_mode": payload.get("setup_type", "SETUP_B"),
+                "exit_mode": exit_mode_val,
                 "status": "OPEN",
                 "strategy_version": "v1.0.0",
                 "execution_type": "DAEMON_AUTO"
@@ -3357,6 +3446,10 @@ class ExecutorDaemon:
                         rows = [dict(zip(header, line)) for line in raw_rows[1:] if len(line) == len(header)]
                         
                         open_trades = [r for r in rows if str(r.get("status")).strip().upper() == "OPEN"]
+                        ftmo_positions = []
+                        if self.ftmo.connected:
+                            ftmo_positions = await self.ftmo.get_open_positions("FTMO") or []
+                            
                         for t in open_trades:
                             sym = html.escape(str(t.get("symbol", "")))
                             dir_str = html.escape(str(t.get("direction", "")))
@@ -3365,8 +3458,64 @@ class ExecutorDaemon:
                             c_sl = html.escape(str(t.get("current_sl") or t.get("sl_price", "")))
                             r_eur = _parse_float_safe(t.get("current_risk_eur"), fallback=0.0)
                             
+                            t_id = str(t.get("id", ""))
+                            entry_price = _parse_float_safe(t.get("entry_price"), fallback=0.0)
+                            sl_price = _parse_float_safe(t.get("sl_price"), fallback=0.0)
+                            clean_sym = str(t.get("symbol", "")).split()[0].replace("=X", "")
+                            
+                            curr_price = 0.0
+                            is_ftmo_trade = "=X" in str(t.get("symbol", "")) or "FTMO" in str(t.get("account_name", "")).upper()
+                            
+                            if is_ftmo_trade:
+                                for pos in ftmo_positions:
+                                    if str(pos.get("ticket", "")) == t_id or clean_sym in str(pos.get("symbol", "")).upper():
+                                        curr_price = float(pos.get("price_current", 0.0))
+                                        break
+                                if curr_price <= 0.0 and MT5_AVAILABLE:
+                                    try:
+                                        resolved_sym = await self.ftmo._resolve_broker_symbol(clean_sym)
+                                        tick = await asyncio.to_thread(mt5.symbol_info_tick, resolved_sym)
+                                        if tick:
+                                            calc_price = (tick.bid + tick.ask) / 2.0 if tick.bid > 0 and tick.ask > 0 else tick.last
+                                            curr_price = calc_price if calc_price > 0.0 else 0.0
+                                    except Exception:
+                                        pass
+                            
+                            if curr_price <= 0.0:
+                                try:
+                                    mapped_sym = self.nt8.YFINANCE_MAPPING.get(clean_sym, clean_sym)
+                                    def fetch_yf():
+                                        try:
+                                            ticker = yf.Ticker(mapped_sym)
+                                            p = ticker.fast_info.get("lastPrice")
+                                            if p: return float(p)
+                                            h = ticker.history(period="1d")
+                                            return float(h["Close"].iloc[-1]) if not h.empty else 0.0
+                                        except Exception:
+                                            return 0.0
+                                    curr_price = await asyncio.wait_for(asyncio.to_thread(fetch_yf), timeout=2.0)
+                                except Exception:
+                                    curr_price = 0.0
+                                    
+                            r_str = "n/a"
+                            price_str = "n/a"
+                            
+                            if curr_price > 0.0:
+                                if is_ftmo_trade:
+                                    price_str = f"{curr_price:.3f}" if "JPY" in clean_sym else f"{curr_price:.5f}"
+                                else:
+                                    price_str = f"{curr_price:.2f}"
+                                    
+                                risk_per_unit = abs(entry_price - sl_price)
+                                if entry_price > 0.0 and risk_per_unit > 0.0:
+                                    if dir_str.upper() == "LONG":
+                                        current_r = (curr_price - entry_price) / risk_per_unit
+                                    else:
+                                        current_r = (entry_price - curr_price) / risk_per_unit
+                                    r_str = f"{current_r:+.2f} R"
+
                             total_risk += r_eur
-                            trades_info += f"• <code>{sym}</code> ({dir_str}) auf <code>{acc}</code> | Qty: {qty} | SL: {c_sl} | Risk: {r_eur:.2f} €\n"
+                            trades_info += f"• <code>{sym}</code> ({dir_str}) auf <code>{acc}</code> | Qty: {qty} | Kurs: {price_str} ({r_str}) | SL: {c_sl} | Risk: {r_eur:.2f} €\n"
                 except Exception as e:
                     logging.error(f"Fehler beim Lesen des Journals für /fleet: {e}")
                     
