@@ -728,8 +728,6 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
         pass
         
     dismissed_signals = alert_state.get("dismissed_signals", [])
-    consumed_signals = alert_state.get("consumed_signals", {})
-    
     state_modified = False
     valid_48h_ids = set()
     
@@ -751,11 +749,6 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
     new_dismissed = [sid for sid in dismissed_signals if sid in valid_48h_ids]
     if len(new_dismissed) != len(dismissed_signals):
         alert_state["dismissed_signals"] = new_dismissed
-        state_modified = True
-        
-    new_consumed = {k: v for k, v in consumed_signals.items() if k in valid_48h_ids}
-    if len(new_consumed) != len(consumed_signals):
-        alert_state["consumed_signals"] = new_consumed
         state_modified = True
         
     if state_modified:
@@ -791,8 +784,6 @@ def load_active_signal_inbox(max_age_seconds: int = 14400) -> list:
                 
             age = now_ts - entry_ts
             if "expires_at" in entry or age <= max_age_seconds:
-                if sig_id in alert_state.get("consumed_signals", {}):
-                    entry["_consumed_accounts"] = alert_state["consumed_signals"][sig_id]
                 valid_inbox.append(entry)
         except (ValueError, TypeError, AttributeError):
             pass
@@ -2715,30 +2706,8 @@ with st.sidebar:
                 }
                 df_j = pd.concat([df_j, pd.DataFrame([new_trade])], ignore_index=True)
                 save_trade_journal(df_j)
-                if st.session_state.get("inbox_order_payload"):
-                    sig_id = str(st.session_state["inbox_order_payload"].get("id", ""))
-                    if sig_id:
-                        try:
-                            state_file = get_user_file("alert_state.json")
-                            if os.path.exists(state_file):
-                                with open(state_file, "r", encoding="utf-8") as f:
-                                    alert_state = json.load(f)
-                            else:
-                                alert_state = {}
-                                
-                            consumed = alert_state.get("consumed_signals", {})
-                            if sig_id not in consumed:
-                                consumed[sig_id] = []
-                            if sel_acc_name not in consumed[sig_id]:
-                                consumed[sig_id].append(sel_acc_name)
-                                
-                            alert_state["consumed_signals"] = consumed
-                            with open(state_file, "w", encoding="utf-8") as f:
-                                json.dump(alert_state, f, indent=4)
-                        except Exception:
-                            pass
-                st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
-                st.rerun()
+                st.toast(f"✅ Trade für {active_sym} in '{sel_acc_name}' eingeloggt!", icon="📝")
+            st.rerun()
 
     elif desk_type == "prop":
         # ZUSTAND C: PROP-DESK (Futures & Forex)
@@ -3417,28 +3386,6 @@ with st.sidebar:
             }
             df_j = pd.concat([df_j, pd.DataFrame([new_trade])], ignore_index=True)
             save_trade_journal(df_j)
-            if st.session_state.get("inbox_order_payload"):
-                sig_id = str(st.session_state["inbox_order_payload"].get("id", ""))
-                if sig_id:
-                    try:
-                        state_file = get_user_file("alert_state.json")
-                        if os.path.exists(state_file):
-                            with open(state_file, "r", encoding="utf-8") as f:
-                                alert_state = json.load(f)
-                        else:
-                            alert_state = {}
-                            
-                        consumed = alert_state.get("consumed_signals", {})
-                        if sig_id not in consumed:
-                            consumed[sig_id] = []
-                        if sel_pf_acc_name not in consumed[sig_id]:
-                            consumed[sig_id].append(sel_pf_acc_name)
-                            
-                        alert_state["consumed_signals"] = consumed
-                        with open(state_file, "w", encoding="utf-8") as f:
-                            json.dump(alert_state, f, indent=4)
-                    except Exception:
-                        pass
             st.toast(f"✅ Trade für {active_sym} in '{sel_pf_acc_name}' eingeloggt!", icon="📝")
             st.rerun()
     
@@ -3683,7 +3630,6 @@ with tab_screen:
                     st.markdown(f"**Stop-Loss:** {sig.get('sl_price', 'N/A')} | **Take-Profit (+1.0 R):** {sig.get('tp_price', 'N/A')}")
                 with c_sig3:
                     acc_list = sig.get('accounts', [])
-                    consumed_list = sig.get('_consumed_accounts', [])
                     routing_recs = sig.get('routing_recommendations', [])
                     if routing_recs:
                         badges = []
@@ -3691,19 +3637,12 @@ with tab_screen:
                             acc_name = rec.get("name", "Unbekannt")
                             a_type = str(rec.get("type", "")).upper()
                             a_prof = rec.get("profile", "")
-                            is_consumed = any(str(acc_name).lower() in str(c).lower() or str(c).lower() in str(acc_name).lower() for c in consumed_list)
-                            bg_col = "#10B981" if is_consumed else "#F59E0B"
-                            icon = "✅" if is_consumed else "⏳"
-                            badges.append(f"<span style='background-color:{bg_col}; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px; display:inline-block; margin-bottom:4px;'>{icon} [{a_type}] {acc_name} - {a_prof}</span>")
+                            badges.append(f"<span style='background-color:#1E293B; border:1px solid #475569; color:#E2E8F0; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px; display:inline-block; margin-bottom:4px;'>🎯 [{a_type}] {acc_name} - {a_prof}</span>")
                         st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
                     elif acc_list:
                         badges = []
                         for acc in acc_list:
-                            is_consumed = any(str(acc).lower() in str(c).lower() or str(c).lower() in str(acc).lower() for c in consumed_list)
-                            if is_consumed:
-                                badges.append(f"<span style='background-color:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>✅ {acc}</span>")
-                            else:
-                                badges.append(f"<span style='background-color:#F59E0B; color:white; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>⏳ {acc}</span>")
+                            badges.append(f"<span style='background-color:#1E293B; border:1px solid #475569; color:#E2E8F0; padding:2px 6px; border-radius:4px; font-size:0.8em; margin-right:4px;'>🎯 {acc}</span>")
                         st.markdown(f"<div style='margin-bottom:8px;'>{''.join(badges)}</div>", unsafe_allow_html=True)
                         
                     c_btn_load, c_btn_dismiss = st.columns([4, 1])
