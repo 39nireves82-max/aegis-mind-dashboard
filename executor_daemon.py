@@ -1793,6 +1793,8 @@ class ExecutorDaemon:
         self.ops_reporter = TelegramReporter(self.ops_token, TELEGRAM_CHAT_ID)
         self.kill_in_progress = False
         self.kill_confirm_deadline = 0.0
+        self.unlock_confirm_deadline = 0.0
+        self.lockdown_notified = False
         self.nt8 = NinjaTraderAdapter()
         self.ftmo = FTMOBrokerAdapter()
         self.kill_event = asyncio.Event()
@@ -1972,13 +1974,17 @@ class ExecutorDaemon:
         """Überwacht die Trigger-Datei asynchron. Intervall < 1s."""
         logging.info("Kill-Switch-Watcher aktiv.")
         while not self.kill_event.is_set():
-            if self.kill_in_progress:
-                break
             if KILL_SWITCH_PATH.exists():
-                logging.critical("KILL SWITCH DATEI ERKANNT! Initiiere System-Stopp.")
-                self.kill_event.set()
-                await self.reporter.report_step_4_alert("Manueller Kill-Switch ausgelöst. Alle Adapter eingefroren.")
-                break
+                if not self.lockdown_notified and not self.kill_in_progress:
+                    self.lockdown_notified = True
+                    await self.ops_reporter.send_message("🛑 <b>NOTAUS AKTIV (KILL_SWITCH erkannt)</b>\nExecutor-Queue & Broker-Ausführung sind eingefroren. Aufhebung per <code>/unlock</code>.")
+                    if self.ops_token != TELEGRAM_BOT_TOKEN:
+                        await self.reporter.report_step_4_alert("Manueller Kill-Switch ausgelöst. Alle Adapter eingefroren.")
+            else:
+                if self.lockdown_notified:
+                    self.lockdown_notified = False
+                    self.kill_in_progress = False
+
             try:
                 await asyncio.wait_for(self.kill_event.wait(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -2135,8 +2141,12 @@ class ExecutorDaemon:
         """Zyklischer Abgleich von Broker-Ausstiegen (SL/TP) mit dem Journal."""
         logging.info("Position Exit Sync Guard aktiv (Intervall: 15s).")
         while not self.kill_event.is_set():
-            if self.kill_in_progress:
-                break
+            if self.kill_in_progress or KILL_SWITCH_PATH.exists():
+                try:
+                    await asyncio.wait_for(self.kill_event.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             try:
                 await self.sync_broker_exits()
             except Exception as e:
@@ -2167,9 +2177,9 @@ class ExecutorDaemon:
         max_dd_buffer: float = None
     ):
         """Routet ein Signal durch RESONO und führt es bei Freigabe aus."""
-        if self.kill_event.is_set():
-            logging.warning("Signal ignoriert: Kill-Switch ist aktiv.")
-            return
+        if self.kill_event.is_set() or self.kill_in_progress or KILL_SWITCH_PATH.exists():
+            logging.warning("Signal ignoriert: Notaus aktiv (KILL_SWITCH).")
+            return {"status": "DENIED", "resono_status": "KILL_SWITCH_ACTIVE", "reason": "Notaus aktiv (KILL_SWITCH)"}
 
         # 1. Gatekeeper: RESONO Prüfung
         c_price = current_price if current_price is not None else entry
@@ -2382,10 +2392,15 @@ class ExecutorDaemon:
                 orphaned.replace(self.dir_rejected / orphaned.name)
 
         while not self.kill_event.is_set():
-            if self.kill_in_progress:
-                break
+            if self.kill_in_progress or KILL_SWITCH_PATH.exists():
+                try:
+                    await asyncio.wait_for(self.kill_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             for filepath in sorted(self.dir_pending.glob("*.json")):
-                if self.kill_event.is_set() or self.kill_in_progress:
+                if self.kill_event.is_set() or self.kill_in_progress or KILL_SWITCH_PATH.exists():
                     break
 
                 # Atomares Verschieben nach 02_processing
@@ -3350,12 +3365,55 @@ class ExecutorDaemon:
                 await self._cmd_kill_arm()
             elif cmd == "/kill_confirm":
                 await self._cmd_kill_confirm()
+            elif cmd == "/unlock":
+                await self._cmd_unlock_arm()
+            elif cmd == "/unlock_confirm":
+                await self._cmd_unlock_confirm()
             else:
                 escaped_cmd = html.escape(cmd)
-                await self.ops_reporter.send_message(f"Unbekannter Befehl: <code>{escaped_cmd}</code>\nGültig: /status, /fleet, /kill")
+                await self.ops_reporter.send_message(f"Unbekannter Befehl: <code>{escaped_cmd}</code>\nGültig: /status, /fleet, /kill, /unlock")
         except Exception as e:
             logging.error(f"Fehler im Ops-Handler für {cmd}: {e}")
             await self.ops_reporter.send_message(f"⚠️ Fehler bei der Ausführung: <code>{html.escape(str(e))}</code>")
+
+    async def _cmd_unlock_arm(self):
+        import time
+        if not KILL_SWITCH_PATH.exists() and not self.kill_in_progress:
+            await self.ops_reporter.send_message("ℹ️ Kein Notaus aktiv — das System läuft bereits im Normalbetrieb.")
+            return
+            
+        self.unlock_confirm_deadline = time.monotonic() + 30.0
+        await self.ops_reporter.send_message(
+            "⚠️ <b>NOTAUS-FREIGABE VORBEREITET</b>\n"
+            "Bitte bestätige die Wiederaufnahme des Live-Betriebs innerhalb von 30 Sekunden mit dem Befehl:\n"
+            "<code>/unlock_confirm</code>"
+        )
+        
+    async def _cmd_unlock_confirm(self):
+        import time
+        if self.unlock_confirm_deadline <= 0.0 or time.monotonic() > self.unlock_confirm_deadline:
+            self.unlock_confirm_deadline = 0.0
+            await self.ops_reporter.send_message("Das Zeitfenster für /unlock_confirm ist abgelaufen oder wurde nicht initiiert. Bitte sende zuerst <code>/unlock</code>.")
+            return
+            
+        self.unlock_confirm_deadline = 0.0
+        
+        if KILL_SWITCH_PATH.exists():
+            try:
+                KILL_SWITCH_PATH.unlink()
+            except OSError as e:
+                logging.error(f"Fehler beim Löschen der Sperrdatei: {e}")
+                
+        self.kill_in_progress = False
+        self.lockdown_notified = False
+        
+        if not self.nt8.connected:
+            await self.nt8.connect()
+        await self.ftmo._ensure_connected()
+        
+        await self.ops_reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon & Signal-Queue sind wieder voll aktiv.")
+        if self.ops_token != TELEGRAM_BOT_TOKEN:
+            await self.reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon & Signal-Queue sind wieder voll aktiv.")
 
     async def _cmd_status(self):
         nt8_status = "VERBUNDEN" if self.nt8.connected else "GETRENNT"
@@ -3623,13 +3681,15 @@ class ExecutorDaemon:
             f"Sperrdatei: <code>{html.escape(str(KILL_SWITCH_PATH.name))}</code> AKTIV\n"
             f"NT8 Flatten: {html.escape(str(nt8_res))}\n"
             f"MT5 Flatten: {html.escape(str(mt5_res))}\n"
-            f"Journal: {closed_count} offene Trades als CLOSED markiert."
+            f"Journal: {closed_count} offene Trades als CLOSED markiert.\n\n"
+            f"Daemon bleibt im Standby. Wiederaufnahme per <code>/unlock</code>."
         )
         await self.ops_reporter.send_message(report)
         if self.ops_token != TELEGRAM_BOT_TOKEN:
             await self.reporter.report_step_4_alert(f"<b>TELEGRAM KILL SWITCH BESTÄTIGT</b>\n{closed_count} Trades geschlossen. System friert ein.")
             
-        self.kill_event.set()
+        self.lockdown_notified = True
+        self.kill_in_progress = False
 
 async def run_daemon():
     """
