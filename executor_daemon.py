@@ -3407,13 +3407,13 @@ class ExecutorDaemon:
         self.kill_in_progress = False
         self.lockdown_notified = False
         
-        if not self.nt8.connected:
-            await self.nt8.connect()
-        await self.ftmo._ensure_connected()
+        logging.info("NOTAUS AUFGEHOBEN via Telegram (/unlock_confirm). Leite sauberen Neustart des Executor-Daemons ein...")
         
-        await self.ops_reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon & Signal-Queue sind wieder voll aktiv.")
+        await self.ops_reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon startet in 5 Sekunden frisch neu...")
         if self.ops_token != TELEGRAM_BOT_TOKEN:
-            await self.reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon & Signal-Queue sind wieder voll aktiv.")
+            await self.reporter.send_message("🟢 <b>NOTAUS AUFGEHOBEN</b>\nSperrdatei entfernt. Executor Daemon startet in 5 Sekunden frisch neu...")
+            
+        self.kill_event.set()
 
     async def _cmd_status(self):
         nt8_status = "VERBUNDEN" if self.nt8.connected else "GETRENNT"
