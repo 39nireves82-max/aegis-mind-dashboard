@@ -1188,21 +1188,31 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         sl_price = float(sl_price)
         tp_price = float(tp_price)
 
-        invalid_stops = False
+        invalid_sl = False
         if dir_upper == "LONG":
-            if sl_price <= 0.0 or tp_price <= 0.0 or sl_price >= (exec_price - min_broker_dist) or tp_price <= (exec_price + min_broker_dist):
-                invalid_stops = True
+            if sl_price <= 0.0 or sl_price >= (exec_price - min_broker_dist):
+                invalid_sl = True
         else:
-            if sl_price <= 0.0 or tp_price <= 0.0 or sl_price <= (exec_price + min_broker_dist) or tp_price >= (exec_price - min_broker_dist):
-                invalid_stops = True
+            if sl_price <= 0.0 or sl_price <= (exec_price + min_broker_dist):
+                invalid_sl = True
 
-        if invalid_stops:
+        invalid_tp = False
+        if tp_price != 0.0:
             if dir_upper == "LONG":
-                sl_price = exec_price - fallback_dist
-                tp_price = exec_price + (fallback_dist * 2.0)
+                if tp_price < 0.0 or tp_price <= (exec_price + min_broker_dist):
+                    invalid_tp = True
             else:
-                sl_price = exec_price + fallback_dist
-                tp_price = exec_price - (fallback_dist * 2.0)
+                if tp_price < 0.0 or tp_price >= (exec_price - min_broker_dist):
+                    invalid_tp = True
+
+        if invalid_sl or invalid_tp:
+            if dir_upper == "LONG":
+                if invalid_sl: sl_price = exec_price - fallback_dist
+                if invalid_tp: tp_price = exec_price + (fallback_dist * 2.0)
+            else:
+                if invalid_sl: sl_price = exec_price + fallback_dist
+                if invalid_tp: tp_price = exec_price - (fallback_dist * 2.0)
+            
             logging.info(
                 f"FTMOBrokerAdapter: Ungültige oder fehlende Stops korrigiert für {resolved_sym}. "
                 f"Dynamische Sicherheits-Stops berechnet (SL: {sl_price:.5f}, TP: {tp_price:.5f})"
@@ -1827,6 +1837,24 @@ class ExecutorDaemon:
                 
         return apex_cfg, ftmo_cfg
 
+    def _resolve_exit_mode(self, account_type: str, setup_type: str, payload_exit_mode: str = "") -> str:
+        raw_mode = str(payload_exit_mode).strip().upper()
+        if raw_mode in ["TARGET_LOCKED", "FTMO_SWING", "PROP_DEFENSIVE", "HOME_RUN_TREND", "ALPHA_CASHFLOW"]:
+            return raw_mode
+            
+        apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+        prof = str(apex_cfg.get("exit_profile", "apex_lock")).lower() if account_type == "apex" else str(ftmo_cfg.get("exit_profile", "ftmo_swing")).lower()
+            
+        if prof in ["apex_lock", "apex_commodity"]: return "TARGET_LOCKED"
+        if prof == "ftmo_swing": return "FTMO_SWING"
+        if prof in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: return "PROP_DEFENSIVE"
+        
+        su_up = str(setup_type).upper()
+        if prof == "private_alpha":
+            return "HOME_RUN_TREND" if ("SETUP_B" in su_up or "TREND" in su_up) else "ALPHA_CASHFLOW"
+        
+        return "PROP_DEFENSIVE"
+
     def _update_apex_high_watermark(self, account_id: str, account_size: float, live_equity: float) -> float:
         """Persistiert den High Watermark atomar. Schützt den Floor gegen synthethische Abstürze."""
         state_path = script_dir / "users" / "admin" / "nt8_account_state.json"
@@ -1866,7 +1894,7 @@ class ExecutorDaemon:
         apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
         
         if account_type == "apex":
-            cfg_size = float(apex_cfg.get("account_size", 50000.0))
+            cfg_size = float(apex_cfg.get("account_size", apex_cfg.get("capital", 50000.0)))
             cfg_daily_lim = float(apex_cfg.get("daily_loss_limit", cfg_size * 0.025))
             cfg_trail_dd = float(apex_cfg.get("max_trailing_dd", cfg_size * 0.050))
             
@@ -1906,7 +1934,7 @@ class ExecutorDaemon:
                 }
                 
         elif account_type == "ftmo":
-            cfg_size = float(ftmo_cfg.get("account_size", 80000.0))
+            cfg_size = float(ftmo_cfg.get("account_size", ftmo_cfg.get("capital", 80000.0)))
             cfg_daily_lim = float(ftmo_cfg.get("daily_loss_limit_pct", 0.05)) * cfg_size
             cfg_max_dd_lim = float(ftmo_cfg.get("max_drawdown_pct", 0.10)) * cfg_size
             
@@ -3050,7 +3078,7 @@ class ExecutorDaemon:
                                 if broker_res.get("sl_price") and float(broker_res["sl_price"]) > 0.0:
                                     signal_payload["sl_price"] = float(broker_res["sl_price"])
                                     signal_payload["sl"] = float(broker_res["sl_price"])
-                                if broker_res.get("tp_price") and float(broker_res["tp_price"]) > 0.0:
+                                if broker_res.get("tp_price") is not None and float(broker_res["tp_price"]) >= 0.0:
                                     signal_payload["tp_price"] = float(broker_res["tp_price"])
                                     signal_payload["tp"] = float(broker_res["tp_price"])
                                 signal_payload["execution_timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -3183,15 +3211,8 @@ class ExecutorDaemon:
             eff_diff = get_effective_forex_risk_pts(clean_sym, abs(entry_price - sl_price), entry_price, fx_rate)
             planned_risk_eur = eff_diff * position_size * point_value * fx_rate
 
-            provided_exit = payload.get("exit_mode") or payload.get("setup_type", "")
-            valid_exits = ["TARGET_LOCKED", "HOME_RUN_TREND", "ALPHA_CASHFLOW"]
-            acc_type = payload.get("account_type", "").lower()
-            is_prop = acc_type in ("apex", "ftmo") or "=X" in symbol or "=F" in symbol
-            
-            if is_prop and provided_exit not in valid_exits:
-                exit_mode_val = "PROP_DEFENSIVE"
-            else:
-                exit_mode_val = provided_exit if provided_exit else "SETUP_B"
+            acc_type = str(payload.get("account_type", "")).lower()
+            exit_mode_val = self._resolve_exit_mode(acc_type, payload.get("setup_type", ""), payload.get("exit_mode", ""))
 
             # 3. Leeres Schema-Template erzeugen und befüllen
             new_row = {col: "" for col in current_header}
