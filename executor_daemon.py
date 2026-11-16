@@ -136,6 +136,8 @@ def get_effective_forex_risk_pts(symbol: str, raw_pts: float, current_price: flo
 # Konfiguration laden
 NODE_ORIGIN = os.getenv("NODE_ORIGIN", "NETCUP-EXEC").strip()
 EXECUTOR_MODE = os.getenv("EXECUTOR_MODE", "DRY_RUN")
+TELEMETRY_ENDPOINT_URL = os.getenv("TELEMETRY_ENDPOINT_URL", "https://invarix.de/api/telemetry/fleet").strip(" \r\n\"'")
+TELEMETRY_SECRET_TOKEN = os.getenv("TELEMETRY_SECRET_TOKEN", "").strip(" \r\n\"'")
 EXECUTOR_POLLING_INTERVAL = int(os.getenv("EXECUTOR_POLLING_INTERVAL", "10"))
 EXECUTOR_KILL_SWITCH = os.getenv("EXECUTOR_KILL_SWITCH", "KILL_SWITCH")
 KILL_SWITCH_PATH = Path(EXECUTOR_KILL_SWITCH)
@@ -1891,6 +1893,11 @@ class ExecutorDaemon:
         self.ftmo = FTMOBrokerAdapter()
         self.kill_event = asyncio.Event()
         self.active_adapters = {"apex": self.nt8, "ftmo": self.ftmo}
+        self._telemetry_session = None
+        self._telemetry_flight_active = False
+        self._telemetry_last_log_time = 0.0
+        self._telemetry_error_state = False
+        self._telemetry_enabled = True
         # Spooler Queue Verzeichnisse anlegen
         self.signals_dir = script_dir / "signals"
         self.dir_pending = self.signals_dir / "01_pending"
@@ -1900,6 +1907,41 @@ class ExecutorDaemon:
 
         for d in [self.dir_pending, self.dir_processing, self.dir_executed, self.dir_rejected]:
             d.mkdir(parents=True, exist_ok=True)
+
+    async def _get_telemetry_session(self) -> aiohttp.ClientSession:
+        if self._telemetry_session is None or self._telemetry_session.closed:
+            timeout = aiohttp.ClientTimeout(total=4.0, connect=2.0)
+            headers = {"User-Agent": f"INVARIX-Daemon/{NODE_ORIGIN}"}
+            self._telemetry_session = aiohttp.ClientSession(timeout=timeout, headers=headers)
+        return self._telemetry_session
+
+    async def _close_telemetry_session(self):
+        if self._telemetry_session and not self._telemetry_session.closed:
+            await self._telemetry_session.close()
+
+    async def _push_telemetry_background(self, payload: dict):
+        try:
+            session = await self._get_telemetry_session()
+            headers = {
+                "Authorization": f"Bearer {TELEMETRY_SECRET_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            async with session.post(TELEMETRY_ENDPOINT_URL, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    if self._telemetry_error_state:
+                        logging.info("Telemetrie-Verbindung zu Hetzner erfolgreich wiederhergestellt.")
+                        self._telemetry_error_state = False
+                        self._telemetry_last_log_time = 0.0
+                else:
+                    raise Exception(f"HTTP {resp.status} - {await resp.text()}")
+        except Exception as e:
+            self._telemetry_error_state = True
+            now = time.monotonic()
+            if now - self._telemetry_last_log_time >= 300.0:
+                logging.warning(f"Telemetrie-Push fehlgeschlagen: {e} (nächste Warnung in 5 Min.)")
+                self._telemetry_last_log_time = now
+        finally:
+            self._telemetry_flight_active = False
 
     def _cleanup_fleet_snapshot(self):
         snap_json = script_dir / "users" / "admin" / "fleet_snapshot.json"
@@ -1974,6 +2016,10 @@ class ExecutorDaemon:
             with open(snap_tmp, "w", encoding="utf-8") as f:
                 json.dump(snap, f, indent=4)
             snap_tmp.replace(snap_json)
+            if self._telemetry_enabled and TELEMETRY_ENDPOINT_URL and TELEMETRY_SECRET_TOKEN and not self.kill_event.is_set():
+                if not self._telemetry_flight_active:
+                    self._telemetry_flight_active = True
+                    asyncio.create_task(self._push_telemetry_background(snap))
         except Exception as e:
             logging.error(f"Fehler beim Schreiben des Fleet-Snapshots: {e}")
             snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
@@ -3935,6 +3981,7 @@ async def run_daemon():
             await daemon.nt8.disconnect()
         if hasattr(daemon.ftmo, "disconnect"):
             await daemon.ftmo.disconnect()
+        await daemon._close_telemetry_session()
 
         daemon._cleanup_fleet_snapshot()
 
@@ -3944,6 +3991,7 @@ async def run_daemon():
 async def run_test_battery():
     """Asynchrone 6-Stufen-Testbatterie laut Spezifikation."""
     daemon = ExecutorDaemon()
+    daemon._telemetry_enabled = False
     await daemon.nt8.connect()
     logging.info("--- STARTING TEST 0: MT5 Connection Test ---")
     mt5_connected = await daemon.ftmo.connect()
@@ -4218,6 +4266,21 @@ async def run_test_battery():
                         writer.writerows(clean_rows)
                     tmp_journal.replace(journal_path)
                     logging.info("Test 8: Synthetischer Test-Seed TEST_SYNC_88888 restlos aus dem Journal entfernt.")
+
+    logging.info("--- STARTING TEST 9: Telemetry Single-Flight Guard ---")
+    daemon._telemetry_enabled = True
+    global TELEMETRY_ENDPOINT_URL, TELEMETRY_SECRET_TOKEN
+    old_url, old_token = TELEMETRY_ENDPOINT_URL, TELEMETRY_SECRET_TOKEN
+    TELEMETRY_ENDPOINT_URL = "http://127.0.0.1:65535/api/telemetry/fleet"
+    TELEMETRY_SECRET_TOKEN = "TEST_TOKEN"
+    
+    daemon._telemetry_flight_active = True
+    await daemon._push_telemetry_background({"schema_version": 1})
+    assert not daemon._telemetry_flight_active, "Test 9: Single-Flight-Flag wurde nicht zurückgesetzt!"
+    
+    TELEMETRY_ENDPOINT_URL, TELEMETRY_SECRET_TOKEN = old_url, old_token
+    daemon._telemetry_enabled = False
+    logging.info("Test 9: Telemetry Single-Flight Guard erfolgreich.")
 
     logging.info("Beende Testbatterie, räume Tasks auf...")
     daemon.kill_event.set()
