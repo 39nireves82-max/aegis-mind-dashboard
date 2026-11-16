@@ -211,6 +211,25 @@ def verify_password(plain_text: str, stored_hash: str) -> tuple[bool, bool]:
         return True, True  # Passwort stimmt, benötigt Re-Hash auf PBKDF2
     return False, False
 
+def get_effective_permissions(username, role):
+    if role == "admin" or username == "admin":
+        return {"can_swing": True, "can_prop": True, "can_fleet": True}
+    
+    profile_path = os.path.join(USERS_DIR, username, "user_profile.json")
+    perms = {"can_swing": True, "can_prop": False, "can_fleet": False}
+    if os.path.exists(profile_path):
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                perms_data = data.get("permissions", {})
+                if perms_data:
+                    perms["can_swing"] = perms_data.get("can_swing", True)
+                    perms["can_prop"] = perms_data.get("can_prop", False)
+                    perms["can_fleet"] = perms_data.get("can_fleet", False)
+        except Exception:
+            pass
+    return perms
+
 def init_auth_system():
     os.makedirs(USERS_DIR, exist_ok=True)
     admin_dir = os.path.join(USERS_DIR, "admin")
@@ -234,6 +253,13 @@ def init_auth_system():
             json.dump({"role": "admin", "telegram_chat_id": ""}, f, indent=4)
 
 init_auth_system()
+
+def purge_session_state():
+    splash_val = st.session_state.get("splash_done", True)
+    st.session_state.clear()
+    st.session_state["splash_done"] = splash_val
+    st.session_state["username"] = None
+    st.session_state["role"] = None
 
 if not st.session_state.splash_done and st.session_state.username is None:
     st.markdown("""
@@ -406,8 +432,10 @@ if st.session_state.username is None:
                             st.error("⛔ Dein Zugang wurde temporär deaktiviert. Bitte wende dich an den Admin.")
                             st.stop()
                             
+                        purge_session_state()
                         st.session_state.username = in_user
                         st.session_state.role = role
+                        st.session_state["_config_owner"] = in_user
                         st.rerun()
                     else:
                         time.sleep(1.0)
@@ -446,7 +474,7 @@ if st.session_state.username is None:
                         os.makedirs(user_dir, exist_ok=True)
                         
                         with open(os.path.join(user_dir, "user_profile.json"), "w", encoding="utf-8") as f:
-                            json.dump({"role": "user", "telegram_chat_id": "", "tos_accepted_at": None}, f, indent=4)
+                            json.dump({"role": "user", "telegram_chat_id": "", "tos_accepted_at": None, "permissions": {"can_swing": True, "can_prop": False, "can_fleet": False}}, f, indent=4)
                             
                         default_config = {
                             "global_settings": {"rsi_defensiv": 35.0, "rsi_aggressiv": 30.0, "rsi_sell_defensiv": 70.0, "rsi_sell_aggressiv": 80.0, "ema_trend_default": 200.0, "custom_sectors": [], "risk_mode": "Festes Euro-Risiko (€)", "account_size": 10000.0, "risk_eur": 100.0, "risk_pct": 1.0, "fixed_investment": 1000.0, "currency_view": "Duale Ansicht (Original & EUR)", "dynamic_risk_scaling": False, "fee_mode": "Keine Gebühren / Raw", "tax_jurisdiction": "DE"},
@@ -488,8 +516,10 @@ if st.session_state.username is None:
                         with open(os.path.join(user_dir, "alert_state.json"), "w", encoding="utf-8") as f:
                             json.dump({}, f)
                             
+                        purge_session_state()
                         st.session_state.username = new_user_clean
                         st.session_state.role = "user"
+                        st.session_state["_config_owner"] = new_user_clean
                         st.rerun()
 
         with tab_forgot:
@@ -964,13 +994,19 @@ def load_config():
     return config
 
 def save_config(config):
+    if not st.session_state.get("username"): return
+    if st.session_state.get("_config_owner") and st.session_state.get("_config_owner") != st.session_state.get("username"): return
     user_dir = os.path.join(USERS_DIR, st.session_state.username)
     os.makedirs(user_dir, exist_ok=True)
     with open(get_user_file("ticker_config.json"), "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
-if "config" not in st.session_state: 
+if "config" not in st.session_state or st.session_state.get("_config_owner") != st.session_state.get("username"):
+    for transient_key in ["active_lab_account", "_last_synced_lab_account", "_pending_sidebar_account", "sidebar_lab_account_selector", "active_order_ticker", "active_futures_order", "inbox_order_payload", "_last_inbox_sig_id", "inbox_prefill_active", "inbox_prefill_data", "scanner_results", "watchlist_results", "futures_scan_results", "prop_watchlist_results", "scanner_favorite_tickers", "scanner_info_tickers", "watchlist_info_tickers", "futures_info_tickers", "transfer_candidates"]:
+        st.session_state.pop(transient_key, None)
     st.session_state.config = load_config()
+    if st.session_state.get("username"):
+        st.session_state["_config_owner"] = st.session_state.username
 def get_currency_symbol(ticker):
     sym = str(ticker).upper()
     if sym.endswith(".SW"): return "CHF"
@@ -2153,8 +2189,7 @@ with st.sidebar:
     
     st.markdown(f"👤 **Eingeloggt als:** {st.session_state.username} ({st.session_state.role})")
     if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.username = None
-        st.session_state.role = None
+        purge_session_state()
         st.rerun()
     st.markdown("---")
     with st.expander("👤 Kontosicherheit (Passwort ändern)", expanded=False):
@@ -2283,6 +2318,15 @@ with st.sidebar:
     
     # Helfer zum Abrufen der aktuellen Order-Daten (Tab-unabhängig)
     def get_global_order_data():
+        user_perms = get_effective_permissions(st.session_state.username, st.session_state.role)
+        if not user_perms.get("can_prop", False):
+            st.session_state["active_futures_order"] = None
+            if st.session_state.get("inbox_order_payload"):
+                sym = str(st.session_state["inbox_order_payload"].get("symbol", "")).upper()
+                cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+                if sym.endswith("=F") or sym.endswith("=X") or "DX-Y" in sym or sym in cme_list:
+                    st.session_state["inbox_order_payload"] = None
+
         if st.session_state.get("inbox_order_payload"):
             sig = st.session_state["inbox_order_payload"]
             sym = str(sig.get("symbol", "")).strip()
@@ -3392,8 +3436,26 @@ with st.sidebar:
 #endregion
 
 #region MAIN APP TABS
-tab_screen, tab_futures, tab_lab = st.tabs(["⚡ Swing-Scanner", "🎯 Prop-Desk", "🏦 Konto/Lab"])
-#endregion
+class DummyTabContext:
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc_val, exc_tb): return exc_type is StopIteration
+
+user_perms = get_effective_permissions(st.session_state.username, st.session_state.role)
+
+tab_defs = []
+if user_perms.get("can_swing", False):
+    tab_defs.append(("⚡ Swing-Scanner", "swing"))
+if user_perms.get("can_prop", False):
+    tab_defs.append(("🎯 Prop-Desk", "prop"))
+tab_defs.append(("🏦 Konto/Lab", "lab"))
+if user_perms.get("can_fleet", False):
+    tab_defs.append(("🚀 Flotten-Cockpit", "fleet"))
+
+tab_labels = [t[0] for t in tab_defs]
+tab_keys = [t[1] for t in tab_defs]
+
+tabs_created = st.tabs(tab_labels)
+tab_dict = {k: v for k, v in zip(tab_keys, tabs_created)}
 
 #region TAB 1 UI (DEAKTIVIERT)
 _UNUSED_TAB_1_CODE = '''
@@ -3568,7 +3630,9 @@ with tab_watch:
 #endregion
 
 #region TAB 2 UI
+tab_screen = tab_dict.get("swing", DummyTabContext())
 with tab_screen:
+    if "swing" not in tab_dict: raise StopIteration
     st.header("⚡ Shortterm Scanner & Scoring")
     st.markdown("Durchsuche vordefinierte Markt-Universen nach deinen Kriterien und speichere die besten Setups als Favoriten.")
     active_signals = load_active_signal_inbox()
@@ -4415,7 +4479,9 @@ with tab_screen:
 #endregion
 
 #region TAB 3 UI
+tab_futures = tab_dict.get("prop", DummyTabContext())
 with tab_futures:
+    if "prop" not in tab_dict: raise StopIteration
     st.header("🎯 Prop-Firm Multi-Asset Desk (Intraday & Swing)")
     
     # --- 1. HEADER & PROP-FIRM RADAR ---
@@ -5908,7 +5974,7 @@ with tab_futures:
 #endregion
 
 #region TAB 4 UI
-with tab_lab:
+with tab_dict["lab"]:
     tab_lab_ops, tab_lab_strat = st.tabs(["🏦 Live-Desk & Journal", "🧪 Strategie-Labor & Optimizer"])
     
     _acc_toast = st.session_state.pop("account_created_toast", None)
@@ -7753,6 +7819,7 @@ with tab_lab:
                                 u_chat = p_data.get("telegram_chat_id", "")
                                 u_tos = str(p_data.get("tos_accepted_at", "Ausstehend"))
                                 u_active = p_data.get("is_active", True)
+                                u_perms = p_data.get("permissions", {"can_swing": True, "can_prop": False, "can_fleet": False})
                         
                         u_chat_clean = str(u_chat).strip() if u_chat is not None else ""
                         if len(u_chat_clean) >= 4:
@@ -7760,12 +7827,24 @@ with tab_lab:
                         else:
                             u_chat_display = "Nicht hinterlegt"
 
+                        if u_role == "admin" or user_folder == "admin":
+                            eff_perms = {"can_swing": True, "can_prop": True, "can_fleet": True}
+                        else:
+                            eff_perms = u_perms
+                        
+                        p_icons = []
+                        if eff_perms.get("can_swing", False): p_icons.append("⚡ Swing")
+                        if eff_perms.get("can_prop", False): p_icons.append("🎯 Prop")
+                        if eff_perms.get("can_fleet", False): p_icons.append("🚀 Flotte")
+                        p_str = " · ".join(p_icons) if p_icons else "⛔ Keine Tabs"
+
                         user_list.append({
                             "Benutzer": user_folder,
                             "Rolle": u_role,
                             "Status": "🟢 Aktiv" if u_active else "🔴 Gesperrt",
                             "Telegram Chat-ID": u_chat_display,
-                            "TOS Akzeptiert": u_tos if u_tos != "None" else "Ausstehend"
+                            "TOS Akzeptiert": u_tos if u_tos != "None" else "Ausstehend",
+                            "Befugnisse": p_str
                         })
                 
                 st.dataframe(pd.DataFrame(user_list), use_container_width=True, hide_index=True)
@@ -7779,8 +7858,34 @@ with tab_lab:
                 with c_adm2:
                     if target_user:
                         is_admin_user = (target_user == "admin")
-                        t_lock, t_pw, t_del = st.tabs(["🔒 Status", "🔑 Passwort", "🗑️ Löschen"])
+                        t_lock, t_perms, t_pw, t_del = st.tabs(["🔒 Status", "🛡️ Befugnisse", "🔑 Passwort", "🗑️ Löschen"])
                         
+                        # Befugnisse (Permissions)
+                        with t_perms:
+                            if is_admin_user or (st.session_state.role == "admin" and target_user == st.session_state.username):
+                                st.info("ℹ️ Der primäre Admin-Account besitzt immer volle Systembefugnisse (Swing, Prop-Desk, Flotten-Cockpit) und kann nicht eingeschränkt werden.")
+                            else:
+                                target_pf = os.path.join(USERS_DIR, target_user, "user_profile.json")
+                                t_perms_data = {"can_swing": True, "can_prop": False, "can_fleet": False}
+                                if os.path.exists(target_pf):
+                                    with open(target_pf, "r", encoding="utf-8") as f:
+                                        p_data = json.load(f)
+                                        t_perms_data = p_data.get("permissions", t_perms_data)
+                                
+                                c_sw = st.checkbox("⚡ Swing-Scanner freischalten", value=t_perms_data.get("can_swing", True), key=f"perm_sw_{target_user}")
+                                c_pr = st.checkbox("🎯 Prop-Desk freischalten", value=t_perms_data.get("can_prop", False), key=f"perm_pr_{target_user}")
+                                c_fl = st.checkbox("🚀 Flotten-Cockpit freischalten", value=t_perms_data.get("can_fleet", False), key=f"perm_fl_{target_user}")
+                                
+                                if st.button("💾 Befugnisse speichern", use_container_width=True, key=f"btn_perms_{target_user}"):
+                                    if os.path.exists(target_pf):
+                                        with open(target_pf, "r", encoding="utf-8") as f:
+                                            p_data = json.load(f)
+                                        p_data["permissions"] = {"can_swing": c_sw, "can_prop": c_pr, "can_fleet": c_fl}
+                                        with open(target_pf, "w", encoding="utf-8") as f:
+                                            json.dump(p_data, f, indent=4)
+                                        st.success(f"Befugnisse für {target_user} wurden aktualisiert!")
+                                        st.rerun()
+
                         # Sperren / Entsperren
                         with t_lock:
                             if is_admin_user:
@@ -8313,6 +8418,522 @@ with tab_lab:
                     st.write("Keine Trades ausgelöst.")
             else:
                 st.info("Noch kein Backtest für dieses Konto gespeichert.")
+#endregion
+
+#region TAB 5 UI (Flotten-Cockpit Basis)
+tab_fleet = tab_dict.get("fleet", DummyTabContext())
+with tab_fleet:
+    if "fleet" not in tab_dict: raise StopIteration
+    snapshot_path = get_user_file("fleet_snapshot.json")
+    snapshot_mode = "FALLBACK"
+    snapshot_age_str = ""
+    snapshot = {}
+    
+    # 1. Multi-Tenant Reader & Stale-Status (Kein pauschales Löschen)
+    if os.path.exists(snapshot_path):
+        try:
+            if os.path.getsize(snapshot_path) == 0:
+                raise ValueError("Empty file")
+            with open(snapshot_path, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            
+            if not isinstance(snapshot, dict):
+                raise ValueError("Invalid JSON structure")
+                
+            updated_at_str = snapshot.get("updated_at")
+            if not updated_at_str:
+                raise ValueError("Missing updated_at timestamp")
+                
+            updated_at_str = str(updated_at_str).replace("Z", "+00:00")
+            snap_time = datetime.datetime.fromisoformat(updated_at_str)
+            if snap_time.tzinfo is None:
+                snap_time = snap_time.replace(tzinfo=datetime.timezone.utc)
+            
+            age_seconds = (datetime.datetime.now(datetime.timezone.utc) - snap_time).total_seconds()
+            
+            if age_seconds <= 120.0:
+                snapshot_mode = "LIVE"
+            else:
+                snapshot_mode = "STALE"
+                if age_seconds < 3600:
+                    snapshot_age_str = f"vor {int(age_seconds // 60)} Min."
+                else:
+                    snapshot_age_str = f"vor {int(age_seconds // 3600)} Std. {int((age_seconds % 3600) // 60)} Min."
+        except Exception:
+            try:
+                os.remove(snapshot_path)
+            except OSError:
+                pass
+            snapshot_mode = "FALLBACK"
+            snapshot = {}
+            
+    # 2. Schema-Normalisierung (Netcup vs. Hetzner Formate)
+    config_accounts = st.session_state.config.get("lab_accounts", {})
+    fleet_accounts = {}
+    
+    for acc_id, a_data in config_accounts.items():
+        a_type_raw = str(a_data.get("account_type", "")).lower()
+        exit_prof = str(a_data.get("exit_profile", "")).lower()
+        tax_cat = str(a_data.get("tax_category", "")).lower()
+        
+        if tax_cat == "private": a_class = "private"
+        elif exit_prof in ["apex_lock", "apex_commodity_scale"]: a_class = "apex"
+        elif exit_prof == "ftmo_swing": a_class = "ftmo"
+        elif "apex" in a_type_raw: a_class = "apex"
+        elif "ftmo" in a_type_raw: a_class = "ftmo"
+        else: a_class = "private"
+        
+        start_cap = float(a_data.get("account_size", a_data.get("capital", 10000.0)))
+        
+        if a_class == "apex": def_daily, def_trail, currency = start_cap * 0.025, start_cap * 0.05, "USD"
+        elif a_class == "ftmo": def_daily, def_trail, currency = start_cap * 0.05, start_cap * 0.10, "EUR"
+        else: def_daily, def_trail, currency = 0.0, 0.0, "EUR"
+        
+        daily_loss = float(a_data.get("daily_loss", a_data.get("daily_loss_limit", def_daily)))
+        trail_dd = float(a_data.get("trail_dd", a_data.get("max_trailing_dd", def_trail)))
+        
+        fleet_accounts[acc_id] = {
+            "id": acc_id,
+            "name": a_data.get("name", "Unknown"),
+            "broker_account_id": str(a_data.get("broker_account_id", "")).strip(),
+            "class": a_class,
+            "start_cap": start_cap,
+            "daily_loss": daily_loss,
+            "trail_dd": trail_dd,
+            "currency": currency,
+            "execution_mode": a_data.get("execution_mode", "CO_PILOT"),
+            "tickers": a_data.get("tickers", []),
+            "equity": start_cap,
+            "balance": start_cap,
+            "daily_pnl": 0.0,
+            "daily_buffer": daily_loss,
+            "max_dd_buffer": trail_dd,
+            "high_watermark": start_cap,
+            "live_connected": False
+        }
+
+    # 3. Identity-Matching & Split-Brain Schutz (Live-Daten Zuordnung)
+    assigned_snap_keys = set()
+    if snapshot_mode in ["LIVE", "STALE"] and "accounts" in snapshot:
+        snap_accs = snapshot["accounts"]
+        
+        # Prio 1: Broker Account ID
+        for acc_id, fa in fleet_accounts.items():
+            if fa["broker_account_id"]:
+                for s_k, s_a in snap_accs.items():
+                    if s_k not in assigned_snap_keys and str(s_a.get("account_id", "")).lower() == fa["broker_account_id"].lower():
+                        fa["snap_data"] = s_a
+                        assigned_snap_keys.add(s_k)
+                        break
+        # Prio 2: Kontoname
+        for acc_id, fa in fleet_accounts.items():
+            if "snap_data" not in fa:
+                for s_k, s_a in snap_accs.items():
+                    if s_k not in assigned_snap_keys and str(s_a.get("account_name", "")).lower() == fa["name"].lower():
+                        fa["snap_data"] = s_a
+                        assigned_snap_keys.add(s_k)
+                        break
+        # Prio 3: Kontoklasse (Fallback)
+        for acc_id, fa in fleet_accounts.items():
+            if "snap_data" not in fa:
+                for s_k, s_a in snap_accs.items():
+                    if s_k not in assigned_snap_keys and s_k.startswith(fa["class"]):
+                        fa["snap_data"] = s_a
+                        assigned_snap_keys.add(s_k)
+                        break
+
+    # 4. Journal-Zuordnung für offene Trades (Fallback / Risiko-Metriken)
+    df_j = load_trade_journal()
+    assigned_trades = {acc_id: [] for acc_id in fleet_accounts}
+    if not df_j.empty:
+        for _, r in df_j.iterrows():
+            j_acc = str(r.get("account_name", ""))
+            sym = str(r.get("symbol", ""))
+            matched_acc_id = None
+            
+            for acc_id, fa in fleet_accounts.items():
+                if j_acc == fa["name"] or (fa["broker_account_id"] and j_acc == fa["broker_account_id"]):
+                    matched_acc_id = acc_id
+                    break
+            
+            if not matched_acc_id and j_acc in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+                for acc_id, fa in fleet_accounts.items():
+                    if fa["execution_mode"] == "LIVE_AUTO" and sym in fa["tickers"]:
+                        matched_acc_id = acc_id
+                        break
+                if not matched_acc_id:
+                    is_j_forex = sym.endswith("=X")
+                    for acc_id, fa in fleet_accounts.items():
+                        if is_j_forex and fa["class"] == "ftmo":
+                            matched_acc_id = acc_id
+                            break
+                        elif not is_j_forex and fa["class"] == "apex":
+                            matched_acc_id = acc_id
+                            break
+                            
+            if matched_acc_id:
+                assigned_trades[matched_acc_id].append(r)
+
+    # 5. RESONO-Puffer-Parität & Mathematische Schutzschilde
+    fx_usd_eur = get_fx_rate("$", "EUR")
+    fx_usd_eur = fx_usd_eur if fx_usd_eur > 0 else 1.0
+    
+    total_fleet_buffer_eur = 0.0
+    daily_pnl_ftmo_eur = 0.0
+    daily_pnl_apex_usd = 0.0
+    usd_cluster_open_count = 0
+    total_active_risk_eur = 0.0
+    
+    for acc_id, fa in fleet_accounts.items():
+        df_my = pd.DataFrame(assigned_trades[acc_id]) if assigned_trades[acc_id] else pd.DataFrame(columns=df_j.columns)
+        if "snap_data" in fa and snapshot_mode in ["LIVE", "STALE"]:
+            fa["snapshot_mode"] = snapshot_mode
+            fa["broker_connected"] = fa["snap_data"].get("live_connected", False)
+        else:
+            fa["snapshot_mode"] = "FALLBACK"
+            fa["broker_connected"] = False
+        
+        # Split-Brain Regel
+        if fa["snapshot_mode"] in ["LIVE", "STALE"]:
+            sd = fa["snap_data"]
+            fa["equity"] = float(sd.get("equity", fa["equity"]))
+            fa["balance"] = float(sd.get("balance", fa["balance"]))
+            fa["daily_buffer"] = float(sd.get("daily_buffer", fa["daily_buffer"]))
+            fa["max_dd_buffer"] = float(sd.get("max_dd_buffer", fa["max_dd_buffer"]))
+            fa["daily_pnl"] = float(sd.get("daily_pnl", 0.0))
+            if fa["class"] == "apex":
+                fa["high_watermark"] = float(sd.get("high_watermark", fa["high_watermark"]))
+        else:
+            realized_pnl_eur, today_realized_pnl_eur, floating_pnl_eur = 0.0, 0.0, 0.0
+            today_str = datetime.datetime.now().strftime("%d/%m/%Y")
+            
+            if not df_my.empty:
+                df_trading = df_my[~df_my['setup_type'].isin(['DEPOSIT', 'WITHDRAWAL', 'PAYOUT', 'CHALLENGE_FEE'])]
+                df_closed = df_trading[df_trading['status'] == 'CLOSED']
+                realized_pnl_eur = float(df_closed['pnl_eur'].sum()) if not df_closed.empty else 0.0
+                df_today = df_closed[df_closed['exit_date'].astype(str).str.contains(today_str, na=False)]
+                today_realized_pnl_eur = float(df_today['pnl_eur'].sum()) if not df_today.empty else 0.0
+                
+                df_open = df_trading[df_trading['status'] == 'OPEN']
+                if not df_open.empty:
+                    try:
+                        df_prices = fetch_market_data(df_open['symbol'].unique().tolist(), "5d", "1d")
+                        for _, r in df_open.iterrows():
+                            sym = r['symbol']
+                            ep = float(r['entry_price'])
+                            fx = float(r.get('fx_rate', 1.0))
+                            qty = float(r['position_size'])
+                            dir_m = 1 if r['direction'] == 'Long' else -1
+                            cur_p = ep
+                            
+                            if isinstance(df_prices.columns, pd.MultiIndex):
+                                if sym in df_prices.columns.get_level_values(0): cur_p = df_prices[sym]["Close"].dropna().iloc[-1]
+                                elif sym in df_prices.columns.get_level_values(1): cur_p = df_prices.xs(sym, level=1, axis=1)["Close"].dropna().iloc[-1]
+                            elif "Close" in df_prices: cur_p = df_prices["Close"].dropna().iloc[-1]
+                            
+                            pv = float(r.get('point_value', 1.0)) if pd.notna(r.get('point_value')) else 1.0
+                            sym_u = str(sym).upper().strip()
+                            
+                            if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]): raw_pnl = ((cur_p - ep) / cur_p) * qty * pv * dir_m if cur_p > 0 else 0.0
+                            elif sym_u.startswith("EURJPY"): raw_pnl = (((cur_p - ep) / cur_p) / fx) * qty * pv * dir_m if (cur_p > 0 and fx > 0) else 0.0
+                            else: raw_pnl = (cur_p - ep) * qty * pv * dir_m
+                            
+                            floating_pnl_eur += (raw_pnl * fx) - float(r.get('est_fees_eur', 0.0))
+                    except Exception:
+                        pass
+                        
+            total_pnl_eur = realized_pnl_eur + floating_pnl_eur
+            daily_pnl_eur = today_realized_pnl_eur + floating_pnl_eur
+            
+            if fa["currency"] == "USD":
+                fa["equity"] = fa["start_cap"] + (total_pnl_eur / fx_usd_eur)
+                fa["daily_pnl"] = daily_pnl_eur / fx_usd_eur
+            else:
+                fa["equity"] = fa["start_cap"] + total_pnl_eur
+                fa["daily_pnl"] = daily_pnl_eur
+                
+            if fa["class"] == "apex":
+                saved_hwm = fa["start_cap"]
+                nt8_path = get_user_file("nt8_account_state.json")
+                if os.path.exists(nt8_path):
+                    try:
+                        with open(nt8_path, "r") as f:
+                            saved_hwm = float(json.load(f).get(fa["broker_account_id"], {}).get("high_watermark", saved_hwm))
+                    except Exception: pass
+                
+                hwm = max(saved_hwm, fa["start_cap"], fa["equity"])
+                fa["high_watermark"] = hwm
+                raw_ko = hwm - fa["trail_dd"]
+                einrast = fa["start_cap"] + 100.0
+                ko_floor = einrast if raw_ko >= einrast else raw_ko
+                fa["max_dd_buffer"] = max(0.0, fa["equity"] - ko_floor)
+            elif fa["class"] == "ftmo":
+                max_dd_floor = fa["start_cap"] - fa["trail_dd"]
+                fa["max_dd_buffer"] = max(0.0, fa["equity"] - max_dd_floor)
+            else:
+                fa["max_dd_buffer"] = fa["trail_dd"]
+                
+            fa["daily_buffer"] = max(0.0, min(fa["daily_loss"], fa["daily_loss"] + min(0.0, fa["daily_pnl"])))
+            
+        daily_ratio = fa["daily_buffer"] / fa["daily_loss"] if fa["daily_loss"] > 0 else 1.0
+        dd_ratio = fa["max_dd_buffer"] / fa["trail_dd"] if fa["trail_dd"] > 0 else 1.0
+        daily_ratio = max(0.0, min(1.0, daily_ratio))
+        dd_ratio = max(0.0, min(1.0, dd_ratio))
+        fa["effective_ratio"] = min(daily_ratio, dd_ratio)
+        
+        if fa["class"] == "apex":
+            if fa["effective_ratio"] >= 0.60: fa["zone"] = "GREEN"
+            elif fa["effective_ratio"] >= 0.32: fa["zone"] = "YELLOW"
+            else: fa["zone"] = "RED"
+        elif fa["class"] == "ftmo":
+            if fa["effective_ratio"] >= 0.60: fa["zone"] = "GREEN"
+            elif fa["effective_ratio"] >= 0.30: fa["zone"] = "YELLOW"
+            else: fa["zone"] = "RED"
+        else:
+            fa["zone"] = "PRIVATE"
+            
+        bottleneck_native = min(fa["daily_buffer"], fa["max_dd_buffer"])
+        if fa["currency"] == "USD":
+            total_fleet_buffer_eur += bottleneck_native * fx_usd_eur
+            daily_pnl_apex_usd += fa["daily_pnl"]
+        else:
+            total_fleet_buffer_eur += bottleneck_native
+            if fa["class"] == "ftmo":
+                daily_pnl_ftmo_eur += fa["daily_pnl"]
+                
+        if not df_my.empty:
+            df_open_my = df_my[df_my['status'] == 'OPEN']
+            for _, r in df_open_my.iterrows():
+                total_active_risk_eur += float(r.get("current_risk_eur", r.get("planned_risk_eur", 0.0)))
+                if fa["class"] == "ftmo" and "USD" in str(r.get("symbol", "")).upper():
+                    usd_cluster_open_count += 1
+                    
+    st.markdown("### 🚀 Multi-Account Flotten-Cockpit")
+    kill_switch = snapshot.get("kill_switch_active", False) if snapshot_mode in ["LIVE", "STALE"] else False
+    node_name = snapshot.get("node_name", "Unknown Node")
+    exec_mode = snapshot.get("executor_mode", "UNKNOWN")
+    upd_at = snapshot.get("updated_at", "")
+    
+    if snapshot_mode == "LIVE":
+        st.success(f"⚡ **Live-Daemon aktiv** | Node: {node_name} ({exec_mode}) | Stand: {upd_at}")
+    elif snapshot_mode == "STALE":
+        st.warning(f"⚠️ **NICHT LIVE — Letzter bekannter Daemon-Stand** ({snapshot_age_str}, Stand: {upd_at}) | Daten sind eingefroren bis zum nächsten Sync.")
+    else:
+        st.info("📁 **Journal- & Konfigurations-Fallback** (Noch kein Daemon-Snapshot empfangen)")
+
+    if kill_switch:
+        st.error(f"🚨 **LIVE-DAEMON AKTIV — NOTAUS EINGELEITET!**")
+        
+    c1, c2, c3, c4 = st.columns(4)
+    
+    prop_accs = [fa for fa in fleet_accounts.values() if fa["class"] in ["apex", "ftmo"]]
+    red_count = sum(1 for fa in prop_accs if fa["zone"] == "RED")
+    yellow_count = sum(1 for fa in prop_accs if fa["zone"] == "YELLOW")
+    green_count = sum(1 for fa in prop_accs if fa["zone"] == "GREEN")
+    
+    if kill_switch:
+        health_label = "🔴 NOTAUS AKTIV"
+    elif red_count > 0:
+        health_label = "🔴 VETO / ROTE ZONE"
+    elif yellow_count > 0:
+        health_label = "🟡 SCHONMODUS"
+    elif len(prop_accs) > 0:
+        health_label = "🟢 ALL SYSTEMS GO"
+    else:
+        health_label = "⚪ PRIVAT-MODUS"
+        
+    delta_health = f"{green_count} 🟢 | {yellow_count} 🟡 | {red_count} 🔴"
+    if snapshot_mode == "STALE":
+        delta_health += " | ⚠️ Stand nicht live"
+        
+    c1.metric("Flotten-Gesundheit", health_label, delta_health, delta_color="off")
+    
+    open_trades_fleet = {aid: [t for t in assigned_trades[aid] if t.get("status") == "OPEN"] for aid in fleet_accounts}
+    total_open_count = sum(len(txs) for txs in open_trades_fleet.values())
+    
+    ftmo_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "ftmo")
+    apex_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "apex")
+    priv_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "private")
+    usd_cluster_lbl = "🟡 USD-Cluster Belegt (1/1)" if usd_cluster_open_count >= 1 else "🟢 USD-Cluster Frei (0/1)"
+    
+    c2.metric("Offene Positionen", f"{total_open_count}", f"FTMO: {ftmo_open} | Apex: {apex_open} | Privat: {priv_open} | {usd_cluster_lbl}", delta_color="off")
+    
+    util_pct = (total_active_risk_eur / total_fleet_buffer_eur * 100) if total_fleet_buffer_eur > 0 else 0.0
+    c3.metric("Aktives Restrisiko (€)", f"{total_active_risk_eur:,.2f} €", f"Auslastung: {util_pct:.1f} % (von {total_fleet_buffer_eur:,.2f} €)", delta_color="inverse" if util_pct > 80 else "off")
+    
+    c4.metric("Tages-PnL (Währungsgetrennt)", f"FTMO: {daily_pnl_ftmo_eur:+,.2f} €", f"Apex: {daily_pnl_apex_usd:+,.2f} $", delta_color="normal")
+    
+    st.markdown("---")
+    st.subheader("⚖️ RESONO Puffer-Parität")
+    
+    ftmo_accs = [fa for fa in prop_accs if fa["class"] == "ftmo"]
+    apex_accs = [fa for fa in prop_accs if fa["class"] == "apex"]
+    
+    if prop_accs:
+        max_rows = max(len(ftmo_accs), len(apex_accs))
+        y_labels = [f"Prop-Desk {i+1}" for i in range(max_rows)]
+        
+        fig = go.Figure()
+        
+        def get_zone_color(zone):
+            if zone == "GREEN": return "#10B981"
+            if zone == "YELLOW": return "#F59E0B"
+            return "#EF4444"
+            
+        if ftmo_accs:
+            x_ftmo, y_ftmo, custom_ftmo, colors_ftmo = [], [], [], []
+            for i, fa in enumerate(ftmo_accs):
+                eff_pct = fa["effective_ratio"] * 100
+                x_ftmo.append(-eff_pct)
+                y_ftmo.append(y_labels[i])
+                custom_ftmo.append([eff_pct, fa["daily_buffer"], fa["max_dd_buffer"], fa["currency"], fa["name"], fa["zone"]])
+                colors_ftmo.append(get_zone_color(fa["zone"]))
+                
+            fig.add_trace(go.Bar(
+                x=x_ftmo, y=y_ftmo, orientation='h',
+                marker_color=colors_ftmo,
+                marker_line_color="#0B0F17",
+                marker_line_width=2.5,
+                customdata=custom_ftmo,
+                texttemplate="%{customdata[4]} · %{customdata[0]:.0f} %",
+                textposition="auto",
+                textfont=dict(color="#FFFFFF", size=13),
+                hovertemplate="<b>%{customdata[4]}</b><br>Effektiv: %{customdata[0]:.1f} %<br>Tagespuffer: %{customdata[1]:,.2f} %{customdata[3]}<br>Max DD Puffer: %{customdata[2]:,.2f} %{customdata[3]}<br>Zone: %{customdata[5]}<extra></extra>",
+                name="FTMO / Forex-Desks"
+            ))
+            
+        if apex_accs:
+            x_apex, y_apex, custom_apex, colors_apex = [], [], [], []
+            for i, fa in enumerate(apex_accs):
+                eff_pct = fa["effective_ratio"] * 100
+                x_apex.append(eff_pct)
+                y_apex.append(y_labels[i])
+                custom_apex.append([eff_pct, fa["daily_buffer"], fa["max_dd_buffer"], fa["currency"], fa["name"], fa["zone"]])
+                colors_apex.append(get_zone_color(fa["zone"]))
+                
+            fig.add_trace(go.Bar(
+                x=x_apex, y=y_apex, orientation='h',
+                marker_color=colors_apex,
+                marker_line_color="#0B0F17",
+                marker_line_width=2.5,
+                customdata=custom_apex,
+                texttemplate="%{customdata[4]} · %{customdata[0]:.0f} %",
+                textposition="auto",
+                textfont=dict(color="#FFFFFF", size=13),
+                hovertemplate="<b>%{customdata[4]}</b><br>Effektiv: %{customdata[0]:.1f} %<br>Tagespuffer: %{customdata[1]:,.2f} %{customdata[3]}<br>Max DD Puffer: %{customdata[2]:,.2f} %{customdata[3]}<br>Zone: %{customdata[5]}<extra></extra>",
+                name="Apex / Futures-Desks"
+            ))
+            
+        fig.update_layout(
+            barmode="relative",
+            xaxis=dict(
+                range=[-122, 122],
+                tickvals=[-100, -60, -30, 0, 32, 60, 100],
+                ticktext=["100 %", "60 %", "30 %", "0 % (Freeze)", "32 %", "60 %", "100 %"],
+                zeroline=True, zerolinewidth=3, zerolinecolor="#F8FAFC",
+                gridcolor="rgba(255,255,255,0.05)"
+            ),
+            yaxis=dict(autorange="reversed", showticklabels=False),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#0B0F17",
+            font=dict(color="#E2E8F0"),
+            height=max(180, 70 * max_rows + 100),
+            margin=dict(l=10, r=10, t=45, b=30),
+            showlegend=False,
+            annotations=[
+                dict(x=-60, y=1.14, xref="x", yref="paper", text="⬅️ FTMO / Forex (Links)", showarrow=False, font=dict(color="#E2E8F0", size=14)),
+                dict(x=60, y=1.14, xref="x", yref="paper", text="Apex / Futures (Rechts) ➡️", showarrow=False, font=dict(color="#E2E8F0", size=14))
+            ]
+        )
+        
+        fig.add_vline(x=-60, line_dash="dash", line_color="#F59E0B", opacity=0.5)
+        fig.add_vline(x=-30, line_dash="dash", line_color="#EF4444", opacity=0.5)
+        fig.add_vline(x=32, line_dash="dash", line_color="#EF4444", opacity=0.5)
+        fig.add_vline(x=60, line_dash="dash", line_color="#F59E0B", opacity=0.5)
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("⚪ Keine Prop-Konten (FTMO/Apex) konfiguriert. Füge Konten im 'Konto/Lab'-Tab hinzu.")
+
+    st.markdown("---")
+    c_det_l, c_det_r = st.columns(2)
+    
+    def render_account_expander(fa, open_txs):
+        zone_icon = "🟢 Grün" if fa["zone"] == "GREEN" else ("🟡 Schonmodus" if fa["zone"] == "YELLOW" else ("🔴 Rot" if fa["zone"] == "RED" else "⚪ Privat"))
+        
+        if fa["snapshot_mode"] == "LIVE": conn_icon = "⚡ Live"
+        elif fa["snapshot_mode"] == "STALE": conn_icon = "⚠️ Nicht live"
+        else: conn_icon = "📁 Fallback"
+        
+        is_expanded = (len(open_txs) > 0) or (fa["zone"] not in ["GREEN", "PRIVATE"])
+        
+        with st.expander(f"{fa['name']} ({fa['broker_account_id'] or 'Keine ID'}) | {zone_icon} | {conn_icon}", expanded=is_expanded):
+            st.markdown(f"**Modus:** `{fa['execution_mode']}` | **Whitelist:** `{', '.join(fa['tickers']) if fa['tickers'] else 'Keine'}`")
+            
+            bottleneck = min(fa['daily_buffer'], fa['max_dd_buffer'])
+            
+            mc1, mc2 = st.columns(2)
+            mc1.metric("Live-Equity", f"{fa['equity']:,.2f} {fa['currency']}", f"Start: {fa['start_cap']:,.2f} {fa['currency']}", delta_color="off")
+            mc2.metric("Aktiver Flaschenhals-Puffer", f"{bottleneck:,.2f} {fa['currency']}", f"Tages-PnL: {fa['daily_pnl']:+,.2f} {fa['currency']}", delta_color="off")
+            
+            mc3, mc4 = st.columns(2)
+            mc3.metric("Tages-Puffer", f"{fa['daily_buffer']:,.2f} {fa['currency']}", f"Limit: {fa['daily_loss']:,.2f} {fa['currency']}", delta_color="off")
+            mc4.metric("Max-DD-Puffer", f"{fa['max_dd_buffer']:,.2f} {fa['currency']}", f"Limit: {fa['trail_dd']:,.2f} {fa['currency']}", delta_color="off")
+            
+            if fa["class"] == "apex":
+                hwm = fa["high_watermark"]
+                raw_ko = hwm - fa["trail_dd"]
+                lock_level = fa["start_cap"] + 100.0
+                is_locked = raw_ko >= lock_level
+                ko_floor = lock_level if is_locked else raw_ko
+                
+                lock_str = "(🔒 Eingerastet +100 $)" if is_locked else "(🔓 Offen / Trailing)"
+                st.caption(f"📈 **High-Watermark:** {hwm:,.2f} {fa['currency']} | 🛡️ **KO-Floor:** {ko_floor:,.2f} {fa['currency']} {lock_str}")
+                
+            if open_txs:
+                tx_data = []
+                for t in open_txs:
+                    risk_val = float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0)))
+                    tx_data.append({
+                        "Symbol": t.get("symbol"),
+                        "Dir": t.get("direction"),
+                        "Größe": t.get("position_size"),
+                        "Entry": t.get("entry_price"),
+                        "SL": t.get("current_sl"),
+                        "Risk (€)": f"{risk_val:.2f}"
+                    })
+                st.dataframe(pd.DataFrame(tx_data), hide_index=True, use_container_width=True)
+            else:
+                st.caption("⚪ Konto flat (0 offene Positionen)")
+
+    with c_det_l:
+        st.markdown("### 🌍 FTMO / Forex-Desks")
+        if not ftmo_accs:
+            st.caption("Keine FTMO Konten.")
+        for fa in ftmo_accs:
+            render_account_expander(fa, open_trades_fleet[fa["id"]])
+            
+    with c_det_r:
+        st.markdown("### 🏎️ Apex / Futures-Desks")
+        if not apex_accs:
+            st.caption("Keine Apex Konten.")
+        for fa in apex_accs:
+            render_account_expander(fa, open_trades_fleet[fa["id"]])
+            
+    private_accs = [fa for fa in fleet_accounts.values() if fa["class"] == "private"]
+    if private_accs:
+        st.markdown("---")
+        st.markdown("### 👤 Private Depots & Swing-Konten")
+        c_priv = st.columns(min(len(private_accs), 4))
+        for i, fa in enumerate(private_accs):
+            with c_priv[i % 4]:
+                txs = open_trades_fleet[fa["id"]]
+                r_eur = sum(float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0))) for t in txs)
+                with st.container(border=True):
+                    st.markdown(f"**{fa['name']}**")
+                    st.caption(f"Kapital: {fa['equity']:,.2f} {fa['currency']} | Whitelist: {len(fa['tickers'])}")
+                    st.metric("Offene Trades", len(txs), f"Risk: {r_eur:.2f} €", delta_color="off")
+#endregion
 
 #region DANGER ZONE
 st.markdown("---")

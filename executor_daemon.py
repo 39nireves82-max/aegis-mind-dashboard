@@ -981,6 +981,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
     def __init__(self):
         self.connected = False
         self._connect_lock = asyncio.Lock()
+        self._mt5_lock = asyncio.Lock()
 
     async def connect(self) -> bool:
         if not MT5_AVAILABLE:
@@ -1052,6 +1053,46 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
             await asyncio.to_thread(mt5.shutdown)
             self.connected = False
             logging.info("FTMOBrokerAdapter: MT5 Verbindung sauber getrennt.")
+    # --- ÖFFENTLICHE API (TWO-TIER LOCKING) ---
+    async def place_bracket_order(self, account_id, symbol, direction, qty, entry_price, sl_price, tp_price) -> dict:
+        async with self._mt5_lock:
+            return await self.place_bracket_order_unlocked(account_id, symbol, direction, qty, entry_price, sl_price, tp_price)
+
+    async def cancel_order(self, order_id: str) -> bool:
+        async with self._mt5_lock:
+            return await self.cancel_order_unlocked(order_id)
+
+    async def flatten_account(self, account_id: str) -> bool:
+        async with self._mt5_lock:
+            return await self.flatten_account_unlocked(account_id)
+
+    async def flatten_position(self, account_id: str, symbol: str, order_id: str = "", **kwargs) -> dict:
+        async with self._mt5_lock:
+            return await self.flatten_position_unlocked(account_id, symbol, order_id, **kwargs)
+
+    async def get_open_positions(self, account_id: str) -> list | None:
+        async with self._mt5_lock:
+            return await self.get_open_positions_unlocked(account_id)
+
+    async def get_closed_deal_info(self, symbol: str, ticket: int = 0) -> dict | None:
+        async with self._mt5_lock:
+            return await self.get_closed_deal_info_unlocked(symbol, ticket)
+
+    async def get_working_orders(self, account_id: str) -> list:
+        async with self._mt5_lock:
+            return await self.get_working_orders_unlocked(account_id)
+
+    async def get_account_info(self, account_id: str = "") -> dict | None:
+        async with self._mt5_lock:
+            return await self.get_account_info_unlocked(account_id)
+
+    async def partial_close(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
+        async with self._mt5_lock:
+            return await self.partial_close_unlocked(account_id, symbol, qty, is_long, current_price, order_id)
+
+    async def modify_stop_loss(self, account_id: str, symbol: str, new_sl: float, order_id: str = "", oco_id: str = "", new_qty: float = 0.0) -> dict:
+        async with self._mt5_lock:
+            return await self.modify_stop_loss_unlocked(account_id, symbol, new_sl, order_id, oco_id, new_qty)
 
     @staticmethod
     def _resolve_filling_mode(sym_info) -> tuple[int, str]:
@@ -1135,7 +1176,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         res = await asyncio.to_thread(find_fallback)
         return res if res else clean_sym
 
-    async def place_bracket_order(self, account_id, symbol, direction, qty, entry_price, sl_price, tp_price) -> dict:
+    async def place_bracket_order_unlocked(self, account_id, symbol, direction, qty, entry_price, sl_price, tp_price) -> dict:
         if not await self._ensure_connected():
             logging.warning(f"FTMOBrokerAdapter: Nicht verbunden (Auto-Reconnect fehlgeschlagen). Order für {symbol} abgewiesen.")
             return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
@@ -1268,7 +1309,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
             logging.error(f"FTMOBrokerAdapter: Order abgelehnt. Retcode: {result.retcode}, Comment: {result.comment}")
             return {"status": "REJECTED", "reason": result.comment, "retcode": result.retcode}
 
-    async def cancel_order(self, order_id: str) -> bool:
+    async def cancel_order_unlocked(self, order_id: str) -> bool:
         """Storniert eine schwebende MT5 Pending Order real über TRADE_ACTION_REMOVE."""
         if not await self._ensure_connected():
             logging.error(f"FTMOBrokerAdapter: cancel_order({order_id}) abgebrochen – keine MT5-Verbindung.")
@@ -1300,7 +1341,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         logging.error(f"FTMOBrokerAdapter: Stornierung von Order {ticket_id} abgelehnt. Retcode: {result.retcode}, Comment: {result.comment}")
         return False
 
-    async def flatten_account(self, account_id: str) -> bool:
+    async def flatten_account_unlocked(self, account_id: str) -> bool:
         """
         Schließt alle offenen Positionen des MT5-Kontos über Gegen-Orders (TRADE_ACTION_DEAL)
         und löscht parallel alle verwaisten schwebenden Orders (TRADE_ACTION_REMOVE).
@@ -1400,12 +1441,12 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
                 logging.info(f"FTMOBrokerAdapter: Lösche {len(pending_orders)} schwebende Pending Order(s)...")
             for ord_obj in pending_orders:
                 ord_ticket = ord_obj.ticket
-                cancelled = await self.cancel_order(str(ord_ticket))
+                cancelled = await self.cancel_order_unlocked(str(ord_ticket))
                 if not cancelled:
                     overall_success = False
 
         return overall_success
-    async def flatten_position(self, account_id: str, symbol: str, order_id: str = "", **kwargs) -> dict:
+    async def flatten_position_unlocked(self, account_id: str, symbol: str, order_id: str = "", **kwargs) -> dict:
         if not await self._ensure_connected():
             return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
 
@@ -1438,7 +1479,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
             orders = await asyncio.to_thread(mt5.orders_get, symbol=resolved_sym) or []
             for ord_obj in orders:
                 if getattr(ord_obj, "magic", 0) == self.MAGIC_NUMBER:
-                    await self.cancel_order(str(ord_obj.ticket))
+                    await self.cancel_order_unlocked(str(ord_obj.ticket))
             return {"status": "ALREADY_FLAT"}
 
         sym_info = await asyncio.to_thread(mt5.symbol_info, resolved_sym)
@@ -1488,7 +1529,58 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         
         return {"status": "FAILED", "reason": "MAX_RETRIES_REACHED"}
 
-    async def get_open_positions(self, account_id: str) -> list | None:
+    async def get_open_positions_unlocked(self, account_id: str) -> list | None:
+        if not await self._ensure_connected():
+            return None
+        positions = await asyncio.to_thread(mt5.positions_get)
+        if positions is None:
+            return None
+        return [pos._asdict() for pos in positions]
+
+    async def get_closed_deal_info_unlocked(self, symbol: str, ticket: int = 0) -> dict | None:
+        if not await self._ensure_connected():
+            return None
+            
+        from datetime import timedelta
+        date_from = datetime.now(timezone.utc) - timedelta(hours=48)
+        date_to = datetime.now(timezone.utc) + timedelta(hours=1)
+        deals = await asyncio.to_thread(mt5.history_deals_get, date_from, date_to)
+        
+        if deals is None or len(deals) == 0:
+            return None
+            
+        clean_sym = symbol.replace("=X", "")
+        
+        valid_deals = []
+        for d in deals:
+            if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT):
+                if ticket > 0:
+                    if d.position_id == ticket:
+                        valid_deals.append(d)
+                else:
+                    if clean_sym in d.symbol:
+                        valid_deals.append(d)
+                    
+        if not valid_deals:
+            return None
+            
+        latest_deal = max(valid_deals, key=lambda x: x.time)
+        return {
+            "price": float(latest_deal.price),
+            "profit": float(latest_deal.profit),
+            "time": latest_deal.time,
+            "comment": str(latest_deal.comment)
+        }
+
+    async def get_working_orders_unlocked(self, account_id: str) -> list:
+        if not await self._ensure_connected():
+            return []
+        orders = await asyncio.to_thread(mt5.orders_get)
+        if orders is None:
+            return []
+        return [ord_item._asdict() for ord_item in orders]
+
+    async def get_account_info_unlocked(self, account_id: str = "") -> dict | None:
         if not await self._ensure_connected():
             return None
         positions = await asyncio.to_thread(mt5.positions_get)
@@ -1583,7 +1675,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
             "daily_pnl": daily_pnl
         }
 
-    async def partial_close(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
+    async def partial_close_unlocked(self, account_id: str, symbol: str, qty: float, is_long: bool, current_price: float = 0.0, order_id: str = "") -> dict:
         if not await self._ensure_connected():
             return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
 
@@ -1689,7 +1781,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         else:
             return {"status": "REJECTED", "retcode": res.retcode, "reason": res.comment}
 
-    async def modify_stop_loss(self, account_id: str, symbol: str, new_sl: float, order_id: str = "", oco_id: str = "", new_qty: float = 0.0) -> dict:
+    async def modify_stop_loss_unlocked(self, account_id: str, symbol: str, new_sl: float, order_id: str = "", oco_id: str = "", new_qty: float = 0.0) -> dict:
         if not await self._ensure_connected():
             return {"status": "FAILED", "reason": "MT5_NOT_CONNECTED"}
 
@@ -1809,6 +1901,88 @@ class ExecutorDaemon:
         for d in [self.dir_pending, self.dir_processing, self.dir_executed, self.dir_rejected]:
             d.mkdir(parents=True, exist_ok=True)
 
+    def _cleanup_fleet_snapshot(self):
+        snap_json = script_dir / "users" / "admin" / "fleet_snapshot.json"
+        snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
+        for p in (snap_json, snap_tmp):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError as e:
+                logging.warning(f"Konnte {p.name} nicht löschen: {e}")
+
+    async def write_fleet_snapshot(self, ftmo_positions=None, apex_positions=None):
+        if self.kill_event.is_set():
+            return
+            
+        try:
+            ftmo_acc = str(MT5_LOGIN) if MT5_LOGIN > 0 else "FTMO"
+            apex_live = await self._resolve_live_risk_state("apex", NT8_ACCOUNT)
+            ftmo_live = await self._resolve_live_risk_state("ftmo", ftmo_acc)
+            apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+
+            if apex_positions is None and self.nt8.connected:
+                apex_positions = await self.nt8.get_open_positions(NT8_ACCOUNT)
+            if ftmo_positions is None and self.ftmo.connected:
+                ftmo_positions = await self.ftmo.get_open_positions(ftmo_acc)
+
+            snap = {
+                "schema_version": 1,
+                "node_origin": NODE_ORIGIN,
+                "executor_mode": EXECUTOR_MODE,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "kill_switch_active": KILL_SWITCH_PATH.exists(),
+                "accounts": {
+                    "apex": {
+                        "account_id": NT8_ACCOUNT,
+                        "account_name": apex_cfg.get("name", "Apex Account"),
+                        "currency": "USD",
+                        "live_connected": apex_live.get("live_connected", False),
+                        "account_size": apex_live.get("account_size", 50000.0),
+                        "balance": apex_live.get("current_balance", 0.0),
+                        "equity": apex_live.get("current_balance", 0.0),
+                        "high_watermark": apex_live.get("high_watermark", 0.0),
+                        "daily_loss_limit": float(apex_cfg.get("daily_loss_limit", apex_cfg.get("daily_loss", apex_live.get("account_size", 50000.0) * 0.025))),
+                        "max_dd_limit": float(apex_cfg.get("max_trailing_dd", apex_cfg.get("trail_dd", apex_live.get("account_size", 50000.0) * 0.050))),
+                        "daily_buffer": apex_live.get("daily_buffer", 0.0),
+                        "max_dd_buffer": apex_live.get("max_dd_buffer", 0.0),
+                        "daily_pnl": apex_live.get("live_daily_pnl", 0.0),
+                        "open_positions_count": len(apex_positions) if apex_positions is not None else None
+                    },
+                    "ftmo": {
+                        "account_id": ftmo_acc,
+                        "account_name": ftmo_cfg.get("name", "FTMO Account"),
+                        "currency": ftmo_live.get("raw_info", {}).get("currency", "EUR"),
+                        "live_connected": ftmo_live.get("live_connected", False),
+                        "account_size": ftmo_live.get("account_size", 80000.0),
+                        "balance": ftmo_live.get("raw_info", {}).get("balance", ftmo_live.get("current_balance", 0.0)),
+                        "equity": ftmo_live.get("current_balance", 0.0),
+                        "daily_loss_limit": float(ftmo_cfg.get("daily_loss_limit", ftmo_cfg.get("daily_loss", float(ftmo_cfg.get("daily_loss_limit_pct", 0.05)) * ftmo_live.get("account_size", 80000.0)))),
+                        "max_dd_limit": float(ftmo_cfg.get("max_trailing_dd", ftmo_cfg.get("trail_dd", float(ftmo_cfg.get("max_drawdown_pct", 0.10)) * ftmo_live.get("account_size", 80000.0)))),
+                        "daily_buffer": ftmo_live.get("daily_buffer", 0.0),
+                        "max_dd_buffer": ftmo_live.get("max_dd_buffer", 0.0),
+                        "daily_pnl": ftmo_live.get("live_daily_pnl", 0.0),
+                        "open_positions_count": len(ftmo_positions) if ftmo_positions is not None else None
+                    }
+                }
+            }
+            
+            snap_json = script_dir / "users" / "admin" / "fleet_snapshot.json"
+            snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
+            
+            snap_tmp.parent.mkdir(parents=True, exist_ok=True)
+            with open(snap_tmp, "w", encoding="utf-8") as f:
+                json.dump(snap, f, indent=4)
+            snap_tmp.replace(snap_json)
+        except Exception as e:
+            logging.error(f"Fehler beim Schreiben des Fleet-Snapshots: {e}")
+            snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
+            if snap_tmp.exists():
+                try:
+                    snap_tmp.unlink()
+                except OSError:
+                    pass
+
     def _load_lab_accounts_config(self) -> tuple[dict, dict]:
         cfg_path = script_dir / "users" / "admin" / "ticker_config.json"
         apex_cfg = {}
@@ -1897,8 +2071,8 @@ class ExecutorDaemon:
         
         if account_type == "apex":
             cfg_size = float(apex_cfg.get("account_size", apex_cfg.get("capital", 50000.0)))
-            cfg_daily_lim = float(apex_cfg.get("daily_loss_limit", cfg_size * 0.025))
-            cfg_trail_dd = float(apex_cfg.get("max_trailing_dd", cfg_size * 0.050))
+            cfg_daily_lim = float(apex_cfg.get("daily_loss_limit", apex_cfg.get("daily_loss", cfg_size * 0.025)))
+            cfg_trail_dd = float(apex_cfg.get("max_trailing_dd", apex_cfg.get("trail_dd", cfg_size * 0.050)))
             
             nt8_info = await self.nt8.get_account_info(account_id)
             if nt8_info:
@@ -1908,8 +2082,9 @@ class ExecutorDaemon:
                 hw = self._update_apex_high_watermark(account_id, cfg_size, live_eq)
                 
                 ko_floor = hw - cfg_trail_dd
-                if cfg_size == 50000.0 and ko_floor > 50100.0:
-                    ko_floor = 50100.0
+                einrast_niveau = cfg_size + 100.0
+                if ko_floor >= einrast_niveau:
+                    ko_floor = einrast_niveau
                     
                 max_dd_buf = max(0.0, live_eq - ko_floor)
                 daily_buf = max(0.0, min(cfg_daily_lim, cfg_daily_lim + min(0.0, daily_pnl)))
@@ -1937,8 +2112,8 @@ class ExecutorDaemon:
                 
         elif account_type == "ftmo":
             cfg_size = float(ftmo_cfg.get("account_size", ftmo_cfg.get("capital", 80000.0)))
-            cfg_daily_lim = float(ftmo_cfg.get("daily_loss_limit_pct", 0.05)) * cfg_size
-            cfg_max_dd_lim = float(ftmo_cfg.get("max_drawdown_pct", 0.10)) * cfg_size
+            cfg_daily_lim = float(ftmo_cfg.get("daily_loss_limit", ftmo_cfg.get("daily_loss", float(ftmo_cfg.get("daily_loss_limit_pct", 0.05)) * cfg_size)))
+            cfg_max_dd_lim = float(ftmo_cfg.get("max_trailing_dd", ftmo_cfg.get("trail_dd", float(ftmo_cfg.get("max_drawdown_pct", 0.10)) * cfg_size)))
             
             mt5_info = await self.ftmo.get_account_info(account_id)
             if mt5_info:
@@ -1999,7 +2174,7 @@ class ExecutorDaemon:
             except asyncio.TimeoutError:
                 pass
 
-    async def sync_broker_exits(self) -> int:
+    async def sync_broker_exits(self, ftmo_positions=None, apex_positions=None) -> int:
         """Führt exakt einen synchronen Durchlauf aus und gibt die Anzahl modifizierter Trades zurück."""
         journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
         if not journal_path.exists():
@@ -2141,16 +2316,17 @@ class ExecutorDaemon:
         """Zyklischer Abgleich von Broker-Ausstiegen (SL/TP) mit dem Journal."""
         logging.info("Position Exit Sync Guard aktiv (Intervall: 15s).")
         while not self.kill_event.is_set():
-            if self.kill_in_progress or KILL_SWITCH_PATH.exists():
-                try:
-                    await asyncio.wait_for(self.kill_event.wait(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    pass
-                continue
             try:
-                await self.sync_broker_exits()
+                ftmo_pos = await self.ftmo.get_open_positions("FTMO")
+                apex_pos = await self.nt8.get_open_positions(NT8_ACCOUNT)
+                
+                await self.write_fleet_snapshot(ftmo_pos, apex_pos)
+                
+                if not self.kill_in_progress and not KILL_SWITCH_PATH.exists():
+                    await self.sync_broker_exits(ftmo_pos, apex_pos)
             except Exception as e:
                 logging.error(f"Fehler im position_exit_sync_guard: {e}")
+                
             try:
                 await asyncio.wait_for(self.kill_event.wait(), timeout=15.0)
             except asyncio.TimeoutError:
@@ -3704,6 +3880,7 @@ async def run_daemon():
     logging.info("================================================================================")
 
     daemon = ExecutorDaemon()
+    daemon._cleanup_fleet_snapshot()
     loop = asyncio.get_running_loop()
 
     def _handle_os_signal(sig_name: str):
@@ -3758,6 +3935,8 @@ async def run_daemon():
             await daemon.nt8.disconnect()
         if hasattr(daemon.ftmo, "disconnect"):
             await daemon.ftmo.disconnect()
+
+        daemon._cleanup_fleet_snapshot()
 
         logging.info("INVARIX EXECUTOR DAEMON vollständig und sauber beendet.")
 
@@ -4047,6 +4226,8 @@ async def run_test_battery():
         await daemon.ftmo.disconnect()
     if hasattr(daemon.nt8, 'disconnect'):
         await daemon.nt8.disconnect()
+
+    daemon._cleanup_fleet_snapshot()
 
 
 if __name__ == "__main__":
