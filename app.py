@@ -2316,6 +2316,14 @@ with st.sidebar:
 
     st.markdown("---")
     
+    def normalize_apex_core_symbol(sym):
+        if not sym: return None
+        s = str(sym).upper().replace(" ", "")
+        if s.endswith("=F"): s = s[:-2]
+        if s in ["NQ", "MNQ"]: return "MNQ"
+        if s in ["CL", "MCL"]: return "MCL"
+        return None
+
     # Helfer zum Abrufen der aktuellen Order-Daten (Tab-unabhängig)
     def get_global_order_data():
         user_perms = get_effective_permissions(st.session_state.username, st.session_state.role)
@@ -2324,7 +2332,7 @@ with st.sidebar:
             if st.session_state.get("inbox_order_payload"):
                 sym = str(st.session_state["inbox_order_payload"].get("symbol", "")).upper()
                 cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
-                if sym.endswith("=F") or sym.endswith("=X") or "DX-Y" in sym or sym in cme_list:
+                if sym.endswith("=F") or sym.endswith("=X") or "DX-Y" in sym or sym in cme_list or normalize_apex_core_symbol(sym) is not None:
                     st.session_state["inbox_order_payload"] = None
 
         if st.session_state.get("inbox_order_payload"):
@@ -2352,7 +2360,7 @@ with st.sidebar:
                 setup = sig.get("setup", "")
                 
                 is_fx = sym.upper().endswith("=X") or "DX-Y" in sym.upper()
-                is_fut = "=F" in sym.upper() or sym.upper() in ["MNQ", "MES", "MYM", "M2K", "MGC", "MCL", "QG", "SIL"]
+                is_fut = "=F" in sym.upper() or sym.upper() in ["MNQ", "MES", "MYM", "M2K", "MGC", "MCL", "QG", "SIL"] or normalize_apex_core_symbol(sym) is not None
                 desk_type = "prop" if (is_fx or is_fut) else "swing"
                 a_class = "Forex" if is_fx else ("Futures" if is_fut else "Aktien")
                 
@@ -2423,11 +2431,9 @@ with st.sidebar:
             # Ticker-Vergleich mit Micro-Futures-Toleranz (NQ=F <-> MNQ und CL=F <-> MCL)
             sig_s = str(inbox_data.get("symbol", "")).upper().strip()
             act_s = str(active_sym).upper().strip()
-            sym_match = (
-                (sig_s == act_s) or 
-                (sig_s in ["NQ=F", "MNQ"] and act_s in ["NQ=F", "MNQ"]) or 
-                (sig_s in ["CL=F", "MCL"] and act_s in ["CL=F", "MCL"])
-            )
+            n_sig = normalize_apex_core_symbol(sig_s)
+            n_act = normalize_apex_core_symbol(act_s)
+            sym_match = (sig_s == act_s) or (n_sig is not None and n_sig == n_act)
             
             if sym_match:
                 is_short_inbox = (inbox_data.get("direction", "").upper() == "SHORT")
@@ -2751,7 +2757,7 @@ with st.sidebar:
                 df_j = pd.concat([df_j, pd.DataFrame([new_trade])], ignore_index=True)
                 save_trade_journal(df_j)
                 st.toast(f"✅ Trade für {active_sym} in '{sel_acc_name}' eingeloggt!", icon="📝")
-            st.rerun()
+                st.rerun()
 
     elif desk_type == "prop":
         # ZUSTAND C: PROP-DESK (Futures & Forex)
@@ -3003,10 +3009,11 @@ with st.sidebar:
         sym_u_chk_early = str(active_sym).upper().strip()
         
         session_times = "Regulär"
-        if sym_u_chk_early in ["NQ=F", "MNQ", "ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]:
+        sym_core_early = normalize_apex_core_symbol(sym_u_chk_early)
+        if sym_core_early == "MNQ" or sym_u_chk_early in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]:
             session_times = "09:30–15:30 ET"
             if wd_early >= 5 or not (9.5 <= t_float_early < 15.5): in_session_early = False
-        elif sym_u_chk_early in ["CL=F", "MCL"]:
+        elif sym_core_early == "MCL":
             session_times = "08:30–11:30 ET"
             if wd_early >= 5 or not (8.5 <= t_float_early < 11.5): in_session_early = False
         elif sym_u_chk_early == "EURUSD=X":
@@ -3018,15 +3025,14 @@ with st.sidebar:
         prof_disp_pf = get_profile_display_name(prof_name)
         
         if is_apex_acc_prop:
-            active_sym_upper = str(active_sym).upper().strip()
-            is_apex_master_kader = active_sym_upper in ["NQ=F", "MNQ", "CL=F", "MCL"]
+            apex_core = normalize_apex_core_symbol(active_sym)
             
-            if is_apex_master_kader:
-                if prof_name == "apex_lock":
+            if apex_core is not None:
+                if prof_name == "apex_lock" or (apex_core == "MCL" and prof_name in ["apex_lock", "apex_commodity_scale"]):
                     profile_conflict_blocked_prop = False
                 else:
                     profile_conflict_blocked_prop = True
-                    asset_block_reason = f"{active_sym} erfordert zwingend 'Target-Lock Intraday' (Gewählt: {prof_disp_pf})."
+                    asset_block_reason = f"{active_sym} erfordert zwingend 'Target-Lock Intraday' oder 'Scale-Out Defensiv' (Gewählt: {prof_disp_pf})."
             else:
                 profile_conflict_blocked_prop = True
                 asset_block_reason = "Apex-Guard: Auf Apex-Konten sind ausschließlich der Nasdaq 100 (NQ/MNQ) und Rohöl (CL/MCL) zugelassen. Gold gehört ins private Alpha-Depot."
@@ -3309,8 +3315,10 @@ with st.sidebar:
         t_float = now_dt.hour + now_dt.minute / 60.0
         sym_u_chk = str(active_sym).upper().strip()
         
-        if sym_u_chk in ["NQ=F", "MNQ", "ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"] and (wd >= 5 or not (9.5 <= t_float < 15.5)): in_session = False
-        elif sym_u_chk in ["CL=F", "MCL"] and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
+        sym_core_late = normalize_apex_core_symbol(sym_u_chk)
+        
+        if (sym_core_late == "MNQ" or sym_u_chk in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]) and (wd >= 5 or not (9.5 <= t_float < 15.5)): in_session = False
+        elif (sym_core_late == "MCL") and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
         elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (7.0 <= t_float < 12.0)): in_session = False
         
         if not market_open_prop:
@@ -4078,11 +4086,11 @@ with tab_screen:
             if "Blockiert" in val_str or "Zu teuer" in val_str or "ESG-Sperre" in val_str: return "background-color: rgba(239, 68, 68, 0.15); color: #EF4444; font-weight: bold"
             return ""
         # 2. Dynamischer Filter für die Haupttabelle
-        sel_univ = st.selectbox("📂 Universum filtern:", ["Alle Universen"] + sorted(list(disp_df["Kategorie"].unique())))
+        sel_univ = st.selectbox("📂 Universum filtern:", ["Alle Universen"] + sorted(list(disp_df["Kategorie"].unique())), key="swing_scanner_univ_filter")
         filtered_df = disp_df if sel_univ == "Alle Universen" else disp_df[disp_df["Kategorie"] == sel_univ]
         
         if not filtered_df.empty:
-            filtered_df_clean = filtered_df.drop(columns=["Sort_Score"])
+            filtered_df_clean = filtered_df.drop(columns=["Sort_Score"]).reset_index(drop=True)
             
             if "scanner_favorite_tickers" not in st.session_state: st.session_state.scanner_favorite_tickers = []
             if "active_order_ticker" not in st.session_state: st.session_state.active_order_ticker = None
@@ -4122,26 +4130,26 @@ with tab_screen:
 
             # Sidebar Broker-Order (Exklusivitäts-Logik mit Toast)
             current_orders = edited_df[edited_df["🛒 Order"] == True]["Ticker"].tolist()
-            selected_ticker = None
-            if len(current_orders) > 0:
-                new_ones = [t for t in current_orders if t != st.session_state.active_order_ticker]
-                if new_ones: selected_ticker = new_ones[0]
-                elif len(current_orders) == 1 and st.session_state.active_order_ticker != current_orders[0]: selected_ticker = current_orders[0]
             
-            if selected_ticker:
-                if st.session_state.get("active_futures_order"):
-                    old_asset = st.session_state.active_futures_order
-                    st.session_state.active_futures_order = None
-                    st.toast(f"⚠️ Aktive Order für {old_asset} verworfen – {selected_ticker} in den Order-Desk geladen!", icon="🔄")
-                elif st.session_state.get("active_order_ticker"):
-                    old_asset = st.session_state.active_order_ticker
-                    st.toast(f"⚠️ Vorherige Order für {old_asset} durch {selected_ticker} ersetzt!", icon="🔄")
-                else:
-                    st.toast(f"🛒 Order-Desk geladen für: {selected_ticker}", icon="✅")
-                st.session_state.active_order_ticker = selected_ticker
+            new_selection = None
+            if current_orders:
+                candidates = [t for t in current_orders if t != st.session_state.get("active_order_ticker")]
+                if candidates:
+                    new_selection = candidates[-1]
+                elif len(current_orders) == 1 and current_orders[0] != st.session_state.get("active_order_ticker"):
+                    new_selection = current_orders[0]
+            
+            if new_selection and new_selection != st.session_state.get("active_order_ticker"):
+                st.session_state.active_futures_order = None
+                st.session_state["inbox_order_payload"] = None
+                st.session_state["_last_inbox_sig_id"] = None
+                st.session_state.active_order_ticker = new_selection
+                st.session_state.pop("scanner_editor", None)
+                st.toast(f"🛒 Order-Desk geladen für: {new_selection}", icon="✅")
                 st.rerun()
-            elif len(current_orders) == 0 and st.session_state.active_order_ticker in filtered_df_clean["Ticker"].values:
+            elif not current_orders and st.session_state.get("active_order_ticker") in filtered_df_clean["Ticker"].values:
                 st.session_state.active_order_ticker = None
+                st.session_state.pop("scanner_editor", None)
                 st.toast("Order-Desk geleert.", icon="ℹ️")
                 st.rerun()
 
@@ -8427,6 +8435,7 @@ with tab_fleet:
     snapshot_path = get_user_file("fleet_snapshot.json")
     snapshot_mode = "FALLBACK"
     snapshot_age_str = ""
+    snapshot_stand_str = ""
     snapshot = {}
     
     # 1. Multi-Tenant Reader & Stale-Status (Kein pauschales Löschen)
@@ -8448,6 +8457,10 @@ with tab_fleet:
             snap_time = datetime.datetime.fromisoformat(updated_at_str)
             if snap_time.tzinfo is None:
                 snap_time = snap_time.replace(tzinfo=datetime.timezone.utc)
+            try:
+                snapshot_stand_str = snap_time.astimezone(zoneinfo.ZoneInfo("Europe/Berlin")).strftime("%H:%M:%S MEZ")
+            except Exception:
+                snapshot_stand_str = snap_time.astimezone().strftime("%H:%M:%S Lokal")
             
             age_seconds = (datetime.datetime.now(datetime.timezone.utc) - snap_time).total_seconds()
             
@@ -8596,6 +8609,29 @@ with tab_fleet:
         # Split-Brain Regel
         if fa["snapshot_mode"] in ["LIVE", "STALE"]:
             sd = fa["snap_data"]
+            try:
+                cap_val = float(sd.get("account_size") or sd.get("capital") or 0)
+                if cap_val > 0: fa["start_cap"] = cap_val
+            except Exception: pass
+            
+            try:
+                dl_val = float(sd.get("daily_loss_limit") or sd.get("daily_loss") or 0)
+                if dl_val > 0: fa["daily_loss"] = dl_val
+            except Exception: pass
+            
+            try:
+                mdd_val = float(sd.get("max_dd_limit") or sd.get("max_trailing_dd") or sd.get("trail_dd") or 0)
+                if mdd_val > 0: fa["trail_dd"] = mdd_val
+            except Exception: pass
+            
+            if str(sd.get("account_id", "")).strip(): fa["broker_account_id"] = str(sd.get("account_id", "")).strip()
+            if str(sd.get("account_name", "")).strip(): fa["name"] = str(sd.get("account_name", "")).strip()
+            if str(sd.get("execution_mode", "")).strip(): fa["execution_mode"] = str(sd.get("execution_mode", "")).strip()
+            if str(sd.get("currency", "")).strip(): fa["currency"] = str(sd.get("currency", "")).strip()
+            
+            tks = sd.get("tickers") or sd.get("whitelist")
+            if isinstance(tks, list) and len(tks) > 0: fa["tickers"] = tks
+            
             fa["equity"] = float(sd.get("equity", fa["equity"]))
             fa["balance"] = float(sd.get("balance", fa["balance"]))
             fa["daily_buffer"] = float(sd.get("daily_buffer", fa["daily_buffer"]))
@@ -8714,12 +8750,16 @@ with tab_fleet:
     exec_mode = snapshot.get("executor_mode", "UNKNOWN")
     upd_at = snapshot.get("updated_at", "")
     
+    raw_node = str(node_name).strip()
+    host_label = "Netcup Execution Host" if not raw_node or raw_node == "Unknown Node" else raw_node
+    stand_disp = snapshot_stand_str if snapshot_stand_str else upd_at
+    
     if snapshot_mode == "LIVE":
-        st.success(f"⚡ **Live-Daemon aktiv** | Node: {node_name} ({exec_mode}) | Stand: {upd_at}")
+        st.success(f"🟢 **LIVE** · {host_label} · Stand: {stand_disp}")
     elif snapshot_mode == "STALE":
-        st.warning(f"⚠️ **NICHT LIVE — Letzter bekannter Daemon-Stand** ({snapshot_age_str}, Stand: {upd_at}) | Daten sind eingefroren bis zum nächsten Sync.")
+        st.warning(f"⚠️ **NICHT LIVE** ({snapshot_age_str}) · {host_label} · Stand: {stand_disp} — Daten eingefroren bis zum nächsten Sync")
     else:
-        st.info("📁 **Journal- & Konfigurations-Fallback** (Noch kein Daemon-Snapshot empfangen)")
+        st.info("📁 **FALLBACK** · Lokales Journal & Konfiguration (Noch kein Live-Snapshot empfangen)")
 
     if kill_switch:
         st.error(f"🚨 **LIVE-DAEMON AKTIV — NOTAUS EINGELEITET!**")
