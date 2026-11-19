@@ -1506,24 +1506,51 @@ def calculate_sl_tp_crv(df, current_price, p_sell, tab_mode):
         else: crv_rating = f"🔴 Unattraktiv (1:{crv:.1f})"
             
     return sl, tp, crv_rating
+def resolve_trade_direction(direction_val, setup_type_val="", entry_price=0.0, initial_sl=0.0):
+    dir_str = str(direction_val).strip().upper() if pd.notna(direction_val) else ""
+    if dir_str in ("LONG", "BUY"):
+        return "Long"
+    if dir_str in ("SHORT", "SELL"):
+        return "Short"
+    setup_str = str(setup_type_val).strip().upper() if pd.notna(setup_type_val) else ""
+    if "SHORT" in setup_str and "LONG" not in setup_str:
+        return "Short"
+    if "LONG" in setup_str and "SHORT" not in setup_str:
+        return "Long"
+    try:
+        ep_f = float(entry_price)
+        sl_f = float(initial_sl)
+        if ep_f > 0.0 and sl_f > 0.0:
+            if sl_f < ep_f:
+                return "Long"
+            elif sl_f > ep_f:
+                return "Short"
+    except (TypeError, ValueError):
+        pass
+    return "Long"
+
 def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, atr_val, ema20_val=0, exit_mode="PROP_DEFENSIVE", is_crypto=False, direction="Long", net_be_price=None):
     risk = abs(entry_price - initial_sl)
     if risk <= 0: return initial_sl, "⚪ N/A"
-    dir_m = 1 if direction == "Long" else -1
-    open_profit = (current_price - entry_price) if direction == "Long" else (entry_price - current_price)
-    current_r = open_profit / risk if risk > 0 else 0
-    
+    is_long = (resolve_trade_direction(direction, "", entry_price, initial_sl) == "Long")
+    dir_m = 1 if is_long else -1
+    open_profit = (current_price - entry_price) if is_long else (entry_price - current_price)
     eff_be = net_be_price if (net_be_price is not None and net_be_price > 0) else entry_price
+    if net_be_price is not None and net_be_price > 0:
+        net_profit = (current_price - eff_be) if is_long else (eff_be - current_price)
+        current_r = net_profit / risk if risk > 0 else 0
+    else:
+        current_r = open_profit / risk if risk > 0 else 0
     
     if exit_mode == "DEFENSIVE_EMERGENCY":
         if current_r < 0.75:
             return initial_sl, "🚨 Slippage-Notfallmodus (Frühes BE ab +0.75 R)"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
+            new_sl = max(initial_sl, eff_be) if is_long else min(initial_sl, eff_be)
             return new_sl, "🚨 Notfall-BE aktiv (50% Scale-Out & Netto-BE ab +0.75 R)"
         else:
             trail_base = current_price - (1.5 * atr_val * dir_m)
-            new_sl = max(eff_be, trail_base) if direction == "Long" else min(eff_be, trail_base)
+            new_sl = max(eff_be, trail_base) if is_long else min(eff_be, trail_base)
             return new_sl, "🚨 Notfall-Trail aktiv (Enger 1.5x ATR Schutz)"
 
     if is_crypto:
@@ -1531,9 +1558,9 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
             return initial_sl, "🛡️ Initial-Schutz (Krypto-DNA: Kein frühes BE)"
         else:
             trend_trail = current_price - (3.5 * atr_val * dir_m)
-            new_target_sl = max(eff_be, trend_trail) if direction == "Long" else min(eff_be, trend_trail)
+            new_target_sl = max(eff_be, trend_trail) if is_long else min(eff_be, trend_trail)
             if ema20_val > 0:
-                new_target_sl = max(new_target_sl, ema20_val * 0.98) if direction == "Long" else min(new_target_sl, ema20_val * 1.02)
+                new_target_sl = max(new_target_sl, ema20_val * 0.98) if is_long else min(new_target_sl, ema20_val * 1.02)
             return new_target_sl, "🪙 Krypto-Trail aktiv (3.5x ATR, BE ab +1.5R)"
     
     if exit_mode == "TARGET_LOCKED":
@@ -1541,42 +1568,42 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
         if current_r < 1.0:
             return initial_sl, "🛡️ Initial-Schutz"
         else:
-            new_sl = max(initial_sl, peak_protection) if direction == "Long" else min(initial_sl, peak_protection)
+            new_sl = max(initial_sl, peak_protection) if is_long else min(initial_sl, peak_protection)
             return new_sl, "🛡️ Apex Tightening ab +1.0 R (80% Peak Protection)"
             
     elif exit_mode == "ALPHA_CASHFLOW":
-        tp_distance = abs(tp_price - entry_price)
-        tight_trigger_profit = 0.9 * tp_distance
+        has_valid_tp = (tp_price is not None and pd.notna(tp_price) and tp_price > 0.0 and ((tp_price > entry_price) if is_long else (tp_price < entry_price)))
+        tight_trigger_profit = 0.9 * abs(tp_price - entry_price) if has_valid_tp else None
         
         if current_r < 1.0:
             return initial_sl, "🛡️ Initial-Schutz"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
+            new_sl = max(initial_sl, eff_be) if is_long else min(initial_sl, eff_be)
             return new_sl, "⚖️ Scale-Out 30% & Netto-BE ab +1.0 R"
             
         new_target_sl = eff_be
         msg = "📈 Trail-Modus aktiv"
         
-        if open_profit >= tight_trigger_profit:
+        if has_valid_tp and open_profit >= tight_trigger_profit:
             trail_base = current_price - (0.5 * atr_val * dir_m)
-            new_target_sl = max(new_target_sl, trail_base) if direction == "Long" else min(new_target_sl, trail_base)
+            new_target_sl = max(new_target_sl, trail_base) if is_long else min(new_target_sl, trail_base)
             msg = "🔥 90% Tightening aktiv"
         else:
             trail_base = current_price - (2.5 * atr_val * dir_m)
-            new_target_sl = max(new_target_sl, trail_base) if direction == "Long" else min(new_target_sl, trail_base)
+            new_target_sl = max(new_target_sl, trail_base) if is_long else min(new_target_sl, trail_base)
             msg = "📈 Trail-Modus aktiv (2.5x ATR)"
             
         if current_r >= 6.0:
             peak_floor = entry_price + (open_profit * 0.50 * dir_m)
-            new_target_sl = max(new_target_sl, peak_floor) if direction == "Long" else min(new_target_sl, peak_floor)
+            new_target_sl = max(new_target_sl, peak_floor) if is_long else min(new_target_sl, peak_floor)
             msg = "🚀 Home-Run Stufe 3 aktiv (+6.0R Peak Protection 50%)"
         elif current_r >= 4.0:
             r4_floor = entry_price + (2.5 * risk * dir_m)
-            new_target_sl = max(new_target_sl, r4_floor) if direction == "Long" else min(new_target_sl, r4_floor)
+            new_target_sl = max(new_target_sl, r4_floor) if is_long else min(new_target_sl, r4_floor)
             msg = "🚀 Home-Run Stufe 2 aktiv (+4.0R gesichert auf +2.5R)"
         elif current_r >= 2.5:
             r25_floor = entry_price + (1.0 * risk * dir_m)
-            new_target_sl = max(new_target_sl, r25_floor) if direction == "Long" else min(new_target_sl, r25_floor)
+            new_target_sl = max(new_target_sl, r25_floor) if is_long else min(new_target_sl, r25_floor)
             msg = "🚀 Home-Run Stufe 1 aktiv (+2.5R gesichert auf +1.0R)"
             
         return new_target_sl, msg
@@ -1584,24 +1611,27 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
     elif exit_mode == "HOME_RUN_TREND":
         trend_trail = current_price - (3.0 * atr_val * dir_m)
         if ema20_val > 0:
-            trend_trail = max(trend_trail, ema20_val * 0.98) if direction == "Long" else min(trend_trail, ema20_val * 1.02)
+            trend_trail = max(trend_trail, ema20_val * 0.98) if is_long else min(trend_trail, ema20_val * 1.02)
             
         new_target_sl = trend_trail
         if current_r >= 6.0:
             peak_floor = entry_price + (open_profit * 0.50 * dir_m)
-            new_target_sl = max(trend_trail, peak_floor) if direction == "Long" else min(trend_trail, peak_floor)
+            new_target_sl = max(trend_trail, peak_floor) if is_long else min(trend_trail, peak_floor)
             return new_target_sl, "🚀 Home-Run aktiv (+6.0R Peak Protection 50%)"
         elif current_r >= 4.0:
             r4_floor = entry_price + (2.5 * risk * dir_m)
-            new_target_sl = max(trend_trail, r4_floor) if direction == "Long" else min(trend_trail, r4_floor)
+            new_target_sl = max(trend_trail, r4_floor) if is_long else min(trend_trail, r4_floor)
             return new_target_sl, "🚀 Home-Run aktiv (+4.0R gesichert auf +2.5R)"
         elif current_r >= 2.5:
             r25_floor = entry_price + (1.0 * risk * dir_m)
-            new_target_sl = max(trend_trail, r25_floor) if direction == "Long" else min(trend_trail, r25_floor)
+            new_target_sl = max(trend_trail, r25_floor) if is_long else min(trend_trail, r25_floor)
             return new_target_sl, "🚀 Home-Run aktiv (+2.5R gesichert auf +1.0R)"
         elif current_r >= 1.5:
-            new_target_sl = max(trend_trail, eff_be) if direction == "Long" else min(trend_trail, eff_be)
-            return new_target_sl, "🚀 Home-Run aktiv (Netto-BE ab +1.5R)"
+            new_target_sl = max(trend_trail, eff_be) if is_long else min(trend_trail, eff_be)
+            return new_target_sl, "🚀 Home-Run aktiv (Trail 3.0x ATR & Netto-BE ab +1.5 R)"
+        elif current_r >= 1.0:
+            new_target_sl = max(initial_sl, eff_be) if is_long else min(initial_sl, eff_be)
+            return new_target_sl, "🚀 Home-Run aktiv (Netto-BE ab +1.0 R)"
         else:
             return initial_sl, "🛡️ Initial-Schutz (Trend)"
             
@@ -1609,11 +1639,11 @@ def calculate_trailing_stop(current_price, entry_price, initial_sl, tp_price, at
         if current_r < 1.0:
             return initial_sl, "🛡️ Initial-Schutz"
         elif current_r < 1.5:
-            new_sl = max(initial_sl, eff_be) if direction == "Long" else min(initial_sl, eff_be)
+            new_sl = max(initial_sl, eff_be) if is_long else min(initial_sl, eff_be)
             return new_sl, "⚖️ Scale-Out 50% & Netto-BE ab +1.0 R"
         else:
             trail_base = current_price - (2.0 * atr_val * dir_m)
-            new_sl = max(eff_be, trail_base) if direction == "Long" else min(eff_be, trail_base)
+            new_sl = max(eff_be, trail_base) if is_long else min(eff_be, trail_base)
             return new_sl, "📈 Trail-Modus aktiv (2.0x ATR)"
 def run_monte_carlo_test(current_price, sl_price, tp_price, iterations=100):
     if current_price <= 0 or sl_price <= 0 or tp_price <= 0: return 0.0, "⚪ N/A"
@@ -6340,10 +6370,14 @@ with tab_dict["lab"]:
                         st.caption(f"Entry: {ep:{fmt}} {curr} (≈ {ep * fx:.2f} €) | Inv: {row['invest_eur']:.2f} €")
                         
                     with col2:
-                        sl = float(row['sl_price'])
-                        tp = float(row['tp_price'])
-                        current_sl = float(row.get('current_sl', sl))
-                        if pd.isna(current_sl): current_sl = sl
+                        sl_raw = row.get('sl_price', 0.0)
+                        sl = float(sl_raw) if (pd.notna(sl_raw) and str(sl_raw).strip() != '') else 0.0
+                        tp_raw = row.get('tp_price', 0.0)
+                        tp = float(tp_raw) if (pd.notna(tp_raw) and str(tp_raw).strip() != '') else 0.0
+                        if tp < 0.0:
+                            tp = 0.0
+                        c_sl_raw = row.get('current_sl', sl)
+                        current_sl = float(c_sl_raw) if (pd.notna(c_sl_raw) and str(c_sl_raw).strip() != '') else sl
                         
                         st.write(f"Initial-SL: {sl:{fmt}} {curr} (≈ {sl * fx:.2f} €)")
                         if current_sl != sl:
@@ -6370,16 +6404,20 @@ with tab_dict["lab"]:
                         else:
                             st.write(f"TP: {tp:{fmt}} {curr} (≈ {tp * fx:.2f} €)")
                         
-                        is_long_col2 = (row['direction'] == 'Long')
-                        tp_condition_col2 = (tp > ep) if is_long_col2 else (tp < ep)
-                        sl_condition_col2 = (sl > 0.0) and ((ep > sl) if is_long_col2 else (ep < sl))
-                        
-                        if (tp_condition_col2 or tp <= 0.0) and sl_condition_col2:
-                            if tp <= 0.0:
-                                risk_per_share = abs(ep - sl)
-                                atr_proxy = (risk_per_share / 1.8) if risk_per_share > 0 else (abs(cur_p - sl) * 0.5)
+                        trade_dir_col2 = resolve_trade_direction(row.get('direction'), row.get('setup_type', ''), ep, sl)
+                        is_long_col2 = (trade_dir_col2 == 'Long')
+                        sl_condition_col2 = (ep > 0.0) and (sl > 0.0) and ((ep > sl) if is_long_col2 else (ep < sl))
+
+                        if sl_condition_col2:
+                            if tp > 0.0:
+                                atr_days_raw = row.get('atr_days', 10.0)
+                                try:
+                                    atr_days_val = float(atr_days_raw) if pd.notna(atr_days_raw) else 10.0
+                                except (TypeError, ValueError):
+                                    atr_days_val = 10.0
+                                atr_proxy = abs(tp - ep) / max(1.0, atr_days_val)
                             else:
-                                atr_proxy = abs(tp - ep) / max(1.0, float(row.get('atr_days', 10.0)))
+                                atr_proxy = abs(ep - sl) * 0.5
                                 
                             exit_mode_val = str(row.get('exit_mode', ''))
                             if not exit_mode_val or exit_mode_val == 'nan':
@@ -6409,15 +6447,15 @@ with tab_dict["lab"]:
                                 elif fx_pair_col2 == "EURJPY":
                                     fee_offset_col2 *= (float(cur_p) * fx)
 
-                            is_long_col2 = (row['direction'] == 'Long')
                             raw_net_be_col2 = (ep + fee_offset_col2) if is_long_col2 else (ep - fee_offset_col2)
                             be_decimals_col2 = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
                             net_be_price_col2 = round(raw_net_be_col2, be_decimals_col2)
 
                             # Trailing-Stop Kalkulation basiert weiterhin auf dem Original-Einstieg/SL!
-                            rec_sl, sl_status = calculate_trailing_stop(cur_p, ep, sl, tp, atr_proxy, exit_mode=exit_mode_val, is_crypto=is_crypto_asset, direction=row['direction'], net_be_price=net_be_price_col2)
+                            rec_sl, sl_status = calculate_trailing_stop(cur_p, ep, sl, tp, atr_proxy, exit_mode=exit_mode_val, is_crypto=is_crypto_asset, direction=trade_dir_col2, net_be_price=net_be_price_col2)
+                            rec_sl = round(float(rec_sl), be_decimals_col2)
                             st.write("")
-                            is_improved = (rec_sl > current_sl) if row['direction'] == 'Long' else (rec_sl < current_sl)
+                            is_improved = (rec_sl > current_sl + 1e-9) if is_long_col2 else (rec_sl < current_sl - 1e-9)
                             if is_improved:
                                 st.success(f"🎯 **Empf. Trail-SL: {rec_sl:{fmt}} {curr}**\n\n{sl_status}")
                                 if st.button("🎯 SL übernehmen", key=f"btn_apply_sl_{row['id']}_{idx}", use_container_width=True):
@@ -6427,8 +6465,9 @@ with tab_dict["lab"]:
                                     full_journal.at[t_idx, 'current_sl'] = rec_sl
                                     
                                     t_entry = float(full_journal.at[t_idx, 'entry_price'])
-                                    t_dir = str(full_journal.at[t_idx, 'direction'])
-                                    dist = (t_entry - rec_sl) if t_dir == 'Long' else (rec_sl - t_entry)
+                                    t_sl_init = float(full_journal.at[t_idx, 'sl_price']) if pd.notna(full_journal.at[t_idx, 'sl_price']) else sl
+                                    t_is_long = (resolve_trade_direction(full_journal.at[t_idx, 'direction'], full_journal.at[t_idx, 'setup_type'], t_entry, t_sl_init) == 'Long')
+                                    dist = (t_entry - rec_sl) if t_is_long else (rec_sl - t_entry)
                                     
                                     t_sym_u = str(full_journal.at[t_idx, 'symbol']).upper()
                                     t_fx_raw = full_journal.at[t_idx, 'fx_rate']
@@ -6446,8 +6485,8 @@ with tab_dict["lab"]:
                                         new_risk = 0.0
                                         
                                     is_risk_free = False
-                                    if t_dir == 'Long' and rec_sl >= net_be_price_col2 and t_entry > 0: is_risk_free = True
-                                    if t_dir == 'Short' and rec_sl <= net_be_price_col2 and t_entry > 0: is_risk_free = True
+                                    if t_is_long and rec_sl >= (net_be_price_col2 - 1e-9) and t_entry > 0: is_risk_free = True
+                                    if (not t_is_long) and rec_sl <= (net_be_price_col2 + 1e-9) and t_entry > 0: is_risk_free = True
                                     
                                     if is_risk_free:
                                         full_journal.at[t_idx, 'current_risk_eur'] = 0.00
@@ -6496,6 +6535,8 @@ with tab_dict["lab"]:
                                 else:
                                     if (current_sl == sl or current_sl <= 0.0) and current_risk_col2 > 0:
                                         st.markdown("🛡️ **Status:** Initial-Schutz (Kapitalerhalt)")
+                                    elif current_risk_col2 <= 0.0:
+                                        st.markdown("🛡️ **Status:** Net-BE gesichert (Freier Trendlauf, Trailing aktiv ab +1.5 R)")
                                     else:
                                         st.markdown("🎯 **Status:** Freier Trendlauf (Trailing aktiv ab +1.5 R)")
                                 
@@ -6523,7 +6564,7 @@ with tab_dict["lab"]:
                         reason_opts = ["🎯 Take Profit erreicht", "🛑 Stop Loss gegriffen", "🛑 Trailing-Stop gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
                         if tp <= 0.0:
                             reason_opts = ["🛑 Trailing-Stop gegriffen", "🛑 Stop Loss gegriffen", "⏳ Time-Stop ausgelöst", "✋ Manueller Exit"]
-                        is_long_col4 = (row['direction'] == 'Long')
+                        is_long_col4 = is_long_col2
                         def_idx = len(reason_opts) - 1 # Manueller Exit
                         
                         if tp > 0.0:

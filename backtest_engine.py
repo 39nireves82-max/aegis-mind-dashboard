@@ -204,7 +204,22 @@ def calculate_indicators(df, bench_df, vol_proxy="atr_ratio", vol_proxy_mult=1.0
 #endregion
 
 #region TRADE LOGIC
-def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0):
+def normalize_allowed_setups(allowed_setups: str) -> str:
+    norm = str(allowed_setups or "AB").strip().upper()
+    if norm not in ("A", "B", "AB"):
+        raise ValueError(f"Ungültiger Wert für --allowed_setups: '{allowed_setups}'. Erlaubt sind: A, B, AB.")
+    return norm
+
+def get_setup_code(setup_label: str) -> str:
+    lbl = str(setup_label or "").strip().upper()
+    if lbl in ("B", "SETUP_B", "SETUP B") or "TREND" in lbl or "PULLBACK" in lbl:
+        return "B"
+    if lbl in ("A", "SETUP_A", "SETUP A"):
+        return "A"
+    return "A"
+
+def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+    allowed_setups_norm = normalize_allowed_setups(allowed_setups)
     trades = []
     in_trade = False
     cooldown = 0
@@ -541,6 +556,10 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
             initial_sl = initial_sl_calc
             if dir_m == 1 and initial_sl >= entry_price: initial_sl = entry_price * 0.95
             if dir_m == -1 and initial_sl <= entry_price: initial_sl = entry_price * 1.05
+            if get_setup_code(t_type) not in allowed_setups_norm:
+                continue
+            if max_sl_points > 0.0 and abs(entry_price - initial_sl) > max_sl_points:
+                continue
 
             if min_sl_pips > 0.0 and a_type == "forex" and "=X" in str(ticker).upper():
                 pip_mult = 100.0 if "JPY" in str(ticker).upper() else 10000.0
@@ -806,7 +825,8 @@ def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", t
         return (master_score, sl, temp_tp, t_type, direction)
     return None
 
-def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0):
+def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+    allowed_setups_norm = normalize_allowed_setups(allowed_setups)
     trades = []
     open_positions = {}
     account_balance = account_size
@@ -1189,6 +1209,10 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
             initial_sl = initial_sl_calc
             if dir_m == 1 and initial_sl >= entry_price: initial_sl = entry_price * 0.95
             if dir_m == -1 and initial_sl <= entry_price: initial_sl = entry_price * 1.05
+            if get_setup_code(t_type) not in allowed_setups_norm:
+                continue
+            if max_sl_points > 0.0 and abs(entry_price - initial_sl) > max_sl_points:
+                continue
 
             if min_sl_pips > 0.0 and a_type == "forex" and "=X" in str(ticker).upper():
                 pip_mult = 100.0 if "JPY" in str(ticker).upper() else 10000.0
@@ -1276,7 +1300,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                     }
     return trades
 
-def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0):
+def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
     end_date = datetime.date.today()
     days_to_sub = int(years*365) 
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1304,7 +1328,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
     
     if mode == "holdout":
         split_idx = int(len(all_dates) * 0.7)
-        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips)
+        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1324,7 +1348,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
             test_end = min(train_end + test_size, len(all_dates))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips)
+            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
             all_trades.extend(w_trades)
             
             if test_end == len(all_dates): break
@@ -1499,7 +1523,7 @@ def optimize_basket_pool(candidate_tickers, sector_map, target_size, years, fee_
         "skipped_tickers": skipped_tickers
     }
 
-def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0):
+def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
     end_date = datetime.date.today()
     days_to_sub = int(years*365)
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1536,7 +1560,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
     
     if mode == "holdout":
         split_idx = int(len(df) * 0.7)
-        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name="Holdout", exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips)
+        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name="Holdout", exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1556,7 +1580,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
             test_end = min(train_end + test_size, len(df))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name=window_name, exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips)
+            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name=window_name, exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
             all_trades.extend(w_trades)
             
             if test_end == len(df): break
@@ -1619,6 +1643,8 @@ if __name__ == "__main__":
     parser.add_argument("--vol_proxy", type=str, default="atr_ratio", choices=["atr_ratio", "raw_tr", "median_ratio"], help="Berechnungsmethode für den Volume-Proxy bei fehlenden Volumendaten")
     parser.add_argument("--vol_proxy_mult", type=float, default=1.0, help="Sensitivitäts-Multiplikator für den Volume-Proxy (z. B. 0.8 bis 1.4)")
     parser.add_argument("--min_sl_pips", type=float, default=0.0, help="Mindest-Abstand in Pips für Forex-Trades (Überspringt Einstiege, deren SL zu eng ist)")
+    parser.add_argument("--max_sl_points", type=float, default=0.0, help="Maximaler Initial-SL-Abstand in Kurspunkten (0.0 = deaktiviert)")
+    parser.add_argument("--allowed_setups", type=lambda s: str(s).strip().upper(), default="AB", choices=["A", "B", "AB"], help="Zugelassene Setup-Typen (A = Reversal, B = Pullback, AB = Beide)")
     args = parser.parse_args()
     
     fee_rate = 0.0025
@@ -1661,6 +1687,13 @@ if __name__ == "__main__":
     print(f"📊 Volume-Proxy Modus: {args.vol_proxy} | Multiplikator: {args.vol_proxy_mult}")
     if args.min_sl_pips > 0:
         print(f"📏 Forex Min-SL Filter: Aktiv (Mindestabstand {args.min_sl_pips} Pips)")
+    if args.max_sl_points > 0.0:
+        print(f"🛑 Max-SL-Filter: Aktiv (Max. {args.max_sl_points} Kurspunkte)")
+    else:
+        print("🛑 Max-SL-Filter: Inaktiv (0.0)")
+    setup_desc = {"A": "Nur Setup A (Reversal)", "B": "Nur Setup B (Pullback)", "AB": "Setup A + B (Alle)"}
+    print(f"🧩 Zugelassene Setups: {args.allowed_setups} ({setup_desc[args.allowed_setups]})")
+
     
     ticker_label = args.ticker
     if args.tickers:
@@ -1686,14 +1719,16 @@ if __name__ == "__main__":
                 daily_loss=args.daily_loss,
                 vol_proxy=args.vol_proxy,
                 vol_proxy_mult=args.vol_proxy_mult,
-                min_sl_pips=args.min_sl_pips
+                min_sl_pips=args.min_sl_pips,
+                max_sl_points=args.max_sl_points,
+                allowed_setups=args.allowed_setups
             )
             df_hist = pd.DataFrame() 
             ticker_label = f"PORTFOLIO:[{','.join(ticker_list)}]"
         else:
-            trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips)
+            trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups)
     else:
-        trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips)
+        trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups)
     metrics_all = calculate_metrics(trades)
     df_trades = pd.DataFrame(trades)
     
