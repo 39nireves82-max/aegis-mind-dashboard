@@ -1027,6 +1027,7 @@ POINT_VALUES = {
     "MCL": 100.0, "CL=F": 100.0,
     "QG": 2500.0, "NG=F": 2500.0,
     "MHG": 250.0, "HG=F": 250.0,
+    "M6E": 12500.0, "6E=F": 12500.0, "6E": 12500.0,
     "Lot": 100000.0
 }
 
@@ -1870,6 +1871,7 @@ def calc_tax_report(df_journal, selected_year, jurisdiction, account_filter, acc
 PROFILE_DISPLAY_NAMES = {
     "apex_lock": "Target-Lock Intraday (Apex)",
     "ftmo_swing": "Forex Swing-Runner (FTMO)",
+    "eod_futures": "EOD-Futures Prop-Desk (MFFU / Tradeify)",
     "private_alpha": "Home-Run Trend (Maximal-Alpha)",
     "commodity_scale": "Scale-Out Defensiv (Rohstoff-Swing)",
     "apex_commodity_scale": "Scale-Out Defensiv (Rohstoff-Swing)",
@@ -1884,16 +1886,18 @@ def get_profile_display_name(prof_key):
 
 def get_asset_strategy_recommendation(symbol):
     sym = str(symbol).upper().strip()
-    if sym == 'NQ=F':
-        return {"label": "🟢 Validierter Prop-Leader", "konto_typ": "Apex Prop-Desk (50k)", "profil": "Target-Lock Intraday (Apex)", "valid_profiles": ["apex_lock"], "timeframe": "1h (RTH 15:30–21:30 MEZ)", "hinweis": "Striktes Apex Target-Lock (+2.0 R). EOD-Glattstellung vor 22:00 Uhr MEZ zwingend. Im Privatdepot ab 15.000 € Kontogröße zulässig."}
+    if sym in ['NQ=F', 'MNQ']:
+        return {"label": "🟢 Validierter Prop-Leader", "konto_typ": "Apex Prop-Desk (50k) / EOD-Futures (MFFU)", "profil": "Target-Lock Intraday (Apex)", "valid_profiles": ["apex_lock", "eod_futures"], "timeframe": "1h (RTH 15:30–21:30 MEZ)", "hinweis": "Striktes Apex Target-Lock (+2.0 R). EOD-Glattstellung vor 22:00 Uhr MEZ zwingend. Im Privatdepot ab 15.000 € Kontogröße zulässig."}
+    elif sym in ['6E=F', 'M6E', '6E']:
+        return {"label": "🟢 Validierter EOD-FX-Future (M6E)", "konto_typ": "EOD-Futures Prop-Desk (MFFU / Tradeify)", "profil": "EOD-Futures Prop-Desk (MFFU / Tradeify)", "valid_profiles": ["eod_futures"], "timeframe": "4h (13:00–18:00 MEZ)", "hinweis": "Micro Euro FX (M6E) im EOD-Futures Prop-Desk. Max-SL <= 0,0160 sowie EOD-Flatten 22:00 MEZ zwingend beachten."}
     elif sym in ['USDJPY=X', 'GBPUSD=X', 'JPY=X', 'GBP=X']:
         return {"label": "🟢 Validierter Forex-Swing", "konto_typ": "FTMO Prop-Desk (50k)", "profil": "Forex Swing-Runner (FTMO)", "valid_profiles": ["ftmo_swing"], "timeframe": "4h", "hinweis": "Strikte 5% Sizing-Regel vom Daily Loss. Freier Trendauslauf (kein starres Apex-EOD)."}
     elif sym == 'EURUSD=X':
         return {"label": "🟢 Validierter London/NY Overlap", "konto_typ": "FTMO Prop-Desk (50k)", "profil": "Forex Swing-Runner (FTMO)", "valid_profiles": ["ftmo_swing"], "timeframe": "1h (13:00–18:00 MEZ)", "hinweis": "Nur im 1h-Takt während der Überlappung handeln (4h empirisch ungeeignet)."}
     elif sym in ['CL=F', 'MCL']:
-        return {"label": "🟢 Validierter Rohstoff (Dual: Apex Intraday & Privat-Swing)", "konto_typ": "Apex Prop-Desk (MCL) ODER Privates Depot (CL=F)", "profil": "Target-Lock Intraday (Apex) / Scale-Out Defensiv", "valid_profiles": ["apex_lock", "commodity_scale", "apex_commodity_scale"], "timeframe": "1h Intraday (14:30–17:30 MEZ) ODER 4h Swing", "hinweis": "Auf Apex als MCL-Micro via RESONO (EOD-Exit vor 20:15 MEZ zwingend). Im Privatdepot als Mehrtages-Swing handelbar."}
-    elif sym == 'GC=F':
-        return {"label": "⚖️ Privater Edelmetall-Swing", "konto_typ": "Privates Vermögenskonto", "profil": "Rohstoff-Runner (Privat-Alpha)", "valid_profiles": ["commodity_alpha"], "timeframe": "1h (London-Session 09:00–18:00 MEZ)", "hinweis": "Freier Trendlauf ohne Scale-Out. Für Prop-Challenges ungeeignet."}
+        return {"label": "🟢 Validierter Rohstoff (Dual: Apex Intraday & Privat-Swing)", "konto_typ": "Apex Prop-Desk (MCL) / EOD-Futures (MFFU) ODER Privates Depot (CL=F)", "profil": "Target-Lock Intraday (Apex) / Scale-Out Defensiv", "valid_profiles": ["apex_lock", "eod_futures", "commodity_scale", "apex_commodity_scale"], "timeframe": "1h Intraday (14:30–17:30 MEZ) ODER 4h Swing", "hinweis": "Auf Apex als MCL-Micro via RESONO (EOD-Exit vor 20:15 MEZ zwingend). Auf EOD-Futures (MFFU) 4h bis Max-SL <= 2,50. Im Privatdepot als Mehrtages-Swing handelbar."}
+    elif sym in ['GC=F', 'MGC']:
+        return {"label": "⚖️ Edelmetall-Swing (Privat-Alpha / EOD-Futures)", "konto_typ": "Privates Vermögenskonto / EOD-Futures Prop-Desk (MFFU)", "profil": "Rohstoff-Runner (Privat-Alpha)", "valid_profiles": ["commodity_alpha", "eod_futures"], "timeframe": "1h (London-Session 09:00–18:00 MEZ)", "hinweis": "Freier Trendlauf ohne Scale-Out. Für 50k-Apex gesperrt; auf EOD-Futures (MFFU) nur Setup B (1h, Max-SL <= 25,0, EOD 22:00 MEZ) zugelassen."}
     elif any(ext in sym for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF", "BTC", "ETH", "SOL", "NEAR"]):
         return {"label": "🪙 Krypto-DNA (Volatilitäts-Modus)", "konto_typ": "Privates Krypto-Portfolio (Bybit/IBKR)", "profil": "Home-Run Trend (Maximal-Alpha)", "valid_profiles": ["private_alpha"], "timeframe": "1d", "hinweis": "Streng für Prop-Trading verboten! Kein BE vor +1.5 R, weiter 3.5x ATR Trailing-Stop."}
     elif not sym.endswith("=F") and not sym.endswith("=X") and not sym.startswith("^"):
@@ -1958,12 +1962,15 @@ def format_dynamic_price(val, ticker="", is_invest=False):
     abs_val = abs(val)
     sym_u = str(ticker).upper().strip()
     is_fx = sym_u.endswith("=X") or "DX-Y" in sym_u
+    is_euro_fx = sym_u in ("6E=F", "M6E", "6E", "M6E=F")
 
     if is_invest and abs_val >= 1000.0:
         return f"{int(round(val))}"
     if abs_val >= 10.0:
         return f"{val:.2f}"
     elif abs_val >= 1.0:
+        if is_euro_fx:
+            return f"{val:.5f}"
         return f"{val:.4f}" if is_fx else f"{val:.3f}"
     elif abs_val >= 0.01:
         return f"{val:.5f}"
@@ -1975,9 +1982,12 @@ def get_number_input_args(val, ticker=""):
     abs_val = abs(val)
     sym_u = str(ticker).upper().strip()
     is_fx = sym_u.endswith("=X") or "DX-Y" in sym_u
+    is_euro_fx = sym_u in ("6E=F", "M6E", "6E", "M6E=F")
     
     if abs_val >= 10.0: return 0.01, "%.2f"
-    elif abs_val >= 1.0: return (0.0001, "%.4f") if is_fx else (0.001, "%.3f")
+    elif abs_val >= 1.0:
+        if is_euro_fx: return 0.00005, "%.5f"
+        return (0.0001, "%.4f") if is_fx else (0.001, "%.3f")
     elif abs_val >= 0.01: return 0.00001, "%.5f"
     else: return 0.000001, "%.6f"
 
@@ -2190,6 +2200,7 @@ with st.expander("📖 Schnellstart-Anleitung & Kader-Spickzettel", expanded=Fal
     * **Apex 50k:** Ticker `NQ=F` (1h, RTH 15:30–21:30 MEZ) & `MCL` (Micro WTI Crude Oil) (1h, Pit-Session 14:30–17:30 MEZ, EOD-Hard-Exit vor 20:15 MEZ) | Profil: **Target-Lock Intraday (apex_lock)** gesteuert durch RESONO.
     * **FTMO 50k (Majors):** Ticker `USDJPY=X` & `GBPUSD=X` (4h) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing.
     * **FTMO 50k (EURUSD):** Ticker `EURUSD=X` (1h, London/NY-Overlap 13:00–18:00 MEZ) | Setup A (Reversal, Score ≥ 70) | Profil: **Forex Swing-Runner (ftmo_swing)** mit 5% Daily-Loss Sizing. (Strikte Kernliquidität beachten!)
+    * **MFFU 100k EOD:** Ticker `M6E` (4h, Max-SL ≤ 0,0160), `MGC` (1h, nur Setup B, Max-SL ≤ 25,0), `MCL` (4h, Max-SL ≤ 2,50), `MNQ` (1h, Max-SL ≤ 62,5) | EOD-Flatten 22:00 MEZ | Profil: **EOD-Futures Prop-Desk (eod_futures)** | Gänge: `EVAL_TURBO` 0,35 % / `FUNDED_SHIELD` 0,25 %.
 
     **👤 Privates Cashflow- & Alpha-Depot (tax_category: private):**
     * **High-Beta Tech & Growth (z.B. NVDA, PLTR, AAPL auf 4h, RTH 15:30–22:00 MEZ):** Ausschließlich Setup B Trend-Pullbacks über EMA 200. Profil: **Defensiv-Swing (defensive_swing)** für frühe Gewinnsicherung (+1.0 R) oder **Home-Run Trend (private_alpha)** für freie Mega-Trends.
@@ -2354,6 +2365,16 @@ with st.sidebar:
         if s in ["CL", "MCL"]: return "MCL"
         return None
 
+    def normalize_futures_micro_symbol(sym):
+        if not sym: return None
+        s = str(sym).upper().replace(" ", "")
+        if s.endswith("=F"): s = s[:-2]
+        if s in ["NQ", "MNQ"]: return "MNQ"
+        if s in ["CL", "MCL"]: return "MCL"
+        if s in ["GC", "MGC"]: return "MGC"
+        if s in ["6E", "M6E"]: return "M6E"
+        return None
+
     # Helfer zum Abrufen der aktuellen Order-Daten (Tab-unabhängig)
     def get_global_order_data():
         user_perms = get_effective_permissions(st.session_state.username, st.session_state.role)
@@ -2361,8 +2382,8 @@ with st.sidebar:
             st.session_state["active_futures_order"] = None
             if st.session_state.get("inbox_order_payload"):
                 sym = str(st.session_state["inbox_order_payload"].get("symbol", "")).upper()
-                cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
-                if sym.endswith("=F") or sym.endswith("=X") or "DX-Y" in sym or sym in cme_list or normalize_apex_core_symbol(sym) is not None:
+                cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "M6E", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG", "6E"]
+                if sym.endswith("=F") or sym.endswith("=X") or "DX-Y" in sym or sym in cme_list or normalize_futures_micro_symbol(sym) is not None:
                     st.session_state["inbox_order_payload"] = None
 
         if st.session_state.get("inbox_order_payload"):
@@ -2390,7 +2411,7 @@ with st.sidebar:
                 setup = sig.get("setup", "")
                 
                 is_fx = sym.upper().endswith("=X") or "DX-Y" in sym.upper()
-                is_fut = "=F" in sym.upper() or sym.upper() in ["MNQ", "MES", "MYM", "M2K", "MGC", "MCL", "QG", "SIL"] or normalize_apex_core_symbol(sym) is not None
+                is_fut = "=F" in sym.upper() or sym.upper() in ["MNQ", "MES", "MYM", "M2K", "M6E", "MGC", "MCL", "QG", "SIL", "6E"] or normalize_futures_micro_symbol(sym) is not None
                 desk_type = "prop" if (is_fx or is_fut) else "swing"
                 a_class = "Forex" if is_fx else ("Futures" if is_fut else "Aktien")
                 
@@ -2458,11 +2479,11 @@ with st.sidebar:
         if st.session_state.get("inbox_prefill_active", False):
             inbox_data = st.session_state.get("inbox_prefill_data", {})
             
-            # Ticker-Vergleich mit Micro-Futures-Toleranz (NQ=F <-> MNQ und CL=F <-> MCL)
+            # Ticker-Vergleich mit Micro-Futures-Toleranz (4er-Micro-Kader: MNQ, MCL, MGC, M6E)
             sig_s = str(inbox_data.get("symbol", "")).upper().strip()
             act_s = str(active_sym).upper().strip()
-            n_sig = normalize_apex_core_symbol(sig_s)
-            n_act = normalize_apex_core_symbol(act_s)
+            n_sig = normalize_futures_micro_symbol(sig_s)
+            n_act = normalize_futures_micro_symbol(act_s)
             sym_match = (sig_s == act_s) or (n_sig is not None and n_sig == n_act)
             
             if sym_match:
@@ -2719,8 +2740,11 @@ with st.sidebar:
                 is_crypto_poka = any(ext in sym_u_poka for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF", "BTC", "ETH", "SOL"]) or "KRYPTO" in str(row_data.get('Kategorie', row_data.get('Sektor', ''))).upper()
                 acc_tax = sel_acc_data.get("tax_category", "private")
                 
-                if is_crypto_poka and (acc_tax == "prop_firm" or acc_prof_sb in ["apex_lock", "ftmo_swing"]):
+                if is_crypto_poka and (acc_tax == "prop_firm" or acc_prof_sb in ["apex_lock", "ftmo_swing", "eod_futures"]):
                     st.error("🛑 **Krypto-Guard:** Kryptowährungen sind für Prop-Firm Challenges gesperrt (Whipsaw-Risiko). Bitte ein privates Depot wählen.")
+                    is_poka_blocked = True
+                elif acc_prof_sb == "eod_futures" or any(kw in sel_acc_name.lower() for kw in ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")):
+                    st.error("🛑 **EOD-Futures-Guard:** Auf EOD-Futures-Konten (MFFU / Tradeify) sind ausschließlich die 4 CME-Micros (MNQ, MGC, MCL, M6E) zugelassen. Aktien- und Krypto-Swings sind gesperrt.")
                     is_poka_blocked = True
                 elif "apex" in acc_prof_sb.lower() or "apex" in sel_acc_name.lower():
                     st.error("🛑 **Apex-Guard:** Auf Apex-Konten sind ausschließlich CME-Futures zugelassen. Aktien- und Krypto-Swings sind gesperrt.")
@@ -2809,6 +2833,7 @@ with st.sidebar:
         elif active_sym_u in ["YM=F", "MYM"]: c_type = "MYM"
         elif active_sym_u in ["CL=F", "MCL"]: c_type = "MCL"
         elif active_sym_u in ["GC=F", "MGC"]: c_type = "MGC"
+        elif active_sym_u in ["6E=F", "M6E", "6E", "M6E=F"]: c_type = "M6E"
         elif active_sym_u in ["RTY=F", "M2K"]: c_type = "M2K"
         elif row_data.get("Klasse") == "Forex" or is_fx_sidebar: c_type = "Lot"
         else: c_type = "Kontrakt"
@@ -2848,6 +2873,8 @@ with st.sidebar:
             
             free_cash_pf = sandbox_cap_pf
             is_apex_lock = False
+            is_eod_futures_sb = False
+            sel_pf_acc_data = {}
             prof_name = "sandbox"
             dl = sandbox_cap_pf * 0.05
             mdd = sandbox_cap_pf * 0.10
@@ -2859,13 +2886,27 @@ with st.sidebar:
         else:
             sel_pf_acc_id = acc_opts_t3[sel_pf_acc_name]
             sel_pf_acc_data = st.session_state.config.get("lab_accounts", {}).get(sel_pf_acc_id, {})
-            is_apex_lock = sel_pf_acc_data.get("exit_profile") == "apex_lock"
+            prof_name = sel_pf_acc_data.get("exit_profile", "prop_guard")
+            _eod_kws_sb = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
+            _acc_meta_sb = f"{sel_pf_acc_name} {sel_pf_acc_data.get('name', '')} {sel_pf_acc_data.get('account_type', '')} {sel_pf_acc_data.get('broker_profile', '')}".lower()
+            is_eod_futures_sb = (prof_name == "eod_futures") or any(kw in _acc_meta_sb for kw in _eod_kws_sb)
+            is_apex_lock = (prof_name == "apex_lock") and not is_eod_futures_sb
             start_cap_pf = float(sel_pf_acc_data.get("account_size", 50000.0))
             
-            prof_name = sel_pf_acc_data.get("exit_profile", "prop_guard")
-            if prof_name == "apex_lock" or "apex" in sel_pf_acc_name.lower(): dl, mdd = start_cap_pf * 0.025, start_cap_pf * 0.05
-            elif prof_name == "ftmo_swing": dl, mdd = start_cap_pf * 0.05, start_cap_pf * 0.10
-            else: dl, mdd = start_cap_pf * 0.05, start_cap_pf * 0.10 # Fallback
+            if is_eod_futures_sb:
+                _dl_sb_raw = sel_pf_acc_data.get("daily_loss")
+                _mdd_sb_raw = sel_pf_acc_data.get("trail_dd")
+                dl = float(_dl_sb_raw) if _dl_sb_raw is not None else 0.0
+                mdd = float(_mdd_sb_raw) if (_mdd_sb_raw is not None and float(_mdd_sb_raw) > 0) else (start_cap_pf * 0.03)
+            elif prof_name == "apex_lock" or "apex" in sel_pf_acc_name.lower():
+                dl = float(sel_pf_acc_data.get("daily_loss") if sel_pf_acc_data.get("daily_loss") is not None else (start_cap_pf * 0.025))
+                mdd = float(sel_pf_acc_data.get("trail_dd") if sel_pf_acc_data.get("trail_dd") is not None else (start_cap_pf * 0.05))
+            elif prof_name == "ftmo_swing":
+                dl = float(sel_pf_acc_data.get("daily_loss") if sel_pf_acc_data.get("daily_loss") is not None else (start_cap_pf * 0.05))
+                mdd = float(sel_pf_acc_data.get("trail_dd") if sel_pf_acc_data.get("trail_dd") is not None else (start_cap_pf * 0.10))
+            else:
+                dl = float(sel_pf_acc_data.get("daily_loss") if sel_pf_acc_data.get("daily_loss") is not None else (start_cap_pf * 0.05))
+                mdd = float(sel_pf_acc_data.get("trail_dd") if sel_pf_acc_data.get("trail_dd") is not None else (start_cap_pf * 0.10))
             
             df_j_all = load_trade_journal()
             df_j_acc = df_j_all[df_j_all['account_name'] == sel_pf_acc_name] if not df_j_all.empty else pd.DataFrame()
@@ -2882,15 +2923,24 @@ with st.sidebar:
             
             # --- RESONO ENGINE ---
         has_open_pos = False
+        open_pos_count_sb = 0
+        open_symbols_sb = []
         if not is_sandbox_prop and not df_j_acc.empty and 'OPEN' in df_j_acc['status'].values:
-            has_open_pos = True
+            df_open_acc_sb = df_j_acc[df_j_acc['status'] == 'OPEN']
+            open_pos_count_sb = len(df_open_acc_sb)
+            has_open_pos = (open_pos_count_sb > 0)
+            for _op_s in df_open_acc_sb['symbol'].dropna().tolist():
+                _norm_s = normalize_futures_micro_symbol(_op_s) or str(_op_s).upper().strip()
+                if _norm_s and _norm_s not in open_symbols_sb:
+                    open_symbols_sb.append(_norm_s)
             
         c_name = "Kontrakt"
-        if active_sym == "NQ=F": c_name = "MNQ"
-        elif active_sym == "ES=F": c_name = "MES"
-        elif active_sym == "YM=F": c_name = "MYM"
-        elif active_sym == "CL=F": c_name = "MCL"
-        elif active_sym == "GC=F": c_name = "MGC"
+        if active_sym_u in ["NQ=F", "MNQ"]: c_name = "MNQ"
+        elif active_sym_u in ["ES=F", "MES"]: c_name = "MES"
+        elif active_sym_u in ["YM=F", "MYM"]: c_name = "MYM"
+        elif active_sym_u in ["CL=F", "MCL"]: c_name = "MCL"
+        elif active_sym_u in ["GC=F", "MGC"]: c_name = "MGC"
+        elif active_sym_u in ["6E=F", "M6E", "6E", "M6E=F"]: c_name = "M6E"
         elif is_fx_sidebar: c_name = "Lot"
         
         pt_val_res = 100000.0 if is_fx_sidebar else get_point_value(active_sym, c_name)
@@ -2934,11 +2984,22 @@ with st.sidebar:
         daily_pnl_sidebar = float(today_realized_pnl_sidebar + open_pnl_sidebar)
         cap_for_limit = float(start_cap_pf) if not is_sandbox_prop else float(sandbox_cap_pf)
         if cap_for_limit <= 0: cap_for_limit = 50000.0
-        daily_loss_limit_sidebar = dl if (is_apex_lock or "apex" in sel_pf_acc_name.lower()) else (cap_for_limit * 0.05)
-        daily_buffer_sidebar = daily_loss_limit_sidebar + daily_pnl_sidebar
+        if is_eod_futures_sb:
+            daily_loss_limit_sidebar = 0.0
+            daily_buffer_sidebar = 0.0
+        else:
+            daily_loss_limit_sidebar = dl if (is_apex_lock or "apex" in sel_pf_acc_name.lower()) else (cap_for_limit * 0.05)
+            daily_buffer_sidebar = daily_loss_limit_sidebar + daily_pnl_sidebar
 
         actual_asset_class = "Forex" if is_fx_sidebar else row_data.get("Klasse", "Futures")
-        if actual_asset_class == "Forex" or (not is_sandbox_prop and "FTMO" in sel_pf_acc_name.upper()):
+        risk_gear_sb = sel_pf_acc_data.get("risk_gear", "EVAL_TURBO") if not is_sandbox_prop else "EVAL_TURBO"
+        if is_eod_futures_sb:
+            _acc_u_sb = str(sel_pf_acc_name).upper()
+            if risk_gear_sb == "FUNDED_SHIELD" or "FUNDED" in _acc_u_sb or "PA" in _acc_u_sb:
+                acc_type_sb = "funded_eod"
+            else:
+                acc_type_sb = "eod_futures"
+        elif actual_asset_class == "Forex" or (not is_sandbox_prop and "FTMO" in sel_pf_acc_name.upper()):
             acc_type_sb = 'ftmo'
         elif not is_sandbox_prop and is_apex_lock and "PA" in sel_pf_acc_name.upper():
             acc_type_sb = 'funded_pa'
@@ -2949,18 +3010,27 @@ with st.sidebar:
             "account_size": cap_for_limit,
             "current_balance": float(free_cash_pf) if not is_sandbox_prop else float(sandbox_cap_pf),
             "high_watermark": max(float(free_cash_pf), cap_for_limit),
-            "has_open_position": has_open_pos,
+            "has_open_position": (open_pos_count_sb >= 2) if is_eod_futures_sb else has_open_pos,
             "account_type": acc_type_sb,
             "daily_loss_limit": daily_loss_limit_sidebar,
             "daily_pnl": daily_pnl_sidebar,
             "daily_buffer": daily_buffer_sidebar
         }
+        if is_eod_futures_sb:
+            account_dict.update({
+                "max_trailing_dd": mdd,
+                "risk_gear": risk_gear_sb,
+                "open_positions_count": open_pos_count_sb,
+                "open_symbols": open_symbols_sb
+            })
         
         acc_tax_prop = "private" if is_sandbox_prop else sel_pf_acc_data.get("tax_category", "prop_firm")
-        is_private_prop = (not is_sandbox_prop and acc_tax_prop == "private")
+        is_private_prop = (not is_sandbox_prop and acc_tax_prop == "private" and not is_eod_futures_sb)
         
-        if active_sym in ["CL=F", "MCL"]: sig_sym = "MCL"
-        elif active_sym in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
+        if active_sym_u in ["CL=F", "MCL"]: sig_sym = "MCL"
+        elif active_sym_u in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
+        elif active_sym_u in ["GC=F", "MGC"]: sig_sym = "MGC"
+        elif active_sym_u in ["6E=F", "M6E", "6E", "M6E=F"]: sig_sym = "M6E"
         else: sig_sym = active_sym if c_name in ["Kontrakt", "Lot", "Lots"] else c_name
         
         signal_dict = {
@@ -3020,9 +3090,9 @@ with st.sidebar:
             st.markdown(f"**RESONO Status:** {r_badge} Stummgeschaltet")
         profile_conflict_blocked_prop = False
         admin_bypass_prop = st.session_state.get("admin_poka_bypass", False)
-        is_prop_firm_prop = (not is_private_prop and (acc_tax_prop == "prop_firm" or "apex" in sel_pf_acc_name.lower() or "ftmo" in sel_pf_acc_name.lower()))
+        is_prop_firm_prop = (not is_private_prop and (acc_tax_prop == "prop_firm" or is_eod_futures_sb or "apex" in sel_pf_acc_name.lower() or "ftmo" in sel_pf_acc_name.lower()))
 
-        is_apex_acc_prop = not is_sandbox_prop and not is_private_prop and ("apex" in sel_pf_acc_name.lower() or prof_name == "apex_lock" or (acc_tax_prop == "prop_firm" and "ftmo" not in sel_pf_acc_name.lower() and prof_name != "ftmo_swing"))
+        is_apex_acc_prop = not is_sandbox_prop and not is_private_prop and not is_eod_futures_sb and ("apex" in sel_pf_acc_name.lower() or prof_name == "apex_lock" or (acc_tax_prop == "prop_firm" and "ftmo" not in sel_pf_acc_name.lower() and prof_name != "ftmo_swing"))
 
         empfehlung = get_asset_strategy_recommendation(active_sym)
         
@@ -3039,22 +3109,55 @@ with st.sidebar:
         sym_u_chk_early = str(active_sym).upper().strip()
         
         session_times = "Regulär"
-        sym_core_early = normalize_apex_core_symbol(sym_u_chk_early)
-        if sym_core_early == "MNQ" or sym_u_chk_early in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]:
-            session_times = "09:30–15:30 ET"
-            if wd_early >= 5 or not (9.5 <= t_float_early < 15.5): in_session_early = False
-        elif sym_core_early == "MCL":
-            session_times = "08:30–11:30 ET"
-            if wd_early >= 5 or not (8.5 <= t_float_early < 11.5): in_session_early = False
-        elif sym_u_chk_early == "EURUSD=X":
-            session_times = "07:00–12:00 ET"
-            if wd_early >= 5 or not (7.0 <= t_float_early < 12.0): in_session_early = False
+        if is_eod_futures_sb:
+            try:
+                berlin_tz_early = zoneinfo.ZoneInfo("Europe/Berlin")
+                now_mez_early = datetime.datetime.now(berlin_tz_early)
+            except Exception:
+                now_mez_early = datetime.datetime.now()
+            wd_mez_early = now_mez_early.weekday()
+            t_mez_early = now_mez_early.hour + now_mez_early.minute / 60.0
+            eod_sym_early = normalize_futures_micro_symbol(sym_u_chk_early)
+            if eod_sym_early == "M6E":
+                session_times = "13:00–18:00"
+                if wd_mez_early >= 5 or not (13.0 <= t_mez_early < 18.0): in_session_early = False
+            elif eod_sym_early == "MGC":
+                session_times = "09:00–18:00"
+                if wd_mez_early >= 5 or not (9.0 <= t_mez_early < 18.0): in_session_early = False
+            elif eod_sym_early == "MCL":
+                session_times = "09:00–18:00"
+                if wd_mez_early >= 5 or not (9.0 <= t_mez_early < 18.0): in_session_early = False
+            elif eod_sym_early == "MNQ":
+                session_times = "15:30–20:30"
+                if wd_mez_early >= 5 or not (15.5 <= t_mez_early < 20.5): in_session_early = False
+        else:
+            sym_core_early = normalize_apex_core_symbol(sym_u_chk_early)
+            if sym_core_early == "MNQ" or sym_u_chk_early in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]:
+                session_times = "09:30–15:30 ET"
+                if wd_early >= 5 or not (9.5 <= t_float_early < 15.5): in_session_early = False
+            elif sym_core_early == "MCL":
+                session_times = "08:30–11:30 ET"
+                if wd_early >= 5 or not (8.5 <= t_float_early < 11.5): in_session_early = False
+            elif sym_u_chk_early == "EURUSD=X":
+                session_times = "07:00–12:00 ET"
+                if wd_early >= 5 or not (7.0 <= t_float_early < 12.0): in_session_early = False
             
         # 2. Asset / Profile Veto Check
         asset_block_reason = ""
         prof_disp_pf = get_profile_display_name(prof_name)
         
-        if is_apex_acc_prop:
+        if is_eod_futures_sb:
+            eod_micro = normalize_futures_micro_symbol(active_sym)
+            if eod_micro in {"MNQ", "MGC", "MCL", "M6E"}:
+                if prof_name == "eod_futures":
+                    profile_conflict_blocked_prop = False
+                else:
+                    profile_conflict_blocked_prop = True
+                    asset_block_reason = f"{active_sym} erfordert für dieses EOD-Futures-Konto zwingend das Profil 'EOD-Futures Prop-Desk (MFFU / Tradeify)' (Gewählt: {prof_disp_pf})."
+            else:
+                profile_conflict_blocked_prop = True
+                asset_block_reason = "EOD-Futures-Guard: Auf EOD-Futures-Konten (MFFU / Tradeify) sind ausschließlich die 4 Micro-Futures MNQ (NQ=F), MGC (GC=F), MCL (CL=F) und M6E (6E=F) zugelassen."
+        elif is_apex_acc_prop:
             apex_core = normalize_apex_core_symbol(active_sym)
             
             if apex_core is not None:
@@ -3092,7 +3195,7 @@ with st.sidebar:
             st.error(f"🔴 **Asset-Veto:** {asset_block_reason}")
         elif dir_block_reason and not admin_bypass_prop and not is_private_prop:
             st.error(f"🔴 **Richtungs-Veto:** {dir_block_reason}")
-        elif has_open_pos and not is_private_prop:
+        elif has_open_pos and not is_private_prop and not is_eod_futures_sb:
             st.error("🔴 **RESONO Veto:** Konto belegt (Maximal 1 offener Trade)")
         elif not res_allowed_early and resono_reason_early and not is_private_prop:
             st.error(f"🔴 **RESONO Veto:** {resono_reason_early}")
@@ -3114,13 +3217,18 @@ with st.sidebar:
         raw_qty_dyn = st.session_state.current_resono_res.get("max_contracts", 0) if a_class in ["Futures", "Rohstoffe"] else st.session_state.current_resono_res.get("max_lots", 0.0)
 
         is_trade_blocked = not res_allowed
-        is_apex = (not is_private_prop) and ("apex" in sel_pf_acc_name.lower() or is_apex_lock)
+        is_apex = (not is_private_prop) and (not is_eod_futures_sb) and ("apex" in sel_pf_acc_name.lower() or is_apex_lock)
         is_forex_sym = is_fx_sidebar
         
-        is_ftmo = (not is_private_prop) and ("ftmo" in sel_pf_acc_name.lower() or prof_name == "ftmo_swing")
+        is_ftmo = (not is_private_prop) and (not is_eod_futures_sb) and ("ftmo" in sel_pf_acc_name.lower() or prof_name == "ftmo_swing")
         is_crypto_sym = a_class == "Krypto"
 
-        if is_apex and not (a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper() or str(active_sym).upper().strip() == "CL=F"):
+        if is_eod_futures_sb and normalize_futures_micro_symbol(active_sym) not in {"MNQ", "MGC", "MCL", "M6E"}:
+            if admin_bypass_prop:
+                st.warning("⚠️ **Admin-Bypass aktiv:** EOD-Futures-Guard umgangen.")
+            else:
+                is_trade_blocked, raw_qty_dyn = True, 0
+        elif is_apex and not (a_class in ["Futures", "Rohstoffe"] or "=F" in str(active_sym).upper() or str(active_sym).upper().strip() == "CL=F"):
             if admin_bypass_prop:
                 st.warning("⚠️ **Admin-Bypass aktiv:** Apex-Guard umgangen.")
             else:
@@ -3173,7 +3281,7 @@ with st.sidebar:
         current_price = raw_cp
         entry_price = raw_cp 
 
-        is_futures = ("=F" in active_sym_u or "apex" in sel_pf_acc_name.lower() or actual_asset_class in ["Futures", "Rohstoffe"])
+        is_futures = ("=F" in active_sym_u or "apex" in sel_pf_acc_name.lower() or is_eod_futures_sb or actual_asset_class in ["Futures", "Rohstoffe"])
 
         if is_futures:
             if not is_shrt:
@@ -3258,7 +3366,7 @@ with st.sidebar:
         else:
             nom_usd = qty_dyn * raw_cp * pt_val
             nom_eur = nom_usd * fx_usd_eur
-            if active_sym_u in ["NQ=F", "MNQ", "CL=F", "MCL", "GC=F", "MGC"]: margin_per_contract = 100.0
+            if active_sym_u in ["NQ=F", "MNQ", "CL=F", "MCL", "GC=F", "MGC", "6E=F", "M6E", "6E", "M6E=F"]: margin_per_contract = 100.0
             elif active_sym_u in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]: margin_per_contract = 50.0
             else: margin_per_contract = 100.0
             margin_usd = qty_dyn * margin_per_contract
@@ -3298,7 +3406,7 @@ with st.sidebar:
         # Gewinn / TP Fallunterscheidung
         is_trend_runner = prof_name in ["private_alpha", "commodity_alpha", "ftmo_swing"] or "Trend" in str(row_data.get("Signal", ""))
         
-        if prof_name in ["apex_lock", "prop_guard", "defensive_swing", "commodity_scale", "apex_commodity_scale"] and not is_trend_runner:
+        if prof_name in ["apex_lock", "eod_futures", "prop_guard", "defensive_swing", "commodity_scale", "apex_commodity_scale"] and not is_trend_runner:
             pure_reward_usd = qty_dyn * abs(raw_tp - raw_cp) * pt_val
             net_reward_usd = pure_reward_usd - est_fees_usd
             net_reward_eur = net_reward_usd * fx_usd_eur
@@ -3320,7 +3428,7 @@ with st.sidebar:
         
         st.markdown("---")
         is_multi_t3 = active_sym.endswith("=F") or any(ext in active_sym.upper() for ext in ["=X", "DX-Y"])
-        if is_multi_t3 or is_apex_lock: exp_days_t3 = 0.5
+        if is_multi_t3 or is_apex_lock or is_eod_futures_sb: exp_days_t3 = 0.5
         else: exp_days_t3 = 15 if "Trend" in str(row_data.get("Signal", "")) else 3
         
         if exp_days_t3 == 0.5: st.markdown("⏱️ **Geplante Haltedauer:** Intraday (< 1 Tag / Daytrade)")
@@ -3345,25 +3453,42 @@ with st.sidebar:
         t_float = now_dt.hour + now_dt.minute / 60.0
         sym_u_chk = str(active_sym).upper().strip()
         
-        sym_core_late = normalize_apex_core_symbol(sym_u_chk)
-        
-        if (sym_core_late == "MNQ" or sym_u_chk in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]) and (wd >= 5 or not (9.5 <= t_float < 15.5)): in_session = False
-        elif (sym_core_late == "MCL") and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
-        elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (7.0 <= t_float < 12.0)): in_session = False
+        if is_eod_futures_sb:
+            try:
+                berlin_tz_late = zoneinfo.ZoneInfo("Europe/Berlin")
+                now_mez_late = datetime.datetime.now(berlin_tz_late)
+            except Exception:
+                now_mez_late = datetime.datetime.now()
+            wd_mez_late = now_mez_late.weekday()
+            t_mez_late = now_mez_late.hour + now_mez_late.minute / 60.0
+            eod_sym_late = normalize_futures_micro_symbol(sym_u_chk)
+            if eod_sym_late == "M6E" and (wd_mez_late >= 5 or not (13.0 <= t_mez_late < 18.0)): in_session = False
+            elif eod_sym_late == "MGC" and (wd_mez_late >= 5 or not (9.0 <= t_mez_late < 18.0)): in_session = False
+            elif eod_sym_late == "MCL" and (wd_mez_late >= 5 or not (9.0 <= t_mez_late < 18.0)): in_session = False
+            elif eod_sym_late == "MNQ" and (wd_mez_late >= 5 or not (15.5 <= t_mez_late < 20.5)): in_session = False
+        else:
+            sym_core_late = normalize_apex_core_symbol(sym_u_chk)
+            
+            if (sym_core_late == "MNQ" or sym_u_chk in ["ES=F", "MES", "YM=F", "MYM", "RTY=F", "M2K"]) and (wd >= 5 or not (9.5 <= t_float < 15.5)): in_session = False
+            elif (sym_core_late == "MCL") and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
+            elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (7.0 <= t_float < 12.0)): in_session = False
         
         if not market_open_prop:
             st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
             if not admin_bypass_prop:
                 btn_disabled_prop = True
         elif not in_session:
-            st.warning("⏸️ Außerhalb des validierten Session-Fensters: Kein Einstieg erlaubt. (NQ: 15:30–21:30 MEZ | Öl: 14:30–17:30 MEZ | EURUSD: 13:00–18:00 MEZ).")
+            if is_eod_futures_sb:
+                st.warning("⏸️ Außerhalb des validierten EOD-Session-Fensters: Kein Einstieg erlaubt. (M6E: 13:00–18:00 MEZ | MGC/MCL: 09:00–18:00 MEZ | MNQ: 15:30–20:30 MEZ).")
+            else:
+                st.warning("⏸️ Außerhalb des validierten Session-Fensters: Kein Einstieg erlaubt. (NQ: 15:30–21:30 MEZ | Öl: 14:30–17:30 MEZ | EURUSD: 13:00–18:00 MEZ).")
             if not admin_bypass_prop:
                 btn_disabled_prop = True
                 
         resono_reason = st.session_state.get("current_resono_res", {}).get("ui_reason", "")
         
         sperrgruende = []
-        if has_open_pos and not is_private_prop:
+        if has_open_pos and not is_private_prop and not is_eod_futures_sb:
             sperrgruende.append("Konto belegt (Maximal 1 offener Trade)")
             
         if (not market_open_prop or not in_session) and not admin_bypass_prop and not is_private_prop:
@@ -3375,7 +3500,7 @@ with st.sidebar:
         if dir_block_reason:
             sperrgruende.append(dir_block_reason)
             
-        if not res_allowed and not has_open_pos and resono_reason and not is_private_prop:
+        if not res_allowed and (not has_open_pos or is_eod_futures_sb) and resono_reason and not is_private_prop:
             sperrgruende.append(resono_reason)
             
         if is_sandbox_prop:
@@ -3424,8 +3549,8 @@ with st.sidebar:
                     determined_exit_mode = "PROP_DEFENSIVE"
                 else:
                     determined_exit_mode = "HOME_RUN_TREND" if "Trend" in str(row_data.get("Signal", "")) else "ALPHA_CASHFLOW"
-            elif prof_name in ["apex_lock", "prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]:
-                determined_exit_mode = "TARGET_LOCKED" if prof_name == "apex_lock" else "PROP_DEFENSIVE"
+            elif prof_name in ["apex_lock", "eod_futures", "prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]:
+                determined_exit_mode = "TARGET_LOCKED" if prof_name in ["apex_lock", "eod_futures"] else "PROP_DEFENSIVE"
             else:
                 determined_exit_mode = "HOME_RUN_TREND" if "Trend" in str(row_data.get("Signal", "")) else "ALPHA_CASHFLOW"
 
@@ -3674,7 +3799,7 @@ with tab_screen:
     st.header("⚡ Shortterm Scanner & Scoring")
     st.markdown("Durchsuche vordefinierte Markt-Universen nach deinen Kriterien und speichere die besten Setups als Favoriten.")
     active_signals = load_active_signal_inbox()
-    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "M6E", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG", "6E"]
     
     swing_signals = []
     for sig in active_signals:
@@ -4537,26 +4662,38 @@ with tab_futures:
 
     acc_size = float(sel_acc_data.get("account_size", 50000))
     
-    if prof_name_t3 == "apex_lock":
+    _eod_kws_t3 = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
+    is_eod_futures_t3 = (prof_name_t3 == "eod_futures") or any(kw in str(acc_name_t3).lower() for kw in _eod_kws_t3)
+    risk_gear_t3 = sel_acc_data.get("risk_gear", "EVAL_TURBO")
+    
+    if is_eod_futures_t3:
+        default_dl, default_mdd, default_tgt = 0.0, acc_size * 0.03, acc_size * 0.06
+    elif prof_name_t3 == "apex_lock":
         default_dl, default_mdd, default_tgt = acc_size * 0.025, acc_size * 0.05, acc_size * 0.06
     elif prof_name_t3 == "ftmo_swing":
         default_dl, default_mdd, default_tgt = acc_size * 0.05, acc_size * 0.10, acc_size * 0.10
     else:
         default_dl, default_mdd, default_tgt = acc_size * 0.05, acc_size * 0.10, acc_size * 0.10
         
-    dl = float(sel_acc_data.get("daily_loss", default_dl))
-    mdd = float(sel_acc_data.get("trail_dd", default_mdd))
-    tgt = float(sel_acc_data.get("target", default_tgt))
+    _dl_t3_raw = sel_acc_data.get("daily_loss")
+    _mdd_t3_raw = sel_acc_data.get("trail_dd")
+    _tgt_t3_raw = sel_acc_data.get("target")
+    dl = float(_dl_t3_raw) if _dl_t3_raw is not None else default_dl
+    mdd = float(_mdd_t3_raw) if (_mdd_t3_raw is not None and float(_mdd_t3_raw) > 0) else default_mdd
+    tgt = float(_tgt_t3_raw) if (_tgt_t3_raw is not None and float(_tgt_t3_raw) > 0) else default_tgt
 
     c_m1, c_m2, c_m3, c_m4 = st.columns(4)
     c_m1.metric("Konto-Größe", f"${acc_size:,.0f}")
-    c_m2.metric("Tagesverlust-Puffer", f"${dl:,.0f}")
+    if dl <= 0:
+        c_m2.metric("Tagesverlust-Puffer", "$0 (EOD-Regel)")
+    else:
+        c_m2.metric("Tagesverlust-Puffer", f"${dl:,.0f}")
     c_m3.metric("Max Trailing Drawdown", f"${mdd:,.0f}")
     c_m4.metric("Profit-Target Progress", f"${tgt:,.0f}")
 
     st.markdown("---")
     active_signals = load_active_signal_inbox()
-    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"]
+    cme_list = ["MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "M6E", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG", "6E"]
     
     prop_signals = []
     for sig in active_signals:
@@ -4713,6 +4850,7 @@ with tab_futures:
         {"symbol": "ES=F", "name": "S&P 500", "asset_class": "Futures", "contract": "MES"},
         {"symbol": "YM=F", "name": "Dow Jones", "asset_class": "Futures", "contract": "MYM"},
         {"symbol": "RTY=F", "name": "Russell 2000", "asset_class": "Futures", "contract": "M2K", "active": False},
+        {"symbol": "6E=F", "name": "Micro Euro FX", "asset_class": "Futures", "contract": "M6E"},
         {"symbol": "GC=F", "name": "Gold", "asset_class": "Rohstoffe", "contract": "MGC"},
         {"symbol": "SI=F", "name": "Silber", "asset_class": "Rohstoffe", "contract": "SIL", "active": False},
         {"symbol": "CL=F", "name": "Crude Oil", "asset_class": "Rohstoffe", "contract": "MCL"},
@@ -4792,7 +4930,7 @@ with tab_futures:
         st.markdown("---")
         df_f = pd.DataFrame([{"Aktiv": t["active"], "Löschen": False, "Ticker": t["symbol"], "Name": t["name"], "Klasse": t["asset_class"], "Kontraktart": t["contract"]} for t in st.session_state.config["futures_tickers"]])
         if not df_f.empty:
-            edited_f = st.data_editor(df_f, hide_index=True, use_container_width=True, disabled=["Ticker"], column_config={"Klasse": st.column_config.SelectboxColumn(options=["Futures", "Rohstoffe", "Forex"]), "Kontraktart": st.column_config.SelectboxColumn(options=["MNQ", "MES", "MYM", "M2K", "MGC", "MCL", "MHG", "QG", "SIL", "Micro", "Lot", "Custom"])})
+            edited_f = st.data_editor(df_f, hide_index=True, use_container_width=True, disabled=["Ticker"], column_config={"Klasse": st.column_config.SelectboxColumn(options=["Futures", "Rohstoffe", "Forex"]), "Kontraktart": st.column_config.SelectboxColumn(options=["MNQ", "MES", "MYM", "M2K", "M6E", "MGC", "MCL", "MHG", "QG", "SIL", "Micro", "Lot", "Custom"])})
             
             c_act1, c_act2 = st.columns(2)
             with c_act1:
@@ -4833,11 +4971,12 @@ with tab_futures:
                 pt_val = 100000.0
             else:
                 c_name = "Kontrakt"
-                if sym_u == "NQ=F": c_name = "MNQ"
-                elif sym_u == "ES=F": c_name = "MES"
-                elif sym_u == "YM=F": c_name = "MYM"
-                elif sym_u == "CL=F": c_name = "MCL"
-                elif sym_u == "GC=F": c_name = "MGC"
+                if sym_u in ["NQ=F", "MNQ"]: c_name = "MNQ"
+                elif sym_u in ["ES=F", "MES"]: c_name = "MES"
+                elif sym_u in ["YM=F", "MYM"]: c_name = "MYM"
+                elif sym_u in ["CL=F", "MCL"]: c_name = "MCL"
+                elif sym_u in ["GC=F", "MGC"]: c_name = "MGC"
+                elif sym_u in ["6E=F", "M6E", "6E", "M6E=F"]: c_name = "M6E"
                 actual_asset_class = a_class
                 pt_val = get_point_value(sym_u, c_name)
 
@@ -4845,18 +4984,30 @@ with tab_futures:
             acc_tax_w = "private" if is_sandbox_w else "prop_firm"
             acc_prof_w = "sandbox" if is_sandbox_w else "prop_guard"
             priv_risk_pct_w = 1.0
+            acc_cfg_w = {}
             if not is_sandbox_w:
                 for _, a_d in st.session_state.config.get("lab_accounts", {}).items():
                     if a_d.get("name") == sel_acc_name:
+                        acc_cfg_w = a_d
                         acc_tax_w = a_d.get("tax_category", "prop_firm")
                         acc_prof_w = a_d.get("exit_profile", "prop_guard")
                         priv_risk_pct_w = float(a_d.get("risk_pct", 1.0))
                         break
+            _eod_kws_w = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
+            _acc_meta_w = f"{sel_acc_name} {acc_cfg_w.get('account_type', '')} {acc_cfg_w.get('broker_profile', '')}".lower()
+            is_eod_futures_w = (not is_sandbox_w) and ((acc_prof_w == "eod_futures") or any(kw in _acc_meta_w for kw in _eod_kws_w))
             is_private_w = is_sandbox_w or (acc_tax_w == "private")
-            if "apex" in str(sel_acc_name).lower() or "ftmo" in str(sel_acc_name).lower() or acc_prof_w in ["apex_lock", "ftmo_swing"]:
+            if is_eod_futures_w or "apex" in str(sel_acc_name).lower() or "ftmo" in str(sel_acc_name).lower() or acc_prof_w in ["apex_lock", "ftmo_swing", "eod_futures"]:
                 is_private_w = False
         
-            if actual_asset_class == "Forex" or "FTMO" in str(sel_acc_name).upper():
+            risk_gear_w = acc_cfg_w.get("risk_gear", "EVAL_TURBO") if not is_sandbox_w else "EVAL_TURBO"
+            if is_eod_futures_w:
+                _acc_u_w = str(sel_acc_name).upper()
+                if risk_gear_w == "FUNDED_SHIELD" or "FUNDED" in _acc_u_w or "PA" in _acc_u_w:
+                    acc_type = "funded_eod"
+                else:
+                    acc_type = "eod_futures"
+            elif actual_asset_class == "Forex" or "FTMO" in str(sel_acc_name).upper():
                 acc_type = 'ftmo'
             elif is_apex_lock and "PA" in str(sel_acc_name).upper():
                 acc_type = 'funded_pa'
@@ -4872,8 +5023,15 @@ with tab_futures:
             
             fx_usd_eur_w = get_fx_rate("$", "EUR")
             open_pnl_w = 0.0
-            if has_open_pos:
+            open_pos_count_w = 0
+            open_symbols_w = []
+            if has_open_pos and not df_j_acc_w.empty:
                 df_open_w = df_j_acc_w[df_j_acc_w['status'] == 'OPEN']
+                open_pos_count_w = len(df_open_w)
+                for _op_sw in df_open_w['symbol'].dropna().tolist():
+                    _norm_sw = normalize_futures_micro_symbol(_op_sw) or str(_op_sw).upper().strip()
+                    if _norm_sw and _norm_sw not in open_symbols_w:
+                        open_symbols_w.append(_norm_sw)
                 for _, r_op in df_open_w.iterrows():
                     op_sym = str(r_op['symbol']).strip()
                     op_ep = float(r_op['entry_price'])
@@ -4892,21 +5050,37 @@ with tab_futures:
 
             daily_pnl_w = float(today_realized_pnl_w + open_pnl_w)
             base_cap_w = float(start_cap_pf) if float(start_cap_pf) > 0 else 50000.0
-            daily_loss_limit_w = base_cap_w * 0.025 if (is_apex_lock or "apex" in str(sel_acc_name).lower()) else base_cap_w * 0.05
-            daily_buffer_w = daily_loss_limit_w + daily_pnl_w
+            if is_eod_futures_w:
+                daily_loss_limit_w = 0.0
+                daily_buffer_w = 0.0
+                _mdd_raw_w = acc_cfg_w.get("trail_dd")
+                max_trailing_dd_w = float(_mdd_raw_w) if (_mdd_raw_w is not None and float(_mdd_raw_w) > 0) else (base_cap_w * 0.03)
+            else:
+                daily_loss_limit_w = base_cap_w * 0.025 if (is_apex_lock or "apex" in str(sel_acc_name).lower()) else base_cap_w * 0.05
+                daily_buffer_w = daily_loss_limit_w + daily_pnl_w
+                max_trailing_dd_w = None
             account_dict = {
                 "account_size": base_cap_w,
                 "current_balance": float(free_cash_pf) if float(free_cash_pf) > 0 else base_cap_w,
                 "high_watermark": max(float(free_cash_pf), base_cap_w),
-                "has_open_position": has_open_pos,
+                "has_open_position": (open_pos_count_w >= 2) if is_eod_futures_w else has_open_pos,
                 "account_type": acc_type,
                 "daily_loss_limit": daily_loss_limit_w,
                 "daily_pnl": daily_pnl_w,
                 "daily_buffer": daily_buffer_w
             }
+            if is_eod_futures_w:
+                account_dict.update({
+                    "max_trailing_dd": max_trailing_dd_w,
+                    "risk_gear": risk_gear_w,
+                    "open_positions_count": open_pos_count_w,
+                    "open_symbols": open_symbols_w
+                })
             
             if sym_u in ["CL=F", "MCL"]: sig_sym = "MCL"
             elif sym_u in ["NQ=F", "MNQ"]: sig_sym = "MNQ"
+            elif sym_u in ["GC=F", "MGC"]: sig_sym = "MGC"
+            elif sym_u in ["6E=F", "M6E", "6E", "M6E=F"]: sig_sym = "M6E"
             else: sig_sym = sym if c_name in ["Kontrakt", "Lot", "Lots"] else c_name
             
             eff_risk_pts_w = get_effective_forex_risk_pts(sym, risk_pts, raw_cp, fx_usd_eur_w) if actual_asset_class == "Forex" else risk_pts
@@ -4984,12 +5158,26 @@ with tab_futures:
                     with open(word_path, "rb") as f: word_b64 = base64.b64encode(f.read()).decode()
                 except: pass
 
+            cur_norm_sym_w = normalize_futures_micro_symbol(sym_u) or sym_u
+            eod_collision_w = is_eod_futures_w and (open_pos_count_w >= 2 or cur_norm_sym_w in open_symbols_w)
             html_veto = ""
             if has_open_pos:
                 if is_private_w:
                     html_veto = """
 <div style="margin-top: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid #3B82F6; padding: 10px; border-radius: 6px;">
     <strong style="color: #60A5FA;">ℹ️ Portfolio-Hinweis:</strong> <span style="color: #DBEAFE;">Konto hält bereits eine offene Position (Im Privatdepot sind parallele Positionen zulässig).</span>
+</div>
+"""
+                elif is_eod_futures_w:
+                    if eod_collision_w:
+                        _eod_veto_msg = (
+                            f"Konto hält bereits {open_pos_count_w}/2 offene Positionen. Kein weiteres Exposure erlaubt."
+                            if open_pos_count_w >= 2
+                            else f"Symbol {cur_norm_sym_w} ist bereits im Konto offen. Kein doppeltes Exposure im selben Markt erlaubt."
+                        )
+                        html_veto = f"""
+<div style="margin-top: 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; padding: 10px; border-radius: 6px;">
+    <strong style="color: #EF4444;">🚨 Kollisions-Veto aktiv:</strong> <span style="color: #FCA5A5;">{_eod_veto_msg}</span>
 </div>
 """
                 else:
@@ -5111,7 +5299,10 @@ with tab_futures:
                         risk_pts_ql = abs(c_p_ql - sl_ql)
                         tick_val_ql = 100000.0 if a_class_ql == "Forex" else get_point_value(sym_ql, c_type_ql)
                         eff_risk_pts_ql = (risk_pts_ql / 100.0) if (a_class_ql == "Forex" and "JPY" in sym_ql_u) else risk_pts_ql
-                        max_risk_amt_ql = dl * (0.05 if a_class_ql == "Forex" else 0.10)
+                        if is_eod_futures_t3 or dl <= 0:
+                            max_risk_amt_ql = acc_size * (0.0025 if risk_gear_t3 == "FUNDED_SHIELD" else 0.0035)
+                        else:
+                            max_risk_amt_ql = dl * (0.05 if a_class_ql == "Forex" else 0.10)
                         raw_qty_ql = max_risk_amt_ql / (eff_risk_pts_ql * tick_val_ql) if eff_risk_pts_ql > 0 else 0
                         
                         if a_class_ql in ["Futures", "Rohstoffe"]:
@@ -5817,7 +6008,10 @@ with tab_futures:
                             risk_pts = abs(c_p - sl)
                             tick_val = pt_val
                             eff_risk_pts = (risk_pts / 100.0) if (a_class == "Forex" and "JPY" in sym_u) else risk_pts
-                            max_risk_amt = dl * (0.05 if a_class == "Forex" else 0.10)
+                            if is_eod_futures_t3 or dl <= 0:
+                                max_risk_amt = acc_size * (0.0025 if risk_gear_t3 == "FUNDED_SHIELD" else 0.0035)
+                            else:
+                                max_risk_amt = dl * (0.05 if a_class == "Forex" else 0.10)
                             raw_qty = max_risk_amt / (eff_risk_pts * tick_val) if eff_risk_pts > 0 else 0
                             
                             if a_class in ["Futures", "Rohstoffe"]:
@@ -6329,11 +6523,13 @@ with tab_dict["lab"]:
                         pnl_temp = (cur_p - ep) / ep * 100 if row['direction'] == 'Long' else (ep - cur_p) / ep * 100
                         
                         sym_u = str(row['symbol']).upper().strip()
-                        cme_roots = {"MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG"}
+                        cme_roots = {"MNQ", "MES", "MYM", "M2K", "MCL", "MGC", "SIL", "QG", "MHG", "M6E", "NQ", "ES", "YM", "RTY", "CL", "GC", "SI", "NG", "HG", "6E"}
+                        clean_sym_j = sym_u.split()[0].replace("=F", "").strip()
+                        is_euro_fx_fut = clean_sym_j in {"6E", "M6E"}
                         is_forex = sym_u.endswith('=X') or ('DX-Y' in sym_u)
                         is_crypto = any(ext in sym_u for ext in ["-USD", "-EUR", "-GBP", "-USDT", "-CHF", "BTC", "ETH", "SOL", "NEAR", "KAS"])
                         is_future = ("=F" in sym_u) or (sym_u.split()[0] in cme_roots)
-                        fmt = ".4f" if is_forex else (".4f" if (is_crypto and ep < 10.0) else ".2f")
+                        fmt = ".5f" if is_euro_fx_fut else (".4f" if is_forex else (".4f" if (is_crypto and ep < 10.0) else ".2f"))
                         dir_m = 1 if row['direction'] == 'Long' else -1
                         point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
                         qty = float(row['position_size'])
@@ -6389,7 +6585,7 @@ with tab_dict["lab"]:
                                 if a_data.get("name") == row['account_name']:
                                     acc_prof_tmp = a_data.get("exit_profile", "prop_guard")
                                     break
-                            if acc_prof_tmp == "apex_lock": exit_mode_val_tmp = "TARGET_LOCKED"
+                            if acc_prof_tmp in ["apex_lock", "eod_futures"]: exit_mode_val_tmp = "TARGET_LOCKED"
                             elif acc_prof_tmp in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: exit_mode_val_tmp = "PROP_DEFENSIVE"
                             else: exit_mode_val_tmp = "HOME_RUN_TREND" if "Trend" in str(row.get("setup_type", "")) else "ALPHA_CASHFLOW"
                             
@@ -6426,7 +6622,7 @@ with tab_dict["lab"]:
                                     if a_data["name"] == row['account_name']:
                                         acc_prof = a_data.get("exit_profile", "prop_guard")
                                         break
-                                if acc_prof == "apex_lock": exit_mode_val = "TARGET_LOCKED"
+                                if acc_prof in ["apex_lock", "eod_futures"]: exit_mode_val = "TARGET_LOCKED"
                                 elif acc_prof in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: exit_mode_val = "PROP_DEFENSIVE"
                                 else: exit_mode_val = "HOME_RUN_TREND" if "Trend" in str(row.get("setup_type", "")) else "ALPHA_CASHFLOW"
 
@@ -6448,7 +6644,7 @@ with tab_dict["lab"]:
                                     fee_offset_col2 *= (float(cur_p) * fx)
 
                             raw_net_be_col2 = (ep + fee_offset_col2) if is_long_col2 else (ep - fee_offset_col2)
-                            be_decimals_col2 = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                            be_decimals_col2 = 5 if (is_euro_fx_fut or (is_forex and "JPY" not in sym_u)) else (3 if is_forex else (4 if is_crypto else 2))
                             net_be_price_col2 = round(raw_net_be_col2, be_decimals_col2)
 
                             # Trailing-Stop Kalkulation basiert weiterhin auf dem Original-Einstieg/SL!
@@ -6584,8 +6780,8 @@ with tab_dict["lab"]:
                         
                         c_ex1, c_ex2 = st.columns([2, 1])
                         with c_ex1:
-                            step_val = 0.0001 if is_forex else 0.01
-                            fmt_str = "%.4f" if is_forex else "%.2f"
+                            step_val = 0.00005 if is_euro_fx_fut else (0.0001 if is_forex else 0.01)
+                            fmt_str = "%.5f" if is_euro_fx_fut else ("%.4f" if is_forex else "%.2f")
                             exit_p_input = st.number_input("Aktueller / Exit-Kurs:", value=float(def_price), step=step_val, format=fmt_str, key=f"ex_{row['id']}_{idx}")
                                 
                         with c_ex2:
@@ -6669,7 +6865,7 @@ with tab_dict["lab"]:
                                     if a_d_so.get("name") == row['account_name']:
                                         acc_prof_so = a_d_so.get("exit_profile", "prop_guard")
                                         break
-                                if acc_prof_so == "apex_lock": raw_em_so = "TARGET_LOCKED"
+                                if acc_prof_so in ["apex_lock", "eod_futures"]: raw_em_so = "TARGET_LOCKED"
                                 elif acc_prof_so in ["prop_guard", "defensive_swing", "apex_commodity_scale", "commodity_scale"]: raw_em_so = "PROP_DEFENSIVE"
                                 else: raw_em_so = "HOME_RUN_TREND" if "Trend" in str(row.get("setup_type", "")) else "ALPHA_CASHFLOW"
 
@@ -6772,7 +6968,7 @@ with tab_dict["lab"]:
                                         fee_offset_dyn *= (float(so_live_default) * fx)
 
                                 raw_net_be_dyn = (ep + fee_offset_dyn) if is_long_dyn else (ep - fee_offset_dyn)
-                                be_decimals_dyn = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                                be_decimals_dyn = 5 if (is_euro_fx_fut or (is_forex and "JPY" not in sym_u)) else (3 if is_forex else (4 if is_crypto else 2))
                                 net_be_price_dyn = round(raw_net_be_dyn, be_decimals_dyn)
 
                                 if is_long_dyn:
@@ -6841,7 +7037,7 @@ with tab_dict["lab"]:
                                             fee_offset_so *= (float(so_exit_price) * fx)
 
                                     raw_net_be = (ep + fee_offset_so) if is_long_so else (ep - fee_offset_so)
-                                    be_decimals = 5 if (is_forex and "JPY" not in sym_u) else (3 if is_forex else (4 if is_crypto else 2))
+                                    be_decimals = 5 if (is_euro_fx_fut or (is_forex and "JPY" not in sym_u)) else (3 if is_forex else (4 if is_crypto else 2))
                                     net_be_price = round(raw_net_be, be_decimals)
 
                                     if is_long_so:
@@ -6881,12 +7077,17 @@ with tab_dict["lab"]:
 
                                         broker_acc_so = "AUTO_ROUTED"
                                         acc_type_so = "ftmo" if is_forex else "apex"
+                                        _eod_kws_so = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
                                         for a_k, a_v in st.session_state.config.get("lab_accounts", {}).items():
                                             if a_v.get("name") == row['account_name']:
                                                 broker_acc_so = a_v.get("broker_account_id") or a_v.get("broker_account") or "AUTO_ROUTED"
                                                 raw_at = str(a_v.get("account_type", "")).lower()
                                                 raw_bp = str(a_v.get("broker_profile", "")).lower()
-                                                if "ftmo" in raw_at or "ftmo" in raw_bp or is_forex: acc_type_so = "ftmo"
+                                                raw_nm = str(a_v.get("name", "")).lower()
+                                                raw_ep = str(a_v.get("exit_profile", "")).strip().lower()
+                                                if raw_ep == "eod_futures" or any(kw in f"{raw_at} {raw_nm} {raw_bp}" for kw in _eod_kws_so):
+                                                    acc_type_so = "eod_futures"
+                                                elif "ftmo" in raw_at or "ftmo" in raw_bp or is_forex: acc_type_so = "ftmo"
                                                 elif "apex" in raw_at or "apex" in raw_bp or is_future: acc_type_so = "apex"
                                                 break
 
@@ -7150,12 +7351,25 @@ with tab_dict["lab"]:
                 with c_s1: new_name = st.text_input("Kontoname", value=active_acc.get("name", ""), key=f"name_{active_acc['id']}")
                 with c_s2: new_cap = st.number_input("Startkapital (€)", value=float(active_acc.get("account_size", 10000.0)), step=1000.0, key=f"cap_{active_acc['id']}")
                 with c_s3: 
+                    new_risk_gear = active_acc.get("risk_gear", "EVAL_TURBO")
                     if live_tax_cat == "prop_firm":
                         prof_key = f"prof_{active_acc['id']}"
                         live_prof_raw = st.session_state.get(prof_key, "")
-                        live_prof = "apex_lock" if "Apex" in live_prof_raw else ("ftmo_swing" if "FTMO" in live_prof_raw else active_acc.get("exit_profile", ""))
+                        if "EOD-Futures" in live_prof_raw:
+                            live_prof = "eod_futures"
+                        elif "Apex" in live_prof_raw:
+                            live_prof = "apex_lock"
+                        elif "FTMO" in live_prof_raw:
+                            live_prof = "ftmo_swing"
+                        else:
+                            live_prof = active_acc.get("exit_profile", "")
                         
-                        if live_prof == "apex_lock":
+                        if live_prof == "eod_futures":
+                            gear_opts = ["EVAL_TURBO", "FUNDED_SHIELD"]
+                            cur_gear = new_risk_gear if new_risk_gear in gear_opts else "EVAL_TURBO"
+                            new_risk_gear = st.selectbox("Risiko-Gang (RESONO)", gear_opts, index=gear_opts.index(cur_gear), key=f"gear_{active_acc['id']}")
+                            st.info("🛡️ EOD-Regel: daily_loss = 0 $ — RESONO steuert den EOD-Drawdown-Puffer proportional (0,35 % im EVAL_TURBO bzw. 0,25 % im FUNDED_SHIELD)")
+                        elif live_prof == "apex_lock":
                             st.info("🛡️ Risiko: Max. 125,00 $ (10 % Tages-Deckel) — gesichert über RESONO")
                         elif live_prof == "ftmo_swing":
                             st.info("🛡️ Risiko: Max. 5 % Tages-Deckel — gesichert über RESONO")
@@ -7209,7 +7423,8 @@ with tab_dict["lab"]:
                 
                 prop_profiles = {
                     "Target-Lock Intraday (Apex)": "apex_lock",
-                    "Forex Swing-Runner (FTMO)": "ftmo_swing"
+                    "Forex Swing-Runner (FTMO)": "ftmo_swing",
+                    "EOD-Futures Prop-Desk (MFFU / Tradeify)": "eod_futures"
                 }
                 private_profiles = {
                     "Home-Run Trend (Maximal-Alpha)": "private_alpha",
@@ -7238,7 +7453,7 @@ with tab_dict["lab"]:
                     new_cat_label = st.selectbox("Konto-Kategorie (Zweck)", list(cat_map.values()), index=list(cat_map.keys()).index(live_tax_cat), key=tax_key)
                     new_tax_cat_val = cat_rev_map[new_cat_label]
                 with c_s10:
-                    def_dir = "both" if chosen_exit_profile in ["prop_guard", "defensive_swing", "apex_lock"] else "long"
+                    def_dir = "both" if chosen_exit_profile in ["prop_guard", "defensive_swing", "apex_lock", "eod_futures"] else "long"
                     new_direction = st.selectbox("Handelsrichtung", ["both", "long", "short"], index=["both", "long", "short"].index(active_acc.get("direction", def_dir)), key=f"dir_{active_acc['id']}")
                 with c_s11:
                     new_broker_id = st.text_input("Broker-ID / Kontonummer", value=active_acc.get("broker_account_id", ""), placeholder="DEMO9530978", help="Leer lassen für automatische Erkennung AUTO_ROUTED", key=f"brk_id_{active_acc['id']}")
@@ -7255,6 +7470,13 @@ with tab_dict["lab"]:
                     new_exec_mode = st.selectbox("Ausführungs-Modus", exec_opts, index=exec_opts.index(cur_exec), key=f"exec_{active_acc['id']}")
 
                 if st.button("💾 Kontodaten speichern", use_container_width=True, key=f"btn_save_acc_{active_acc['id']}"):
+                    prev_exit_profile = active_acc.get("exit_profile")
+                    prev_account_size = float(active_acc.get("account_size", 0.0))
+                    prev_trail_dd_raw = active_acc.get("trail_dd")
+                    try:
+                        prev_trail_dd = float(prev_trail_dd_raw) if prev_trail_dd_raw is not None else 0.0
+                    except (TypeError, ValueError):
+                        prev_trail_dd = 0.0
                     active_acc.update({
                         "name": new_name, 
                         "account_size": new_cap, 
@@ -7271,13 +7493,22 @@ with tab_dict["lab"]:
                         "mode": active_acc.get("mode", "walk_forward"), 
                         "trailing_stop": active_acc.get("trailing_stop", "active")
                     })
+                    if chosen_exit_profile == "eod_futures":
+                        active_acc["risk_gear"] = new_risk_gear
+                        active_acc["daily_loss"] = 0.0
+                        same_cap = abs(float(new_cap) - prev_account_size) < 1e-6
+                        if not (prev_exit_profile == "eod_futures" and same_cap and prev_trail_dd > 0.0):
+                            active_acc["trail_dd"] = round(float(new_cap) * 0.03, 2)
                     st.session_state.config["lab_accounts"][active_acc["id"]] = active_acc
                     st.session_state.active_lab_account = active_acc["id"]
                     save_config(st.session_state.config)
                     st.success("Gespeichert!")
                     st.rerun()
-            dl_limit = float(active_acc.get("daily_loss", start_cap * 0.05)) # Fallback 5%
-            mdd_limit = float(active_acc.get("trail_dd", start_cap * 0.10)) # Fallback 10%
+            is_eod_prof = (active_acc.get("exit_profile") == "eod_futures")
+            dl_default = 0.0 if is_eod_prof else (start_cap * 0.05)
+            mdd_default = (start_cap * 0.03) if is_eod_prof else (start_cap * 0.10)
+            dl_limit = float(active_acc.get("daily_loss") if active_acc.get("daily_loss") is not None else dl_default)
+            mdd_limit = float(active_acc.get("trail_dd") if active_acc.get("trail_dd") is not None else mdd_default)
             
             # PnL von heute für Daily Loss berechnen
             today_str = datetime.datetime.now().strftime("%d/%m/%Y")
@@ -7287,7 +7518,10 @@ with tab_dict["lab"]:
             
             st.markdown("### 🛡️ Prop-Firm Live-Monitoring")
             c_prop1, c_prop2 = st.columns(2)
-            c_prop1.metric("Daily PnL vs Limit", f"{daily_pnl:,.2f} €", f"Limit: -{dl_limit:,.2f} €", delta_color="normal" if daily_pnl >= -dl_limit else "inverse")
+            if is_eod_prof or dl_limit <= 0:
+                c_prop1.metric("Daily PnL vs Limit", f"{daily_pnl:,.2f} €", "Kein Intraday-Limit (EOD-Regel)", delta_color="off")
+            else:
+                c_prop1.metric("Daily PnL vs Limit", f"{daily_pnl:,.2f} €", f"Limit: -{dl_limit:,.2f} €", delta_color="normal" if daily_pnl >= -dl_limit else "inverse")
             
             peak_equity = active_acc.get("peak_equity", start_cap)
             if current_cap > peak_equity: 
@@ -8292,7 +8526,7 @@ with tab_dict["lab"]:
                             has_intraday_assets = False
                             for tk in active_acc["tickers"]:
                                 tk_u = str(tk).upper()
-                                if "=F" in tk_u or "=X" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY"]):
+                                if "=F" in tk_u or "=X" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY", "6E"]):
                                     has_intraday_assets = True
                                     break
                             
@@ -8324,7 +8558,7 @@ with tab_dict["lab"]:
                             has_futures = False
                             for tk in active_acc["tickers"]:
                                 tk_u = str(tk).upper()
-                                if "=F" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY"]):
+                                if "=F" in tk_u or any(x in tk_u for x in ["NQ", "CL", "GC", "ES", "YM", "RTY", "6E"]):
                                     has_futures = True
                                     break
                             
@@ -8333,7 +8567,13 @@ with tab_dict["lab"]:
                             if has_futures:
                                 f_rate, s_rate = 0.00005, 0.0001
                                 m_cap = 2
-                                d_loss = 1250.0 if acc_tax_lab == "prop_firm" else None
+                                if active_acc.get("exit_profile") in ("eod_futures", "EOD-Futures Prop-Desk (MFFU / Tradeify)"):
+                                    d_loss = 0.0
+                                elif acc_tax_lab == "prop_firm":
+                                    bt_cap = float(active_acc.get("account_size", 50000.0))
+                                    d_loss = float(active_acc.get("daily_loss") if active_acc.get("daily_loss") is not None else (bt_cap * 0.025))
+                                else:
+                                    d_loss = None
                             else:
                                 m_cap = None
                                 d_loss = None
@@ -8342,6 +8582,7 @@ with tab_dict["lab"]:
                             stored_prof = active_acc.get("exit_profile", "")
                             profile_mapping = {
                                 "Target-Lock Intraday (Apex)": "apex_lock",
+                                "EOD-Futures Prop-Desk (MFFU / Tradeify)": "eod_futures",
                                 "Home-Run Trend (Maximal-Alpha)": "private_alpha",
                                 "Scale-Out Defensiv (Rohstoff-Swing)": "commodity_scale",
                                 "Rohstoff-Runner (Privat-Alpha)": "commodity_alpha",
@@ -8350,7 +8591,7 @@ with tab_dict["lab"]:
                                 "Forex Swing-Runner (FTMO)": "ftmo_swing"
                             }
                             
-                            valid_internal_keys = ["apex_lock", "private_alpha", "commodity_scale", "commodity_alpha", "prop_guard", "defensive_swing", "ftmo_swing"]
+                            valid_internal_keys = ["apex_lock", "eod_futures", "private_alpha", "commodity_scale", "commodity_alpha", "prop_guard", "defensive_swing", "ftmo_swing"]
                             
                             if stored_prof in valid_internal_keys:
                                 acc_exit_prof = stored_prof
@@ -8359,14 +8600,15 @@ with tab_dict["lab"]:
                             else:
                                 acc_exit_prof = "prop_guard" if acc_tax_lab == "prop_firm" else "private_alpha"
                                 
-                            acc_direction = active_acc.get("direction", "both" if acc_exit_prof in ["prop_guard", "defensive_swing", "apex_lock", "commodity_scale"] else "long")
+                            acc_direction = active_acc.get("direction", "both" if acc_exit_prof in ["prop_guard", "defensive_swing", "apex_lock", "eod_futures", "commodity_scale"] else "long")
+                            bt_exit_profile = "apex_lock" if acc_exit_prof == "eod_futures" else acc_exit_prof
                                 
                             # --- 4. Bereinigter Aufruf ---
                             trades = bte.run_portfolio_backtest(
                                 active_acc["tickers"], sec_map, sim_years, f_rate, s_rate, 
                                 active_acc.get("min_score", 60), active_acc["account_size"], active_acc["risk_pct"], 
                                 active_acc.get("compounding", "inactive"), active_acc.get("trailing_stop", "active"), active_acc.get("mode", "walk_forward"),
-                                exit_profile=acc_exit_prof, allowed_direction=acc_direction, interval=sim_interval,
+                                exit_profile=bt_exit_profile, allowed_direction=acc_direction, interval=sim_interval,
                                 max_contracts_cap=m_cap, daily_loss=d_loss
                             )
                             
@@ -8530,7 +8772,11 @@ with tab_fleet:
         exit_prof = str(a_data.get("exit_profile", "")).lower()
         tax_cat = str(a_data.get("tax_category", "")).lower()
         
+        a_name_raw = str(a_data.get("name", "")).lower()
+        _eod_kws_f = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
+        
         if tax_cat == "private": a_class = "private"
+        elif exit_prof == "eod_futures" or any(kw in a_type_raw or kw in a_name_raw for kw in _eod_kws_f): a_class = "eod_futures"
         elif exit_prof in ["apex_lock", "apex_commodity_scale"]: a_class = "apex"
         elif exit_prof == "ftmo_swing": a_class = "ftmo"
         elif "apex" in a_type_raw: a_class = "apex"
@@ -8539,7 +8785,8 @@ with tab_fleet:
         
         start_cap = float(a_data.get("account_size", a_data.get("capital", 10000.0)))
         
-        if a_class == "apex": def_daily, def_trail, currency = start_cap * 0.025, start_cap * 0.05, "USD"
+        if a_class == "eod_futures": def_daily, def_trail, currency = 0.0, start_cap * 0.03, "USD"
+        elif a_class == "apex": def_daily, def_trail, currency = start_cap * 0.025, start_cap * 0.05, "USD"
         elif a_class == "ftmo": def_daily, def_trail, currency = start_cap * 0.05, start_cap * 0.10, "EUR"
         else: def_daily, def_trail, currency = 0.0, 0.0, "EUR"
         
@@ -8551,6 +8798,7 @@ with tab_fleet:
             "name": a_data.get("name", "Unknown"),
             "broker_account_id": str(a_data.get("broker_account_id", "")).strip(),
             "class": a_class,
+            "risk_gear": a_data.get("risk_gear", "EVAL_TURBO"),
             "start_cap": start_cap,
             "daily_loss": daily_loss,
             "trail_dd": trail_dd,
@@ -8591,7 +8839,7 @@ with tab_fleet:
         for acc_id, fa in fleet_accounts.items():
             if "snap_data" not in fa:
                 for s_k, s_a in snap_accs.items():
-                    if s_k not in assigned_snap_keys and s_k.startswith(fa["class"]):
+                    if s_k not in assigned_snap_keys and (s_k.startswith(fa["class"]) or (fa["class"] == "eod_futures" and s_k == "apex")):
                         fa["snap_data"] = s_a
                         assigned_snap_keys.add(s_k)
                         break
@@ -8621,7 +8869,7 @@ with tab_fleet:
                         if is_j_forex and fa["class"] == "ftmo":
                             matched_acc_id = acc_id
                             break
-                        elif not is_j_forex and fa["class"] == "apex":
+                        elif not is_j_forex and fa["class"] in ["apex", "eod_futures"]:
                             matched_acc_id = acc_id
                             break
                             
@@ -8657,7 +8905,10 @@ with tab_fleet:
             
             try:
                 dl_val = float(sd.get("daily_loss_limit") or sd.get("daily_loss") or 0)
-                if dl_val > 0: fa["daily_loss"] = dl_val
+                if fa["class"] == "eod_futures" and dl_val <= 0:
+                    fa["daily_loss"] = 0.0
+                elif dl_val > 0:
+                    fa["daily_loss"] = dl_val
             except Exception: pass
             
             try:
@@ -8678,7 +8929,9 @@ with tab_fleet:
             fa["daily_buffer"] = float(sd.get("daily_buffer", fa["daily_buffer"]))
             fa["max_dd_buffer"] = float(sd.get("max_dd_buffer", fa["max_dd_buffer"]))
             fa["daily_pnl"] = float(sd.get("daily_pnl", 0.0))
-            if fa["class"] == "apex":
+            if str(sd.get("risk_gear", "")).strip():
+                fa["risk_gear"] = str(sd.get("risk_gear", "")).strip()
+            if fa["class"] in ["apex", "eod_futures"]:
                 fa["high_watermark"] = float(sd.get("high_watermark", fa["high_watermark"]))
         else:
             realized_pnl_eur, today_realized_pnl_eur, floating_pnl_eur = 0.0, 0.0, 0.0
@@ -8729,7 +8982,7 @@ with tab_fleet:
                 fa["equity"] = fa["start_cap"] + total_pnl_eur
                 fa["daily_pnl"] = daily_pnl_eur
                 
-            if fa["class"] == "apex":
+            if fa["class"] in ["apex", "eod_futures"]:
                 saved_hwm = fa["start_cap"]
                 nt8_path = get_user_file("nt8_account_state.json")
                 if os.path.exists(nt8_path):
@@ -8741,7 +8994,7 @@ with tab_fleet:
                 hwm = max(saved_hwm, fa["start_cap"], fa["equity"])
                 fa["high_watermark"] = hwm
                 raw_ko = hwm - fa["trail_dd"]
-                einrast = fa["start_cap"] + 100.0
+                einrast = (fa["start_cap"] + (fa["start_cap"] * 0.001)) if fa["class"] == "eod_futures" else (fa["start_cap"] + 100.0)
                 ko_floor = einrast if raw_ko >= einrast else raw_ko
                 fa["max_dd_buffer"] = max(0.0, fa["equity"] - ko_floor)
             elif fa["class"] == "ftmo":
@@ -8758,7 +9011,7 @@ with tab_fleet:
         dd_ratio = max(0.0, min(1.0, dd_ratio))
         fa["effective_ratio"] = min(daily_ratio, dd_ratio)
         
-        if fa["class"] == "apex":
+        if fa["class"] in ["apex", "eod_futures"]:
             if fa["effective_ratio"] >= 0.60: fa["zone"] = "GREEN"
             elif fa["effective_ratio"] >= 0.32: fa["zone"] = "YELLOW"
             else: fa["zone"] = "RED"
@@ -8769,7 +9022,7 @@ with tab_fleet:
         else:
             fa["zone"] = "PRIVATE"
             
-        bottleneck_native = min(fa["daily_buffer"], fa["max_dd_buffer"])
+        bottleneck_native = fa["max_dd_buffer"] if (fa["class"] == "eod_futures" or fa["daily_loss"] <= 0) else min(fa["daily_buffer"], fa["max_dd_buffer"])
         if fa["currency"] == "USD":
             total_fleet_buffer_eur += bottleneck_native * fx_usd_eur
             daily_pnl_apex_usd += fa["daily_pnl"]
@@ -8807,7 +9060,7 @@ with tab_fleet:
         
     c1, c2, c3, c4 = st.columns(4)
     
-    prop_accs = [fa for fa in fleet_accounts.values() if fa["class"] in ["apex", "ftmo"]]
+    prop_accs = [fa for fa in fleet_accounts.values() if fa["class"] in ["apex", "eod_futures", "ftmo"]]
     red_count = sum(1 for fa in prop_accs if fa["zone"] == "RED")
     yellow_count = sum(1 for fa in prop_accs if fa["zone"] == "YELLOW")
     green_count = sum(1 for fa in prop_accs if fa["zone"] == "GREEN")
@@ -8833,7 +9086,7 @@ with tab_fleet:
     total_open_count = sum(len(txs) for txs in open_trades_fleet.values())
     
     ftmo_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "ftmo")
-    apex_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "apex")
+    apex_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] in ["apex", "eod_futures"])
     priv_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "private")
     usd_cluster_lbl = "🟡 USD-Cluster Belegt (1/1)" if usd_cluster_open_count >= 1 else "🟢 USD-Cluster Frei (0/1)"
     
@@ -8848,7 +9101,7 @@ with tab_fleet:
     st.subheader("⚖️ RESONO Puffer-Parität")
     
     ftmo_accs = [fa for fa in prop_accs if fa["class"] == "ftmo"]
-    apex_accs = [fa for fa in prop_accs if fa["class"] == "apex"]
+    apex_accs = [fa for fa in prop_accs if fa["class"] in ["apex", "eod_futures"]]
     
     if prop_accs:
         max_rows = max(len(ftmo_accs), len(apex_accs))
@@ -8923,7 +9176,7 @@ with tab_fleet:
             showlegend=False,
             annotations=[
                 dict(x=-60, y=1.14, xref="x", yref="paper", text="⬅️ FTMO / Forex (Links)", showarrow=False, font=dict(color="#E2E8F0", size=14)),
-                dict(x=60, y=1.14, xref="x", yref="paper", text="Apex / Futures (Rechts) ➡️", showarrow=False, font=dict(color="#E2E8F0", size=14))
+                dict(x=60, y=1.14, xref="x", yref="paper", text="Futures-Desks (Rechts) ➡️", showarrow=False, font=dict(color="#E2E8F0", size=14))
             ]
         )
         
@@ -8951,25 +9204,37 @@ with tab_fleet:
         with st.expander(f"{fa['name']} ({fa['broker_account_id'] or 'Keine ID'}) | {zone_icon} | {conn_icon}", expanded=is_expanded):
             st.markdown(f"**Modus:** `{fa['execution_mode']}` | **Whitelist:** `{', '.join(fa['tickers']) if fa['tickers'] else 'Keine'}`")
             
-            bottleneck = min(fa['daily_buffer'], fa['max_dd_buffer'])
+            is_eod_exp = (fa["class"] == "eod_futures" or fa["daily_loss"] <= 0)
+            bottleneck = fa['max_dd_buffer'] if is_eod_exp else min(fa['daily_buffer'], fa['max_dd_buffer'])
             
             mc1, mc2 = st.columns(2)
             mc1.metric("Live-Equity", f"{fa['equity']:,.2f} {fa['currency']}", f"Start: {fa['start_cap']:,.2f} {fa['currency']}", delta_color="off")
             mc2.metric("Aktiver Flaschenhals-Puffer", f"{bottleneck:,.2f} {fa['currency']}", f"Tages-PnL: {fa['daily_pnl']:+,.2f} {fa['currency']}", delta_color="off")
             
             mc3, mc4 = st.columns(2)
-            mc3.metric("Tages-Puffer", f"{fa['daily_buffer']:,.2f} {fa['currency']}", f"Limit: {fa['daily_loss']:,.2f} {fa['currency']}", delta_color="off")
+            if is_eod_exp:
+                mc3.metric("Tages-Puffer", "Kein Intraday-Limit", "EOD-Drawdown-Regel (0 $ Daily)", delta_color="off")
+            else:
+                mc3.metric("Tages-Puffer", f"{fa['daily_buffer']:,.2f} {fa['currency']}", f"Limit: {fa['daily_loss']:,.2f} {fa['currency']}", delta_color="off")
             mc4.metric("Max-DD-Puffer", f"{fa['max_dd_buffer']:,.2f} {fa['currency']}", f"Limit: {fa['trail_dd']:,.2f} {fa['currency']}", delta_color="off")
             
-            if fa["class"] == "apex":
+            if fa["class"] in ["apex", "eod_futures"]:
                 hwm = fa["high_watermark"]
                 raw_ko = hwm - fa["trail_dd"]
-                lock_level = fa["start_cap"] + 100.0
+                lock_offset = (fa["start_cap"] * 0.001) if fa["class"] == "eod_futures" else 100.0
+                lock_level = fa["start_cap"] + lock_offset
                 is_locked = raw_ko >= lock_level
                 ko_floor = lock_level if is_locked else raw_ko
                 
-                lock_str = "(🔒 Eingerastet +100 $)" if is_locked else "(🔓 Offen / Trailing)"
-                st.caption(f"📈 **High-Watermark:** {hwm:,.2f} {fa['currency']} | 🛡️ **KO-Floor:** {ko_floor:,.2f} {fa['currency']} {lock_str}")
+                lock_str = f"(🔒 Eingerastet +{lock_offset:,.0f} $)" if is_locked else "(🔓 Offen / Trailing)"
+                if fa["class"] == "eod_futures":
+                    gear_raw = str(fa.get("risk_gear", "EVAL_TURBO")).upper()
+                    acc_name_u = str(fa.get("name", "")).upper()
+                    is_funded_gear = is_locked or gear_raw == "FUNDED_SHIELD" or "FUNDED" in acc_name_u or "PA" in acc_name_u
+                    gear_disp = "FUNDED_SHIELD (0,25 %)" if is_funded_gear else "EVAL_TURBO (0,35 %)"
+                    st.caption(f"📈 **High-Watermark:** {hwm:,.2f} {fa['currency']} | 🛡️ **KO-Floor:** {ko_floor:,.2f} {fa['currency']} {lock_str} | ⚙️ **Risiko-Gang:** {gear_disp}")
+                else:
+                    st.caption(f"📈 **High-Watermark:** {hwm:,.2f} {fa['currency']} | 🛡️ **KO-Floor:** {ko_floor:,.2f} {fa['currency']} {lock_str}")
                 
             if open_txs:
                 tx_data = []
@@ -8995,9 +9260,9 @@ with tab_fleet:
             render_account_expander(fa, open_trades_fleet[fa["id"]])
             
     with c_det_r:
-        st.markdown("### 🏎️ Apex / Futures-Desks")
+        st.markdown("### 🏎️ Futures-Desks (Apex / EOD)")
         if not apex_accs:
-            st.caption("Keine Apex Konten.")
+            st.caption("Keine Futures-Konten.")
         for fa in apex_accs:
             render_account_expander(fa, open_trades_fleet[fa["id"]])
             

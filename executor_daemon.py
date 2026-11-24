@@ -117,7 +117,9 @@ def get_point_value(symbol: str, contract: str = "") -> float:
         "SIL": 10.0, "SI": 10.0,
         "MCL": 100.0, "CL": 100.0,
         "QG": 2500.0, "NG": 2500.0,
-        "MHG": 250.0, "HG": 250.0
+        "MHG": 250.0, "HG": 250.0,
+        "M6E": 12500.0, "6E": 12500.0
+        
     }
     return POINT_VALUES.get(clean_sym, 1.0)
 
@@ -314,6 +316,8 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         "MCL": (0.50, 1.00),
         "GC": (5.0, 10.0),
         "MGC": (5.0, 10.0),
+        "6E": (0.0050, 0.0100),
+        "M6E": (0.0050, 0.0100),
     }
 
     YFINANCE_MAPPING = {
@@ -325,6 +329,8 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
         "MCL": "CL=F",
         "GC": "GC=F",
         "MGC": "GC=F",
+        "6E": "6E=F",
+        "M6E": "6E=F",
         "YM": "YM=F",
         "MYM": "YM=F",
         "RTY": "RTY=F",
@@ -339,6 +345,10 @@ class NinjaTraderAdapter(BaseBrokerAdapter):
             return "MNQ"
         if clean_sym in ("CL", "MCL"):
             return "MCL"
+        if clean_sym in ("GC", "MGC"):
+            return "MGC"
+        if clean_sym in ("6E", "M6E"):
+            return "M6E"
         return clean_sym
 
     def __init__(self, execution_timeout: float = NT8_EXECUTION_TIMEOUT):
@@ -1566,7 +1576,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         if not valid_deals:
             return None
             
-        latest_deal = max(valid_deals, key=lambda x: x.time)
+        latest_deal = max(valid_deals, key=lambda x: (getattr(x, "time_msc", 0), x.time, getattr(x, "ticket", 0)))
         return {
             "price": float(latest_deal.price),
             "profit": float(latest_deal.profit),
@@ -1617,7 +1627,7 @@ class FTMOBrokerAdapter(BaseBrokerAdapter):
         if not valid_deals:
             return None
             
-        latest_deal = max(valid_deals, key=lambda x: x.time)
+        latest_deal = max(valid_deals, key=lambda x: (getattr(x, "time_msc", 0), x.time, getattr(x, "ticket", 0)))
         return {
             "price": float(latest_deal.price),
             "profit": float(latest_deal.profit),
@@ -1892,7 +1902,7 @@ class ExecutorDaemon:
         self.nt8 = NinjaTraderAdapter()
         self.ftmo = FTMOBrokerAdapter()
         self.kill_event = asyncio.Event()
-        self.active_adapters = {"apex": self.nt8, "ftmo": self.ftmo}
+        self.active_adapters = {"apex": self.nt8, "eod_futures": self.nt8, "ftmo": self.ftmo}
         self._telemetry_session = None
         self._telemetry_flight_active = False
         self._telemetry_last_log_time = 0.0
@@ -1959,14 +1969,22 @@ class ExecutorDaemon:
             
         try:
             ftmo_acc = str(MT5_LOGIN) if MT5_LOGIN > 0 else "FTMO"
-            apex_live = await self._resolve_live_risk_state("apex", NT8_ACCOUNT)
-            ftmo_live = await self._resolve_live_risk_state("ftmo", ftmo_acc)
             apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+            nt8_check_str = f"{apex_cfg.get('_key', '')} {apex_cfg.get('name', '')} {apex_cfg.get('broker', '')} {apex_cfg.get('account_type', '')}".lower()
+            nt8_account_type = "eod_futures" if any(kw in nt8_check_str for kw in ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")) else "apex"
+
+            apex_live = await self._resolve_live_risk_state(nt8_account_type, NT8_ACCOUNT)
+            ftmo_live = await self._resolve_live_risk_state("ftmo", ftmo_acc)
 
             if apex_positions is None and self.nt8.connected:
                 apex_positions = await self.nt8.get_open_positions(NT8_ACCOUNT)
             if ftmo_positions is None and self.ftmo.connected:
                 ftmo_positions = await self.ftmo.get_open_positions(ftmo_acc)
+
+            nt8_default_size = 100000.0 if nt8_account_type == "eod_futures" else 50000.0
+            nt8_acc_size = apex_live.get("account_size", nt8_default_size)
+            nt8_default_daily = 0.0 if nt8_account_type == "eod_futures" else (nt8_acc_size * 0.025)
+            nt8_default_dd = (nt8_acc_size * 0.03) if nt8_account_type == "eod_futures" else (nt8_acc_size * 0.05)
 
             snap = {
                 "schema_version": 1,
@@ -1978,14 +1996,15 @@ class ExecutorDaemon:
                     "apex": {
                         "account_id": NT8_ACCOUNT,
                         "account_name": apex_cfg.get("name", "Apex Account"),
+                        "account_type": nt8_account_type,
                         "currency": "USD",
                         "live_connected": apex_live.get("live_connected", False),
-                        "account_size": apex_live.get("account_size", 50000.0),
+                        "account_size": nt8_acc_size,
                         "balance": apex_live.get("current_balance", 0.0),
                         "equity": apex_live.get("current_balance", 0.0),
                         "high_watermark": apex_live.get("high_watermark", 0.0),
-                        "daily_loss_limit": float(apex_cfg.get("daily_loss_limit", apex_cfg.get("daily_loss", apex_live.get("account_size", 50000.0) * 0.025))),
-                        "max_dd_limit": float(apex_cfg.get("max_trailing_dd", apex_cfg.get("trail_dd", apex_live.get("account_size", 50000.0) * 0.050))),
+                        "daily_loss_limit": float(apex_live.get("daily_loss_limit", nt8_default_daily)),
+                        "max_dd_limit": float(apex_live.get("max_trailing_dd", nt8_default_dd)),
                         "daily_buffer": apex_live.get("daily_buffer", 0.0),
                         "max_dd_buffer": apex_live.get("max_dd_buffer", 0.0),
                         "daily_pnl": apex_live.get("live_daily_pnl", 0.0),
@@ -2050,7 +2069,7 @@ class ExecutorDaemon:
                             
                 for acc in acc_list:
                     check_str = f"{acc.get('_key','')} {acc.get('name','')} {acc.get('broker','')} {acc.get('account_type','')}".lower()
-                    if "apex" in check_str:
+                    if any(kw in check_str for kw in ("apex", "eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")):
                         apex_cfg = acc
                     if "ftmo" in check_str:
                         ftmo_cfg = acc
@@ -2065,7 +2084,7 @@ class ExecutorDaemon:
             return raw_mode
             
         apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
-        prof = str(apex_cfg.get("exit_profile", "apex_lock")).lower() if account_type == "apex" else str(ftmo_cfg.get("exit_profile", "ftmo_swing")).lower()
+        prof = str(apex_cfg.get("exit_profile", "apex_lock")).lower() if account_type in ("apex", "eod_futures") else str(ftmo_cfg.get("exit_profile", "ftmo_swing")).lower()
             
         if prof in ["apex_lock", "apex_commodity"]: return "TARGET_LOCKED"
         if prof == "ftmo_swing": return "FTMO_SWING"
@@ -2115,10 +2134,19 @@ class ExecutorDaemon:
     async def _resolve_live_risk_state(self, account_type: str, account_id: str, fb_balance: float = 0.0, fb_trailing_threshold: float = 0.0) -> dict:
         apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
         
-        if account_type == "apex":
-            cfg_size = float(apex_cfg.get("account_size", apex_cfg.get("capital", 50000.0)))
-            cfg_daily_lim = float(apex_cfg.get("daily_loss_limit", apex_cfg.get("daily_loss", cfg_size * 0.025)))
-            cfg_trail_dd = float(apex_cfg.get("max_trailing_dd", apex_cfg.get("trail_dd", cfg_size * 0.050)))
+        if account_type in ("apex", "eod_futures"):
+            is_eod = (account_type == "eod_futures")
+            default_size = 100000.0 if is_eod else 50000.0
+            raw_size = apex_cfg.get("account_size") if apex_cfg.get("account_size") is not None else apex_cfg.get("capital")
+            cfg_size = float(raw_size) if raw_size is not None and float(raw_size) > 0.0 else default_size
+
+            default_daily_lim = 0.0 if is_eod else (cfg_size * 0.025)
+            raw_daily_lim = apex_cfg.get("daily_loss_limit") if apex_cfg.get("daily_loss_limit") is not None else apex_cfg.get("daily_loss")
+            cfg_daily_lim = float(raw_daily_lim) if raw_daily_lim is not None else default_daily_lim
+
+            default_trail_dd = (cfg_size * 0.03) if is_eod else (cfg_size * 0.05)
+            raw_trail_dd = apex_cfg.get("max_trailing_dd") if apex_cfg.get("max_trailing_dd") is not None else apex_cfg.get("trail_dd")
+            cfg_trail_dd = float(raw_trail_dd) if raw_trail_dd is not None and float(raw_trail_dd) > 0.0 else default_trail_dd
             
             nt8_info = await self.nt8.get_account_info(account_id)
             if nt8_info:
@@ -2128,18 +2156,23 @@ class ExecutorDaemon:
                 hw = self._update_apex_high_watermark(account_id, cfg_size, live_eq)
                 
                 ko_floor = hw - cfg_trail_dd
-                einrast_niveau = cfg_size + 100.0
+                einrast_niveau = cfg_size + (cfg_size * 0.001)
                 if ko_floor >= einrast_niveau:
                     ko_floor = einrast_niveau
                     
                 max_dd_buf = max(0.0, live_eq - ko_floor)
-                daily_buf = max(0.0, min(cfg_daily_lim, cfg_daily_lim + min(0.0, daily_pnl)))
+                if cfg_daily_lim <= 0.0:
+                    daily_buf = 0.0
+                else:
+                    daily_buf = max(0.0, min(cfg_daily_lim, cfg_daily_lim + min(0.0, daily_pnl)))
                 
                 return {
                     "live_connected": True,
                     "account_size": cfg_size,
                     "current_balance": live_eq,
                     "high_watermark": hw,
+                    "daily_loss_limit": cfg_daily_lim,
+                    "max_trailing_dd": cfg_trail_dd,
                     "max_dd_buffer": max_dd_buf,
                     "daily_buffer": daily_buf,
                     "live_daily_pnl": daily_pnl,
@@ -2151,8 +2184,10 @@ class ExecutorDaemon:
                     "account_size": cfg_size,
                     "current_balance": fb_balance if fb_balance > 0 else cfg_size,
                     "high_watermark": fb_trailing_threshold + cfg_trail_dd if fb_trailing_threshold > 0 else cfg_size,
+                    "daily_loss_limit": cfg_daily_lim,
+                    "max_trailing_dd": cfg_trail_dd,
                     "max_dd_buffer": 0.0,
-                    "daily_buffer": cfg_daily_lim,
+                    "daily_buffer": 0.0 if cfg_daily_lim <= 0.0 else cfg_daily_lim,
                     "live_daily_pnl": 0.0
                 }
                 
@@ -2260,6 +2295,14 @@ class ExecutorDaemon:
                         clean_sym = "MNQ"
                     elif clean_sym in ("CL", "MCL"):
                         clean_sym = "MCL"
+                    if clean_sym in ("NQ", "MNQ"):
+                        clean_sym = "MNQ"
+                    elif clean_sym in ("CL", "MCL"):
+                        clean_sym = "MCL"
+                    elif clean_sym in ("GC", "MGC"):
+                        clean_sym = "MGC"
+                    elif clean_sym in ("6E", "M6E"):
+                        clean_sym = "M6E"
 
                     account = str(trade.get("account_name", "")).strip()
                     
@@ -2439,11 +2482,19 @@ class ExecutorDaemon:
             clean_target_sym = "MNQ"
         elif clean_target_sym in ("CL", "MCL"):
             clean_target_sym = "MCL"
+        elif clean_target_sym in ("GC", "MGC"):
+            clean_target_sym = "MGC"
+        elif clean_target_sym in ("6E", "M6E"):
+            clean_target_sym = "M6E"
 
         apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
         
         has_open_pos = False
         duplicate_symbol_open = False
+        eod_open_symbols = set()
+        eod_journal_open_count = 0
+        open_positions_count = 0
+        open_symbols = []
         journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
         
         if journal_path.exists():
@@ -2459,11 +2510,30 @@ class ExecutorDaemon:
                                     r_sym = "MNQ"
                                 elif r_sym in ("CL", "MCL"):
                                     r_sym = "MCL"
+                                elif r_sym in ("GC", "MGC"):
+                                    r_sym = "MGC"
+                                elif r_sym in ("6E", "M6E"):
+                                    r_sym = "M6E"
                                     
                                 if account_type == "apex":
                                     cfg_name = str(apex_cfg.get("name", "")).lower()
                                     if "apex" in r_acc or account_id.lower() in r_acc or (cfg_name and cfg_name in r_acc) or r_acc in account_id.lower() or r_acc in ["auto_routed", "demo_spooler", "auto"]:
                                         has_open_pos = True
+                                elif account_type == "eod_futures":
+                                    cfg_name = str(apex_cfg.get("name", "")).lower()
+                                    is_eod_row = (
+                                        any(kw in r_acc for kw in ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify"))
+                                        or (account_id and account_id.lower() in r_acc)
+                                        or (cfg_name and cfg_name in r_acc)
+                                        or (r_acc and r_acc in account_id.lower())
+                                        or r_acc in ["auto_routed", "demo_spooler", "auto"]
+                                    )
+                                    if is_eod_row:
+                                        eod_journal_open_count += 1
+                                        if r_sym:
+                                            eod_open_symbols.add(r_sym)
+                                            if r_sym == clean_target_sym:
+                                                duplicate_symbol_open = True
                                 elif account_type == "ftmo":
                                     cfg_name = str(ftmo_cfg.get("name", "")).lower()
                                     if "ftmo" in r_acc or account_id.lower() in r_acc or (cfg_name and cfg_name in r_acc) or r_acc in account_id.lower() or r_acc in ["auto_routed", "demo_spooler", "auto"]:
@@ -2482,6 +2552,31 @@ class ExecutorDaemon:
             if has_open_pos:
                 await self.reporter.report_step_1_signal(symbol, direction, "VETO_OCCUPIED", account_type)
                 return {"status": "DENIED", "resono_status": "VETO_OCCUPIED", "reason": "Konto belegt: Maximal 1 offener Trade auf Apex erlaubt"}
+                
+        elif account_type == "eod_futures":
+            nt8_positions = await self.nt8.get_open_positions(account_id)
+            broker_open_count = 0
+            if nt8_positions:
+                broker_open_count = len(nt8_positions)
+                for pos in nt8_positions:
+                    raw_pos_sym = str(pos.get("instrument") or pos.get("symbol") or "").strip()
+                    if raw_pos_sym:
+                        norm_pos_sym = self.nt8._resolve_micro_symbol(raw_pos_sym)
+                        eod_open_symbols.add(norm_pos_sym)
+                        if norm_pos_sym == clean_target_sym:
+                            duplicate_symbol_open = True
+
+            open_symbols = sorted(eod_open_symbols)
+            open_positions_count = max(len(eod_open_symbols), eod_journal_open_count, broker_open_count)
+            has_open_pos = (open_positions_count >= 2)
+
+            if duplicate_symbol_open:
+                await self.reporter.report_step_1_signal(symbol, direction, "VETO_DUPLICATE_SYMBOL", account_type)
+                return {"status": "DENIED", "resono_status": "VETO_DUPLICATE_SYMBOL", "reason": f"Bereits offene Position in {clean_target_sym} vorhanden"}
+
+            if open_positions_count >= 2:
+                await self.reporter.report_step_1_signal(symbol, direction, "VETO_OCCUPIED", account_type)
+                return {"status": "DENIED", "resono_status": "VETO_OCCUPIED", "reason": "Konto belegt: Maximal 2 offene Futures-Positionen gleichzeitig erlaubt"}
                 
         elif account_type == "ftmo":
             ftmo_positions = await self.ftmo.get_open_positions(account_id)
@@ -2524,6 +2619,72 @@ class ExecutorDaemon:
                 "daily_buffer": live_state.get("daily_buffer"),
                 "account_type": resolved_phase,
                 "has_open_position": has_open_pos
+            }
+            if is_fleet:
+                res_eval = evaluate_fleet([acc_data], [signal_data])
+                alloc = res_eval.get("allocations", [{}])[0]
+                is_allowed = alloc.get("max_contracts", 0) > 0
+                allocated_qty = alloc.get("max_contracts", 0)
+                resono_status = alloc.get("status_code", "DENIED")
+                reason = alloc.get("ui_reason", "Flotten-Veto")
+            else:
+                res_eval = evaluate_account_risk(acc_data, signal_data)
+                is_allowed = res_eval.get("allowed", False)
+                allocated_qty = res_eval.get("max_contracts", 0)
+                resono_status = res_eval.get("status_code", "DENIED")
+                reason = res_eval.get("ui_reason", "Blockiert")
+
+        elif account_type == "eod_futures":
+            if not live_state.get("live_connected") and account_size and account_size > 0:
+                dyn_acc_size = float(account_size)
+
+            eod_daily_limit = float(live_state.get("daily_loss_limit", 0.0))
+            eod_trail_dd = float(live_state.get("max_trailing_dd", dyn_acc_size * 0.03))
+            if not live_state.get("live_connected") and account_size and account_size > 0:
+                raw_cfg_dd = apex_cfg.get("max_trailing_dd") if apex_cfg.get("max_trailing_dd") is not None else apex_cfg.get("trail_dd")
+                eod_trail_dd = float(raw_cfg_dd) if raw_cfg_dd is not None and float(raw_cfg_dd) > 0.0 else (dyn_acc_size * 0.03)
+
+            eod_hw = live_state.get("high_watermark")
+            if not live_state.get("live_connected") or not eod_hw:
+                eod_hw = max(dyn_acc_size, dyn_balance, (trailing_threshold + eod_trail_dd) if trailing_threshold > 0 else dyn_acc_size)
+
+            eod_ko_floor = eod_hw - eod_trail_dd
+            eod_freeze_floor = dyn_acc_size + (dyn_acc_size * 0.001)
+            if eod_ko_floor >= eod_freeze_floor:
+                eod_ko_floor = eod_freeze_floor
+            calc_eod_max_dd_buf = max(0.0, dyn_balance - eod_ko_floor)
+
+            if live_state.get("live_connected"):
+                resolved_eod_max_dd_buf = float(live_state.get("max_dd_buffer", calc_eod_max_dd_buf))
+                if max_dd_buffer is not None:
+                    resolved_eod_max_dd_buf = min(resolved_eod_max_dd_buf, float(max_dd_buffer))
+            else:
+                resolved_eod_max_dd_buf = float(max_dd_buffer) if max_dd_buffer is not None else calc_eod_max_dd_buf
+
+            if eod_daily_limit <= 0.0:
+                resolved_eod_daily_buf = 0.0
+            else:
+                resolved_eod_daily_buf = float(live_state.get("daily_buffer", eod_daily_limit))
+                if daily_buffer is not None:
+                    resolved_eod_daily_buf = min(resolved_eod_daily_buf, float(daily_buffer))
+
+            funded_check_str = f"{account_id} {apex_cfg.get('_key', '')} {apex_cfg.get('name', '')} {apex_cfg.get('account_type', '')}".upper()
+            resolved_eod_phase = "funded_eod" if ("PA" in funded_check_str or "FUNDED" in funded_check_str or bool(apex_cfg.get("is_funded", False))) else "eod_futures"
+
+            acc_data = {
+                "account_id": account_id,
+                "account_type": resolved_eod_phase,
+                "broker_profile": "eod_futures",
+                "account_size": dyn_acc_size,
+                "current_balance": dyn_balance,
+                "high_watermark": eod_hw,
+                "daily_loss_limit": eod_daily_limit,
+                "max_trailing_dd": eod_trail_dd,
+                "max_dd_buffer": resolved_eod_max_dd_buf,
+                "daily_buffer": resolved_eod_daily_buf,
+                "open_positions_count": open_positions_count,
+                "open_symbols": open_symbols,
+                "has_open_position": (open_positions_count >= 2)
             }
             if is_fleet:
                 res_eval = evaluate_fleet([acc_data], [signal_data])
@@ -2829,7 +2990,7 @@ class ExecutorDaemon:
                             row_sym = str(matched_row.get("symbol", "")).upper()
                             row_acc = target_account.upper()
                             target_account_type = "ftmo" if ("=X" in row_sym or "FTMO" in row_acc) else "apex"
-                        if target_account_type == "apex" and (not raw_close_qty.is_integer() or not raw_runner_qty.is_integer()):
+                        if target_account_type in ("apex", "eod_futures") and (not raw_close_qty.is_integer() or not raw_runner_qty.is_integer()):
                             signal_payload["rejection_reason"] = "FRACTIONAL_CONTRACTS_NOT_ALLOWED"
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
                             continue
@@ -2866,7 +3027,7 @@ class ExecutorDaemon:
                         # Schritt 2: Kaskadierte Stop-Modifikation
                         double_fault = False
                         executed_new_sl = old_sl
-                        active_order_id = req_trade_id if target_account_type != "apex" else str(signal_payload.get("stop_order_id", "")).strip()
+                        active_order_id = req_trade_id if target_account_type not in ("apex", "eod_futures") else str(signal_payload.get("stop_order_id", "")).strip()
 
                         mod_res = await adapter.modify_stop_loss(
                             account_id=target_account,
@@ -3089,7 +3250,7 @@ class ExecutorDaemon:
 
                         trade_id = str(matched_row.get("id", "")).strip()
                         oco_id = str(signal_payload.get("oco_id", "")).strip()
-                        if target_account_type == "apex":
+                        if target_account_type in ("apex", "eod_futures"):
                             stop_order_id = str(signal_payload.get("stop_order_id", "")).strip()
                             active_order_id = stop_order_id if stop_order_id else ""
                         else:
@@ -3418,10 +3579,11 @@ class ExecutorDaemon:
             tp_price = float(payload.get("tp_price") or payload.get("tp", 0.0))
             position_size = float(payload.get("qty") or payload.get("shares_contracts", 1))
 
-            usd_symbols = ["NQ", "MNQ", "ES", "MES", "CL", "MCL", "GC", "MGC", "YM", "MYM", "RTY", "M2K"]
+            usd_symbols = ["NQ", "MNQ", "ES", "MES", "CL", "MCL", "GC", "MGC", "6E", "M6E", "YM", "MYM", "RTY", "M2K"]
             currency = "$" if any(x in clean_sym for x in usd_symbols) else "€"
             base_currency = "USD" if currency == "$" else "EUR"
-            contract_type = "Micro" if clean_sym in ["MNQ", "MES", "MCL", "MGC", "MYM", "M2K"] else ("Lot" if "=X" in symbol else "")
+            clean_fut_sym = clean_sym.replace("=F", "")
+            contract_type = "Micro" if clean_fut_sym in ["MNQ", "MES", "MCL", "MGC", "M6E", "6E", "MYM", "M2K"] else ("Lot" if "=X" in symbol else "")
 
             point_value = get_point_value(clean_sym, contract_type)
 
@@ -4013,7 +4175,11 @@ async def run_test_battery():
     assert daemon.nt8._resolve_micro_symbol("CL=F") == "MCL", "Symbol mapping failed for CL=F"
     assert daemon.nt8._resolve_micro_symbol("MCL=F") == "MCL", "Symbol mapping failed for MCL=F"
     assert daemon.nt8._resolve_micro_symbol("CL") == "MCL", "Symbol mapping failed for CL"
-    assert daemon.nt8._resolve_micro_symbol("GC=F") == "GC", "Symbol mapping failed for GC=F"
+    assert daemon.nt8._resolve_micro_symbol("GC=F") == "MGC", "Symbol mapping failed for GC=F"
+    assert daemon.nt8._resolve_micro_symbol("MGC=F") == "MGC", "Symbol mapping failed for MGC=F"
+    assert daemon.nt8._resolve_micro_symbol("6E=F") == "M6E", "Symbol mapping failed for 6E=F"
+    assert daemon.nt8._resolve_micro_symbol("M6E=F") == "M6E", "Symbol mapping failed for M6E=F"
+    assert daemon.nt8._resolve_micro_symbol("6E") == "M6E", "Symbol mapping failed for 6E"
     logging.info("Test 0b: NinjaTraderAdapter Symbol-Mapping Assertions erfolgreich.")
 
     logging.info("--- STARTING TEST 1: Apex MNQ Long (Einzelkonto) ---")
@@ -4281,6 +4447,93 @@ async def run_test_battery():
     TELEMETRY_ENDPOINT_URL, TELEMETRY_SECRET_TOKEN = old_url, old_token
     daemon._telemetry_enabled = False
     logging.info("Test 9: Telemetry Single-Flight Guard erfolgreich.")
+    logging.info("--- STARTING TEST 10: eod_futures Micro-Mapping, 2-Positions-Limit & get_point_value 6E=F ---")
+    assert get_point_value("6E=F") == 12500.0, "Test 10: get_point_value('6E=F') muss 12500.0 liefern!"
+    assert get_point_value("M6E") == 12500.0, "Test 10: get_point_value('M6E') muss 12500.0 liefern!"
+    assert daemon.nt8._resolve_micro_symbol("NQ=F") == "MNQ", "Test 10: NQ=F -> MNQ fehlgeschlagen!"
+    assert daemon.nt8._resolve_micro_symbol("GC=F") == "MGC", "Test 10: GC=F -> MGC fehlgeschlagen!"
+    assert daemon.nt8._resolve_micro_symbol("CL=F") == "MCL", "Test 10: CL=F -> MCL fehlgeschlagen!"
+    assert daemon.nt8._resolve_micro_symbol("6E=F") == "M6E", "Test 10: 6E=F -> M6E fehlgeschlagen!"
+
+    orig_nt8_positions = daemon.nt8.get_open_positions
+    orig_nt8_account_info = daemon.nt8.get_account_info
+    orig_nt8_place_order = daemon.nt8.place_bracket_order
+    orig_load_lab_cfg = daemon._load_lab_accounts_config
+
+    mock_eod_positions = [{"instrument": "MNQ 12-26", "qty": 1}]
+    mock_order_calls = []
+
+    async def _mock_get_open_positions(acc_id: str):
+        return list(mock_eod_positions)
+
+    async def _mock_get_account_info(acc_id: str = ""):
+        return {
+            "account": acc_id,
+            "currency": "USD",
+            "balance": 100000.0,
+            "equity": 100000.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "daily_pnl": 0.0
+        }
+
+    async def _mock_place_bracket_order(account_id, symbol, direction, qty, entry_price, sl_price, tp_price):
+        mock_order_calls.append((account_id, symbol, direction, qty))
+        return {"status": "MARKET_CLOSED", "reason": "TEST_10_MOCK"}
+
+    def _mock_load_lab_cfg():
+        return (
+            {
+                "_key": "mffu_100k_test",
+                "name": "MFFU 100k Test",
+                "broker": "mffu",
+                "account_type": "eod_futures",
+                "account_size": 100000.0,
+                "daily_loss_limit": 0.0,
+                "max_trailing_dd": 3000.0
+            },
+            {}
+        )
+
+    try:
+        daemon.nt8.get_open_positions = _mock_get_open_positions
+        daemon.nt8.get_account_info = _mock_get_account_info
+        daemon.nt8.place_bracket_order = _mock_place_bracket_order
+        daemon._load_lab_accounts_config = _mock_load_lab_cfg
+
+        # 1) 1 Position (MNQ) offen -> 2. Position in anderem Symbol (6E=F) zulassen
+        res_second_ok = await daemon.process_signal(
+            "eod_futures", "MFFU_TEST_100K", "6E=F", "LONG", 1,
+            1.0850, 1.0730, 1.1090, current_price=1.0850, score=70, setup_type="SETUP_B",
+            balance=100000.0, account_size=100000.0, trailing_threshold=97000.0
+        )
+        assert res_second_ok.get("status") == "APPROVED", f"Test 10: 2. Position (6E=F) wurde unerwartet blockiert: {res_second_ok}"
+        assert len(mock_order_calls) == 1, "Test 10: Mock-Order fuer 2. Position wurde nicht aufgerufen!"
+
+        # 2) Duplikat im selben Symbol (NQ=F -> MNQ) blockieren
+        res_dup = await daemon.process_signal(
+            "eod_futures", "MFFU_TEST_100K", "NQ=F", "LONG", 1,
+            21000.0, 20960.0, 21080.0, current_price=21000.0, score=70, setup_type="SETUP_B",
+            balance=100000.0, account_size=100000.0, trailing_threshold=97000.0
+        )
+        assert res_dup.get("status") == "DENIED" and res_dup.get("resono_status") == "VETO_DUPLICATE_SYMBOL", f"Test 10: Duplikat NQ=F nicht blockiert: {res_dup}"
+
+        # 3) 2 Positionen offen (MNQ + M6E) -> 3. Position (GC=F) blockieren
+        mock_eod_positions.append({"instrument": "M6E 12-26", "qty": 1})
+        res_third = await daemon.process_signal(
+            "eod_futures", "MFFU_TEST_100K", "GC=F", "LONG", 1,
+            2650.0, 2635.0, 2680.0, current_price=2650.0, score=70, setup_type="SETUP_B",
+            balance=100000.0, account_size=100000.0, trailing_threshold=97000.0
+        )
+        assert res_third.get("status") == "DENIED" and res_third.get("resono_status") == "VETO_OCCUPIED", f"Test 10: 3. Position (GC=F) nicht blockiert: {res_third}"
+        assert len(mock_order_calls) == 1, "Test 10: Blockierte Signale duerfen keine Order ausloesen!"
+
+        logging.info("Test 10: eod_futures Micro-Mapping, 2-Positions-Limit & get_point_value 6E=F erfolgreich.")
+    finally:
+        daemon.nt8.get_open_positions = orig_nt8_positions
+        daemon.nt8.get_account_info = orig_nt8_account_info
+        daemon.nt8.place_bracket_order = orig_nt8_place_order
+        daemon._load_lab_accounts_config = orig_load_lab_cfg
 
     logging.info("Beende Testbatterie, räume Tasks auf...")
     daemon.kill_event.set()
