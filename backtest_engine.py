@@ -14,7 +14,7 @@ POINT_VALUES = {
     "MYM": 0.5, "YM=F": 0.5,
     "M2K": 5.0, "RTY=F": 5.0,
     "MGC": 10.0, "GC=F": 10.0,
-    "SIL": 10.0, "SI=F": 10.0,
+    "SIL": 1000.0, "SI=F": 1000.0,
     "MCL": 100.0, "CL=F": 100.0,
     "QG": 2500.0, "NG=F": 2500.0,
     "MHG": 250.0, "HG=F": 250.0,
@@ -46,7 +46,7 @@ def get_bars_per_day(interval: str, asset_type: str) -> int:
         return 6
     return 1  # 1d Standard
 
-def is_rth_bar(timestamp, ticker: str) -> bool:
+def is_rth_bar(timestamp, ticker: str, energy_session: str = "pit") -> bool:
     """Prüft robust über verschiedene Zeitzonen-Darstellungen, ob sich die Kerze in der Haupt-Session (RTH) befindet."""
     sym_u = str(ticker).upper()
     if "=F" not in sym_u:
@@ -68,6 +68,8 @@ def is_rth_bar(timestamp, ticker: str) -> bool:
         if any(m in sym_u for m in metals):
             return 540 <= t_min <= 1080
         elif any(e in sym_u for e in energy):
+            if str(energy_session or "pit").strip().lower() == "extended":
+                return 540 <= t_min <= 1080
             return 870 <= t_min <= 1050
         elif any(u in sym_u for u in us_indices):
             return 930 <= t_min <= 1230
@@ -218,7 +220,7 @@ def get_setup_code(setup_label: str) -> str:
         return "A"
     return "A"
 
-def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, trailing_stop_mode="active", window_name="", exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB", energy_session="pit", futures_setup_b_macd=True):
     allowed_setups_norm = normalize_allowed_setups(allowed_setups)
     trades = []
     in_trade = False
@@ -528,7 +530,7 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
         if daily_loss_tracker >= loss_threshold:
             continue  # Daily Circuit Breaker aktiv: Keine neuen Trades für den Rest des Tages
         if ticker.endswith("=F") and interval in ["15m", "1h", "4h"]:
-            if not is_rth_bar(curr_bar.name, ticker):
+            if not is_rth_bar(curr_bar.name, ticker, energy_session=energy_session):
                 continue  # Keine neuen Trades außerhalb der asset-spezifischen Hauptsession!
                 
         # Forex Session-Filter
@@ -546,7 +548,7 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
                 if hour < 8 or hour > 20 or (hour == 20 and minute > 30):
                     continue
             
-        setup = evaluate_setup_and_score(df.iloc[max(0, i-24):i], min_score, allowed_direction, ticker)
+        setup = evaluate_setup_and_score(df.iloc[max(0, i-24):i], min_score, allowed_direction, ticker, futures_setup_b_macd=futures_setup_b_macd)
         if setup:
             m_score, initial_sl_calc, tp_calc, t_type, dir_calc = setup
             dir_m = 1 if dir_calc == "Long" else -1
@@ -664,7 +666,7 @@ def run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_e
 #endregion
 
 #region PORTFOLIO LOGIC
-def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", ticker=""):
+def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", ticker="", futures_setup_b_macd=True):
     prev_bar = recent_bars.iloc[-1]
     c_p = prev_bar["Close"]
     ema200 = prev_bar["EMA_200"]
@@ -814,8 +816,12 @@ def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", t
         if crv < 1.5:
             return None
         if is_setup_b:
-            if not (p1 > 0 and p2 > 0):
-                return None
+            if futures_setup_b_macd:
+                if not (p1 > 0 and p2 > 0):
+                    return None
+            else:
+                if not (p1 > 0):
+                    return None
         else:
             active_pillars = sum([1 for p in [p1, p2, p3, p4] if p > 0])
             if active_pillars < 2:
@@ -825,7 +831,7 @@ def evaluate_setup_and_score(recent_bars, min_score, allowed_direction="both", t
         return (master_score, sl, temp_tp, t_type, direction)
     return None
 
-def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end_idx, test_end_idx, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile="prop_guard", allowed_direction="both", daily_loss=None, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB", energy_session="pit", futures_setup_b_macd=True):
     allowed_setups_norm = normalize_allowed_setups(allowed_setups)
     trades = []
     open_positions = {}
@@ -1153,7 +1159,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
             # Zeit- und Session-Filter für CME-Futures
             if ticker.endswith("=F") and is_intraday:
                 curr_bar = df.loc[curr_date]
-                if not is_rth_bar(curr_bar.name, ticker):
+                if not is_rth_bar(curr_bar.name, ticker, energy_session=energy_session):
                     continue  # Keine neuen Trades außerhalb der asset-spezifischen Hauptsession!
                     
             # Zeit- und Session-Filter für Forex Majors
@@ -1173,7 +1179,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
             
             prev_bar, curr_bar = df.loc[prev_date], df.loc[curr_date]
             recent_bars = df.loc[:prev_date].tail(24)
-            setup_res = evaluate_setup_and_score(recent_bars, min_score, allowed_direction, ticker)
+            setup_res = evaluate_setup_and_score(recent_bars, min_score, allowed_direction, ticker, futures_setup_b_macd=futures_setup_b_macd)
             if setup_res:
                 m_score, initial_sl_calc, tp_calc, t_type, dir_calc = setup_res
                 candidates.append((m_score, ticker, curr_bar, prev_bar, initial_sl_calc, tp_calc, t_type, dir_calc))
@@ -1300,7 +1306,7 @@ def run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min
                     }
     return trades
 
-def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_score, account_size, risk_pct, compounding="inactive", trailing_stop_mode="active", mode="walk_forward", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB", energy_session="pit", futures_setup_b_macd=True):
     end_date = datetime.date.today()
     days_to_sub = int(years*365) 
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1328,7 +1334,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
     
     if mode == "holdout":
         split_idx = int(len(all_dates) * 0.7)
-        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
+        all_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, 0, split_idx, len(all_dates), account_size, risk_pct, compounding, trailing_stop_mode, "Portfolio Holdout", exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups, energy_session=energy_session, futures_setup_b_macd=futures_setup_b_macd)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1348,7 +1354,7 @@ def run_portfolio_backtest(tickers, sector_map, years, fee_rate, slippage, min_s
             test_end = min(train_end + test_size, len(all_dates))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
+            w_trades = run_portfolio_simulation(dfs, sector_map, all_dates, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, compounding, trailing_stop_mode, window_name, exit_profile, allowed_direction, daily_loss, max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups, energy_session=energy_session, futures_setup_b_macd=futures_setup_b_macd)
             all_trades.extend(w_trades)
             
             if test_end == len(all_dates): break
@@ -1523,7 +1529,7 @@ def optimize_basket_pool(candidate_tickers, sector_map, target_size, years, fee_
         "skipped_tickers": skipped_tickers
     }
 
-def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB"):
+def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, risk_pct, trailing_stop_mode="active", exit_profile="prop_guard", allowed_direction="both", interval="1d", daily_loss=None, vol_proxy="atr_ratio", vol_proxy_mult=1.0, max_contracts_cap=None, min_sl_pips=0.0, max_sl_points=0.0, allowed_setups="AB", energy_session="pit", futures_setup_b_macd=True):
     end_date = datetime.date.today()
     days_to_sub = int(years*365)
     if interval in ["1h", "4h"] and days_to_sub > 720: days_to_sub = 720
@@ -1560,7 +1566,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
     
     if mode == "holdout":
         split_idx = int(len(df) * 0.7)
-        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name="Holdout", exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
+        all_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, 0, split_idx, len(df), account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name="Holdout", exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups, energy_session=energy_session, futures_setup_b_macd=futures_setup_b_macd)
     elif mode == "walk_forward":
         if interval in ["1h", "15m", "4h"]:
             if interval == "15m": bars_per_day = 28
@@ -1580,7 +1586,7 @@ def backtest(ticker, years, fee_rate, slippage, min_score, mode, account_size, r
             test_end = min(train_end + test_size, len(df))
             window_name = f"WF-Fenster {window_num}"
             
-            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name=window_name, exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups)
+            w_trades = run_simulation(df, ticker, fee_rate, slippage, min_score, start_idx, train_end, test_end, account_size, risk_pct, trailing_stop_mode=trailing_stop_mode, window_name=window_name, exit_profile=exit_profile, allowed_direction=allowed_direction, daily_loss=daily_loss, max_contracts_cap=max_contracts_cap, min_sl_pips=min_sl_pips, max_sl_points=max_sl_points, allowed_setups=allowed_setups, energy_session=energy_session, futures_setup_b_macd=futures_setup_b_macd)
             all_trades.extend(w_trades)
             
             if test_end == len(df): break
@@ -1645,6 +1651,8 @@ if __name__ == "__main__":
     parser.add_argument("--min_sl_pips", type=float, default=0.0, help="Mindest-Abstand in Pips für Forex-Trades (Überspringt Einstiege, deren SL zu eng ist)")
     parser.add_argument("--max_sl_points", type=float, default=0.0, help="Maximaler Initial-SL-Abstand in Kurspunkten (0.0 = deaktiviert)")
     parser.add_argument("--allowed_setups", type=lambda s: str(s).strip().upper(), default="AB", choices=["A", "B", "AB"], help="Zugelassene Setup-Typen (A = Reversal, B = Pullback, AB = Beide)")
+    parser.add_argument("--energy_session", type=lambda s: str(s).strip().lower(), default="pit", choices=["pit", "extended"], help="Energie-Sessionfenster (pit = 14:30-17:30 MEZ, extended = 09:00-18:00 MEZ)")
+    parser.add_argument("--futures_setup_b_macd", type=lambda s: str(s).strip().lower(), default="on", choices=["on", "off"], help="Optionaler MACD-Pflichtfilter für Futures Setup B (on = Aktiv, off = Deaktiviert)")
     args = parser.parse_args()
     
     fee_rate = 0.0025
@@ -1695,6 +1703,12 @@ if __name__ == "__main__":
     print(f"🧩 Zugelassene Setups: {args.allowed_setups} ({setup_desc[args.allowed_setups]})")
 
     
+    futures_setup_b_macd_flag = (args.futures_setup_b_macd == "on")
+    energy_session_desc = "09:00-18:00 MEZ (Extended)" if args.energy_session == "extended" else "14:30-17:30 MEZ (Pit)"
+    macd_filter_desc = "Aktiv (EMA200 + MACD Pflicht)" if futures_setup_b_macd_flag else "Inaktiv (Nur EMA200 Pflicht, MACD nur Score)"
+    print(f"⛽ Energie-Session: {args.energy_session} ({energy_session_desc})")
+    print(f"📉 Futures Setup-B MACD-Filter: {args.futures_setup_b_macd} ({macd_filter_desc})")
+
     ticker_label = args.ticker
     if args.tickers:
         ticker_list = [t.strip() for t in args.tickers.split(",") if t.strip()]
@@ -1721,14 +1735,16 @@ if __name__ == "__main__":
                 vol_proxy_mult=args.vol_proxy_mult,
                 min_sl_pips=args.min_sl_pips,
                 max_sl_points=args.max_sl_points,
-                allowed_setups=args.allowed_setups
+                allowed_setups=args.allowed_setups,
+                energy_session=args.energy_session,
+                futures_setup_b_macd=futures_setup_b_macd_flag
             )
             df_hist = pd.DataFrame() 
             ticker_label = f"PORTFOLIO:[{','.join(ticker_list)}]"
         else:
-            trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups)
+            trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups, energy_session=args.energy_session, futures_setup_b_macd=futures_setup_b_macd_flag)
     else:
-        trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups)
+        trades, df_hist = backtest(args.ticker, args.years, fee_rate, slippage, args.min_score, args.mode, args.account_size, args.risk_pct, args.trailing_stop, args.exit_profile, args.direction, args.interval, args.daily_loss, args.vol_proxy, args.vol_proxy_mult, min_sl_pips=args.min_sl_pips, max_sl_points=args.max_sl_points, allowed_setups=args.allowed_setups, energy_session=args.energy_session, futures_setup_b_macd=futures_setup_b_macd_flag)
     metrics_all = calculate_metrics(trades)
     df_trades = pd.DataFrame(trades)
     

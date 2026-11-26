@@ -196,6 +196,73 @@ class TelegramReporter:
         except Exception as e:
             logging.error(f"Fehler beim Senden der Telegram-Nachricht: {e}")
 
+    async def send_message_with_keyboard(self, message: str, inline_keyboard: list) -> dict | None:
+        if self.token == "dummy_token":
+            logging.info(f"TELEGRAM MOCK (KEYBOARD):\n{message}\nKeyboard: {inline_keyboard}")
+            return {"ok": True, "result": {"message_id": 0}}
+
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": inline_keyboard}
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.base_url, json=payload) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    logging.error(f"Telegram API Error (send_message_with_keyboard): {await response.text()}")
+                    return None
+        except Exception as e:
+            logging.error(f"Fehler beim Senden der Telegram-Nachricht mit Keyboard: {e}")
+            return None
+
+    async def edit_message_after_action(self, chat_id: str, message_id: int, new_text: str) -> bool:
+        if self.token == "dummy_token" or not message_id:
+            logging.info(f"TELEGRAM MOCK (EDIT msg_id={message_id}):\n{new_text}")
+            return True
+
+        edit_url = f"https://api.telegram.org/bot{self.token}/editMessageText"
+        payload = {
+            "chat_id": str(chat_id),
+            "message_id": int(message_id),
+            "text": new_text,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": []}
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(edit_url, json=payload) as response:
+                    if response.status == 200:
+                        return True
+                    logging.error(f"Telegram API Error (editMessageText): {await response.text()}")
+                    return False
+        except Exception as e:
+            logging.error(f"Fehler beim Bearbeiten der Telegram-Nachricht: {e}")
+            return False
+
+    async def answer_callback_query(self, callback_query_id: str, text: str = "", show_alert: bool = False) -> bool:
+        if self.token == "dummy_token" or not callback_query_id:
+            return True
+
+        answer_url = f"https://api.telegram.org/bot{self.token}/answerCallbackQuery"
+        payload = {
+            "callback_query_id": str(callback_query_id),
+            "text": str(text)[:200],
+            "show_alert": bool(show_alert)
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(answer_url, json=payload) as response:
+                    if response.status == 200:
+                        return True
+                    logging.warning(f"Telegram API Warning (answerCallbackQuery): {await response.text()}")
+                    return False
+        except Exception as e:
+            logging.warning(f"Fehler bei answerCallbackQuery: {e}")
+            return False
+
     async def report_step_1_signal(self, symbol: str, direction: str, resono_status: str, account_type: str):
         msg = f"{self.DAEMON_PREFIX}🔍 <b>Stufe 1: Signal & Risiko-Check</b>\nTicker: {symbol} | {direction}\nKonto: {account_type}\nRESONO: <code>{resono_status}</code>"
         await self.send_message(msg)
@@ -1908,6 +1975,10 @@ class ExecutorDaemon:
         self._telemetry_last_log_time = 0.0
         self._telemetry_error_state = False
         self._telemetry_enabled = True
+        self._journal_telemetry_flight_active = False
+        self._journal_telemetry_dirty = False
+        self._journal_telemetry_last_log_time = 0.0
+        self._journal_telemetry_error_state = False
         # Spooler Queue Verzeichnisse anlegen
         self.signals_dir = script_dir / "signals"
         self.dir_pending = self.signals_dir / "01_pending"
@@ -1915,7 +1986,11 @@ class ExecutorDaemon:
         self.dir_executed = self.signals_dir / "03_executed"
         self.dir_rejected = self.signals_dir / "04_rejected"
 
-        for d in [self.dir_pending, self.dir_processing, self.dir_executed, self.dir_rejected]:
+        self.dir_awaiting_approval = self.signals_dir / "05_awaiting_approval"
+        self._approval_lock = asyncio.Lock()
+        self._processed_approvals: set[str] = set()
+
+        for d in [self.dir_pending, self.dir_processing, self.dir_executed, self.dir_rejected, self.dir_awaiting_approval]:
             d.mkdir(parents=True, exist_ok=True)
 
     async def _get_telemetry_session(self) -> aiohttp.ClientSession:
@@ -1953,6 +2028,90 @@ class ExecutorDaemon:
         finally:
             self._telemetry_flight_active = False
 
+    def _resolve_journal_telemetry_url(self) -> str:
+        env_url = os.getenv("TELEMETRY_JOURNAL_ENDPOINT_URL", "").strip(" \r\n\"'")
+        if env_url:
+            return env_url
+
+        base_url = str(TELEMETRY_ENDPOINT_URL or "").strip(" \r\n\"'")
+        if not base_url:
+            return ""
+        if base_url.endswith("/fleet"):
+            return base_url[:-len("/fleet")] + "/journal"
+        return base_url.rstrip("/") + "/journal"
+
+    def _trigger_journal_telemetry_push(self):
+        if not self._telemetry_enabled or not TELEMETRY_SECRET_TOKEN or self.kill_event.is_set():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        if self._journal_telemetry_flight_active:
+            self._journal_telemetry_dirty = True
+            return
+
+        self._journal_telemetry_flight_active = True
+        self._journal_telemetry_dirty = False
+        asyncio.create_task(self._push_journal_telemetry_background())
+
+    async def _push_journal_telemetry_background(self):
+        try:
+            journal_path = script_dir / "users" / "admin" / "trade_journal.csv"
+            if not journal_path.exists():
+                return
+
+            with JournalLock(journal_path):
+                with open(journal_path, 'r', encoding='utf-8-sig') as f:
+                    csv_content = f.read()
+
+            if not csv_content.strip():
+                return
+
+            if len(csv_content.encode("utf-8")) > 2000000:
+                logging.warning("Journal-Telemetrie übersprungen: trade_journal.csv überschreitet 2 MB Limit.")
+                return
+
+            row_count = max(0, len([ln for ln in csv_content.splitlines() if ln.strip()]) - 1)
+            payload = {
+                "schema_version": 1,
+                "node_origin": NODE_ORIGIN,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "row_count": row_count,
+                "csv_content": csv_content
+            }
+
+            target_url = self._resolve_journal_telemetry_url()
+            if not target_url:
+                return
+
+            session = await self._get_telemetry_session()
+            headers = {
+                "Authorization": f"Bearer {TELEMETRY_SECRET_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            async with session.post(target_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    if self._journal_telemetry_error_state:
+                        logging.info("Journal-Telemetrie zu Hetzner wiederhergestellt.")
+                        self._journal_telemetry_error_state = False
+                        self._journal_telemetry_last_log_time = 0.0
+                else:
+                    raise Exception(f"HTTP {resp.status} - {await resp.text()}")
+        except Exception as e:
+            self._journal_telemetry_error_state = True
+            now = time.monotonic()
+            if now - self._journal_telemetry_last_log_time >= 300.0:
+                logging.warning(f"Journal-Telemetrie-Push fehlgeschlagen: {e} (nächste Warnung in 5 Min.)")
+                self._journal_telemetry_last_log_time = now
+        finally:
+            self._journal_telemetry_flight_active = False
+            if self._journal_telemetry_dirty and self._telemetry_enabled and not self.kill_event.is_set():
+                self._journal_telemetry_dirty = False
+                self._journal_telemetry_flight_active = True
+                asyncio.create_task(self._push_journal_telemetry_background())
+
     def _cleanup_fleet_snapshot(self):
         snap_json = script_dir / "users" / "admin" / "fleet_snapshot.json"
         snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
@@ -1962,6 +2121,77 @@ class ExecutorDaemon:
                     p.unlink()
             except OSError as e:
                 logging.warning(f"Konnte {p.name} nicht löschen: {e}")
+
+    async def _collect_live_prices_for_snapshot(self, apex_positions=None, ftmo_positions=None) -> dict:
+        live_prices = {}
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        try:
+            if self.ftmo.connected and MT5_AVAILABLE:
+                _, ftmo_cfg = self._load_lab_accounts_config()
+                raw_tickers = list(ftmo_cfg.get("tickers", [])) + ["EURUSD", "GBPUSD", "USDJPY"]
+                if ftmo_positions:
+                    for pos in ftmo_positions:
+                        if isinstance(pos, dict) and pos.get("symbol"):
+                            raw_tickers.append(str(pos.get("symbol")))
+
+                seen_clean = set()
+                for t in raw_tickers:
+                    clean_sym = str(t).strip().upper().split()[0].replace("=X", "")
+                    for sfx in (".PRO", ".RAW", ".P", "+"):
+                        if clean_sym.endswith(sfx):
+                            clean_sym = clean_sym[:-len(sfx)]
+                            break
+                    if not clean_sym or clean_sym in seen_clean:
+                        continue
+                    seen_clean.add(clean_sym)
+
+                    try:
+                        async with self.ftmo._mt5_lock:
+                            resolved_sym = await self.ftmo._resolve_broker_symbol(clean_sym)
+                            tick = await asyncio.to_thread(mt5.symbol_info_tick, resolved_sym)
+                        if tick is not None:
+                            bid = float(getattr(tick, "bid", 0.0) or 0.0)
+                            ask = float(getattr(tick, "ask", 0.0) or 0.0)
+                            last = float(getattr(tick, "last", 0.0) or 0.0)
+                            if bid > 0.0 or ask > 0.0 or last > 0.0:
+                                live_prices[clean_sym] = {
+                                    "bid": bid,
+                                    "ask": ask,
+                                    "last": last,
+                                    "timestamp": now_iso
+                                }
+                    except Exception as tick_err:
+                        logging.debug(f"Live-Tick Abruf für {clean_sym} übersprungen: {tick_err}")
+        except Exception as e:
+            logging.warning(f"Fehler beim Sammeln der MT5 Live-Ticks für Snapshot: {e}")
+
+        try:
+            if apex_positions:
+                for pos in apex_positions:
+                    if not isinstance(pos, dict):
+                        continue
+                    raw_sym = str(pos.get("instrument") or pos.get("symbol") or "").strip()
+                    if not raw_sym:
+                        continue
+                    norm_sym = self.nt8._resolve_micro_symbol(raw_sym)
+                    px = 0.0
+                    for field in ("price", "market_price", "last_price"):
+                        val = _parse_float_safe(pos.get(field), fallback=0.0)
+                        if val > 0.0:
+                            px = val
+                            break
+                    if px > 0.0:
+                        live_prices[norm_sym] = {
+                            "bid": px,
+                            "ask": px,
+                            "last": px,
+                            "timestamp": now_iso
+                        }
+        except Exception as e:
+            logging.warning(f"Fehler beim Sammeln der NT8 Positionskurse für Snapshot: {e}")
+
+        return live_prices
 
     async def write_fleet_snapshot(self, ftmo_positions=None, apex_positions=None):
         if self.kill_event.is_set():
@@ -1981,22 +2211,40 @@ class ExecutorDaemon:
             if ftmo_positions is None and self.ftmo.connected:
                 ftmo_positions = await self.ftmo.get_open_positions(ftmo_acc)
 
+            live_prices = await self._collect_live_prices_for_snapshot(apex_positions, ftmo_positions)
+
             nt8_default_size = 100000.0 if nt8_account_type == "eod_futures" else 50000.0
             nt8_acc_size = apex_live.get("account_size", nt8_default_size)
             nt8_default_daily = 0.0 if nt8_account_type == "eod_futures" else (nt8_acc_size * 0.025)
             nt8_default_dd = (nt8_acc_size * 0.03) if nt8_account_type == "eod_futures" else (nt8_acc_size * 0.05)
 
+            nt8_raw_exec = str(apex_cfg.get("execution_mode", "SEMI_AUTO" if nt8_account_type == "eod_futures" else "LIVE_AUTO")).strip().upper()
+            if not nt8_raw_exec:
+                nt8_raw_exec = "SEMI_AUTO" if nt8_account_type == "eod_futures" else "LIVE_AUTO"
+            nt8_exec_mode = "SEMI_AUTO" if (nt8_account_type == "eod_futures" and nt8_raw_exec == "LIVE_AUTO") else nt8_raw_exec
+            nt8_risk_gear = str(apex_cfg.get("risk_gear", "EVAL_TURBO")).strip().upper() if nt8_account_type == "eod_futures" else ""
+            nt8_tickers = [str(t).strip() for t in apex_cfg.get("tickers", []) if t]
+
+            ftmo_exec_mode = str(ftmo_cfg.get("execution_mode", "LIVE_AUTO")).strip().upper() or "LIVE_AUTO"
+            ftmo_tickers = [str(t).strip() for t in ftmo_cfg.get("tickers", []) if t]
+
+            now_iso = datetime.now(timezone.utc).isoformat()
             snap = {
                 "schema_version": 1,
                 "node_origin": NODE_ORIGIN,
                 "executor_mode": EXECUTOR_MODE,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "timestamp": now_iso,
+                "updated_at": now_iso,
                 "kill_switch_active": KILL_SWITCH_PATH.exists(),
+                "live_prices": live_prices,
                 "accounts": {
                     "apex": {
                         "account_id": NT8_ACCOUNT,
                         "account_name": apex_cfg.get("name", "Apex Account"),
                         "account_type": nt8_account_type,
+                        "execution_mode": nt8_exec_mode,
+                        "risk_gear": nt8_risk_gear,
+                        "tickers": nt8_tickers,
                         "currency": "USD",
                         "live_connected": apex_live.get("live_connected", False),
                         "account_size": nt8_acc_size,
@@ -2013,6 +2261,9 @@ class ExecutorDaemon:
                     "ftmo": {
                         "account_id": ftmo_acc,
                         "account_name": ftmo_cfg.get("name", "FTMO Account"),
+                        "account_type": "ftmo",
+                        "execution_mode": ftmo_exec_mode,
+                        "tickers": ftmo_tickers,
                         "currency": ftmo_live.get("raw_info", {}).get("currency", "EUR"),
                         "live_connected": ftmo_live.get("live_connected", False),
                         "account_size": ftmo_live.get("account_size", 80000.0),
@@ -2038,7 +2289,11 @@ class ExecutorDaemon:
             if self._telemetry_enabled and TELEMETRY_ENDPOINT_URL and TELEMETRY_SECRET_TOKEN and not self.kill_event.is_set():
                 if not self._telemetry_flight_active:
                     self._telemetry_flight_active = True
-                    asyncio.create_task(self._push_telemetry_background(snap))
+                    telemetry_payload = {
+                        k: v for k, v in snap.items()
+                        if k in ("schema_version", "node_origin", "executor_mode", "updated_at", "kill_switch_active", "accounts")
+                    }
+                    asyncio.create_task(self._push_telemetry_background(telemetry_payload))
         except Exception as e:
             logging.error(f"Fehler beim Schreiben des Fleet-Snapshots: {e}")
             snap_tmp = script_dir / "users" / "admin" / "fleet_snapshot.tmp"
@@ -2077,6 +2332,121 @@ class ExecutorDaemon:
                 logging.error(f"Fehler beim Lesen der ticker_config.json: {e}")
                 
         return apex_cfg, ftmo_cfg
+
+    def _resolve_entry_execution_mode(self, signal_payload: dict, account_type: str) -> str:
+        norm_acc_type = str(account_type or "").strip().lower()
+        raw_mode = str(signal_payload.get("execution_mode", "")).strip().upper()
+
+        if not raw_mode:
+            sig_lab_id = str(signal_payload.get("lab_account_id", "")).strip().lower()
+            sig_acc_id = str(signal_payload.get("account_id") or signal_payload.get("account") or "").strip().lower()
+            sig_acc_name = str(signal_payload.get("account_name", "")).strip().lower()
+
+            candidates = []
+            apex_cfg, ftmo_cfg = self._load_lab_accounts_config()
+            if isinstance(apex_cfg, dict) and apex_cfg:
+                candidates.append(apex_cfg)
+            if isinstance(ftmo_cfg, dict) and ftmo_cfg:
+                candidates.append(ftmo_cfg)
+
+            cfg_path = script_dir / "users" / "admin" / "ticker_config.json"
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, 'r', encoding='utf-8-sig') as f:
+                        cfg = json.load(f)
+                    lab_accs = cfg.get("lab_accounts", {})
+                    if isinstance(lab_accs, list):
+                        for item in lab_accs:
+                            if isinstance(item, dict):
+                                candidates.append(item)
+                    elif isinstance(lab_accs, dict):
+                        for k, v in lab_accs.items():
+                            if isinstance(v, dict):
+                                v_copy = v.copy()
+                                v_copy["_key"] = k
+                                candidates.append(v_copy)
+                except Exception as e:
+                    logging.error(f"Fehler beim Ermitteln des Konto-Modus aus ticker_config.json: {e}")
+
+            for acc in candidates:
+                acc_keys = {
+                    str(acc.get(k, "")).strip().lower()
+                    for k in ("_key", "id", "lab_account_id")
+                    if acc.get(k)
+                }
+                acc_broker_ids = {
+                    str(acc.get(k, "")).strip().lower()
+                    for k in ("broker_account_id", "broker_account", "account_id")
+                    if acc.get(k)
+                }
+                acc_names = {
+                    str(acc.get(k, "")).strip().lower()
+                    for k in ("name", "account_name")
+                    if acc.get(k)
+                }
+
+                matched = (
+                    (sig_lab_id and sig_lab_id in acc_keys)
+                    or (sig_acc_id and (sig_acc_id in acc_broker_ids or sig_acc_id in acc_keys))
+                    or (sig_acc_name and sig_acc_name in acc_names)
+                )
+                if matched:
+                    cfg_mode = str(acc.get("execution_mode", "")).strip().upper()
+                    if cfg_mode:
+                        raw_mode = cfg_mode
+                        break
+
+            if not raw_mode:
+                raw_mode = "LIVE_AUTO"
+
+        if norm_acc_type == "eod_futures" and raw_mode == "LIVE_AUTO":
+            logging.warning("SEMI_AUTO Zwangsriegel aktiv für eod_futures — parke Signal zur 1-Tap-Freigabe.")
+            raw_mode = "SEMI_AUTO"
+
+        return raw_mode
+
+    async def _send_semi_auto_approval_prompt(self, signal_payload: dict, approval_id: str, expires_at_ts: float) -> dict | None:
+        account_id = str(signal_payload.get("account_id") or signal_payload.get("account") or "UNKNOWN").strip()
+        account_name = str(signal_payload.get("account_name") or account_id).strip()
+        symbol = str(signal_payload.get("symbol") or signal_payload.get("instrument") or "UNKNOWN").strip()
+        direction = str(signal_payload.get("direction", "LONG")).strip().upper()
+        setup_type = str(signal_payload.get("setup_type", "SETUP_B")).strip()
+        score = signal_payload.get("score", 0)
+
+        entry = _parse_float_safe(
+            signal_payload.get("entry") or signal_payload.get("current_price") or signal_payload.get("price"),
+            fallback=0.0
+        )
+        max_limit_price = _parse_float_safe(signal_payload.get("max_limit_price"), fallback=0.0)
+        sl_raw = signal_payload.get("sl_price") if signal_payload.get("sl_price") is not None else signal_payload.get("sl")
+        tp_raw = signal_payload.get("tp_price") if signal_payload.get("tp_price") is not None else signal_payload.get("tp")
+        sl_price = _parse_float_safe(sl_raw, fallback=0.0)
+        tp_price = _parse_float_safe(tp_raw, fallback=0.0)
+
+        limit_part = f" | Max. Limit (CRV &gt;= 1.25): <b>{max_limit_price}</b>" if max_limit_price > 0.0 else ""
+        tp_str = str(tp_price) if tp_price > 0.0 else "Offener Runner"
+
+        exp_dt_utc = datetime.fromtimestamp(float(expires_at_ts), tz=timezone.utc)
+        exp_dt_local = exp_dt_utc.astimezone()
+        exp_str = f"{exp_dt_local.strftime('%H:%M:%S')} Lokal ({exp_dt_utc.strftime('%H:%M:%S')} UTC)"
+
+        msg = (
+            f"🟡 <b>[SEMI-AUTO FREIGABE ERFORDERLICH]</b>\n"
+            f"• Konto: <b>{html.escape(account_name)}</b> (<code>{html.escape(account_id)}</code>)\n"
+            f"• Asset: <code>{html.escape(symbol)}</code> | <b>{html.escape(direction)}</b> ({html.escape(setup_type)}, Score: {html.escape(str(score))}/100)\n"
+            f"• Trigger-Kurs: <b>{entry}</b>{limit_part}\n"
+            f"• Stop-Loss: <code>{sl_price}</code> | Take-Profit: <code>{html.escape(tp_str)}</code>\n"
+            f"• Gültig bis: <code>{html.escape(exp_str)}</code> (15 Min. Prop-TTL)"
+        )
+
+        inline_keyboard = [
+            [
+                {"text": "✅ Einstieg ausführen", "callback_data": f"semi_exec:{approval_id}"},
+                {"text": "❌ Verwerfen", "callback_data": f"semi_rej:{approval_id}"}
+            ]
+        ]
+
+        return await self.ops_reporter.send_message_with_keyboard(msg, inline_keyboard)
 
     def _resolve_exit_mode(self, account_type: str, setup_type: str, payload_exit_mode: str = "") -> str:
         raw_mode = str(payload_exit_mode).strip().upper()
@@ -2396,6 +2766,7 @@ class ExecutorDaemon:
                         writer.writeheader()
                         writer.writerows(rows)
                     tmp_path.replace(journal_path)
+                    self._trigger_journal_telemetry_push()
         except Exception as e:
             logging.error(f"Fehler im sync_broker_exits: {e}")
             
@@ -2801,12 +3172,19 @@ class ExecutorDaemon:
 
                     # a) TTL-Schutzschild (Bypass für FLATTEN_POSITION)
                     sig_time_str = signal_payload.get("timestamp")
+                    resolved_entry_exec_mode = None
                     if sig_time_str and action != "FLATTEN_POSITION":
                         sig_time = datetime.fromisoformat(sig_time_str.replace('Z', '+00:00'))
                         age = (datetime.now(timezone.utc) - sig_time).total_seconds()
-                        if age > 180:
+                        max_ttl_sec = 180.0
+                        if action == "ENTRY":
+                            pre_acc_type = str(signal_payload.get("account_type", "apex")).strip().lower() or "apex"
+                            resolved_entry_exec_mode = self._resolve_entry_execution_mode(signal_payload, pre_acc_type)
+                            if resolved_entry_exec_mode == "SEMI_AUTO":
+                                max_ttl_sec = 900.0
+                        if age > max_ttl_sec:
                             signal_payload["rejection_reason"] = "EXPIRED_TTL"
-                            logging.warning(f"Signal {filepath.name} abgewiesen: TTL überschritten ({age:.1f}s)")
+                            logging.warning(f"Signal {filepath.name} abgewiesen: TTL überschritten ({age:.1f}s > {max_ttl_sec:.0f}s)")
                             self._archive_signal(signal_payload, processing_path, self.dir_rejected)
                             await self.reporter.report_signal_rejected(signal_payload.get("account_id", "UNKNOWN"), signal_payload.get("symbol", "UNKNOWN"), "EXPIRED_TTL", f"Alter: {age:.1f}s")
                             continue
@@ -3116,6 +3494,8 @@ class ExecutorDaemon:
                                     writer.writeheader()
                                     writer.writerows(rows)
                                 tmp_path.replace(journal_path)
+                                if str(username).strip() == "admin":
+                                    self._trigger_journal_telemetry_push()
                                 break
                             except OSError:
                                 if attempt == 9: raise
@@ -3296,6 +3676,8 @@ class ExecutorDaemon:
                                 writer.writeheader()
                                 writer.writerows(rows)
                             tmp_path.replace(journal_path)
+                            if str(username).strip() == "admin":
+                                self._trigger_journal_telemetry_push()
 
                             await self.reporter.report_step_2b_trailing(
                                 account_id=target_account,
@@ -3394,6 +3776,8 @@ class ExecutorDaemon:
                                                 writer.writeheader()
                                                 writer.writerows(rows)
                                             tmp_path.replace(journal_path)
+                                            if str(username).strip() == "admin":
+                                                self._trigger_journal_telemetry_push()
 
                             await self.reporter.report_step_flatten(target_account, target_symbol, exec_price, exit_reason, realized_pnl)
                             signal_payload["status"] = flat_res.get("status")
@@ -3428,6 +3812,56 @@ class ExecutorDaemon:
 
                         entry_val = float(signal_payload.get("entry") or signal_payload.get("current_price") or signal_payload.get("price") or 0.0)
                         signal_payload["entry"] = entry_val
+
+                        exec_mode = (
+                            resolved_entry_exec_mode
+                            if resolved_entry_exec_mode is not None
+                            else self._resolve_entry_execution_mode(signal_payload, raw_acc_type)
+                        )
+
+                        if exec_mode in ("CO_PILOT", "EXPERIMENT"):
+                            signal_payload["rejection_reason"] = f"MODE_{exec_mode}_NOT_EXECUTABLE"
+                            logging.info(f"Signal {filepath.name} abgewiesen: Modus {exec_mode} ist nicht ausführbar.")
+                            self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            continue
+
+                        if exec_mode == "SEMI_AUTO":
+                            approval_id = uuid.uuid4().hex[:12]
+                            try:
+                                if sig_time_str:
+                                    parsed_sig_dt = datetime.fromisoformat(str(sig_time_str).replace('Z', '+00:00'))
+                                    if parsed_sig_dt.tzinfo is None:
+                                        parsed_sig_dt = parsed_sig_dt.replace(tzinfo=timezone.utc)
+                                    expires_at_ts = parsed_sig_dt.timestamp() + 900.0
+                                else:
+                                    expires_at_ts = datetime.now(timezone.utc).timestamp() + 900.0
+                            except Exception:
+                                expires_at_ts = datetime.now(timezone.utc).timestamp() + 900.0
+
+                            signal_payload["execution_mode"] = "SEMI_AUTO"
+                            signal_payload["approval_id"] = approval_id
+                            signal_payload["expires_at"] = expires_at_ts
+                            signal_payload["status"] = "AWAITING_APPROVAL"
+
+                            tg_res = await self._send_semi_auto_approval_prompt(signal_payload, approval_id, expires_at_ts)
+                            if isinstance(tg_res, dict):
+                                tg_result = tg_res.get("result")
+                                if isinstance(tg_result, dict):
+                                    if tg_result.get("message_id") is not None:
+                                        signal_payload["telegram_message_id"] = tg_result.get("message_id")
+                                    tg_chat = tg_result.get("chat")
+                                    if isinstance(tg_chat, dict) and tg_chat.get("id") is not None:
+                                        signal_payload["telegram_chat_id"] = tg_chat.get("id")
+
+                            logging.info(f"Signal {filepath.name} im SEMI_AUTO-Modus geparkt (approval_id={approval_id}).")
+                            self._archive_signal(signal_payload, processing_path, self.dir_awaiting_approval)
+                            continue
+
+                        if exec_mode != "LIVE_AUTO":
+                            signal_payload["rejection_reason"] = f"MODE_{exec_mode}_NOT_EXECUTABLE"
+                            logging.warning(f"Signal {filepath.name} abgewiesen: Unbekannter Modus {exec_mode}.")
+                            self._archive_signal(signal_payload, processing_path, self.dir_rejected)
+                            continue
 
                         raw_acc_size = signal_payload.get("account_size") if signal_payload.get("account_size") is not None else signal_payload.get("balance")
                         parsed_acc_size = _parse_float_safe(raw_acc_size, fallback=0.0)
@@ -3508,6 +3942,57 @@ class ExecutorDaemon:
                     logging.error(f"Fehler bei Signalverarbeitung {filepath.name}: {e}")
                     err_payload = {"rejection_reason": f"EXCEPTION: {str(e)}"}
                     self._archive_signal(err_payload, processing_path, self.dir_rejected)
+
+            now_ts = datetime.now(timezone.utc).timestamp()
+            for awaiting_file in sorted(self.dir_awaiting_approval.glob("*.json")):
+                if self.kill_event.is_set():
+                    break
+                try:
+                    with open(awaiting_file, 'r', encoding='utf-8') as f:
+                        aw_payload = json.load(f)
+
+                    exp_ts = _parse_float_safe(aw_payload.get("expires_at"), fallback=0.0)
+                    if exp_ts <= 0.0:
+                        aw_ts_str = aw_payload.get("timestamp")
+                        if aw_ts_str:
+                            parsed_aw_dt = datetime.fromisoformat(str(aw_ts_str).replace("Z", "+00:00"))
+                            if parsed_aw_dt.tzinfo is None:
+                                parsed_aw_dt = parsed_aw_dt.replace(tzinfo=timezone.utc)
+                            exp_ts = parsed_aw_dt.timestamp() + 900.0
+
+                    if exp_ts > 0.0 and now_ts > exp_ts:
+                        tg_edit_info = None
+                        async with self._approval_lock:
+                            if not awaiting_file.exists():
+                                continue
+                            with open(awaiting_file, 'r', encoding='utf-8') as f:
+                                locked_payload = json.load(f)
+                            aw_approval_id = str(locked_payload.get("approval_id", "")).strip()
+                            if aw_approval_id and aw_approval_id in self._processed_approvals:
+                                continue
+                            if aw_approval_id:
+                                self._processed_approvals.add(aw_approval_id)
+                            locked_payload["status"] = "EXPIRED"
+                            locked_payload["rejection_reason"] = "EXPIRED_TTL"
+                            self._archive_signal(locked_payload, awaiting_file, self.dir_rejected)
+                            logging.info(f"TTL-Sweeper: SEMI_AUTO Signal {awaiting_file.name} abgelaufen -> 04_rejected.")
+
+                            tg_msg_id = int(locked_payload.get("telegram_message_id", 0) or 0)
+                            tg_chat_id = str(locked_payload.get("telegram_chat_id", TELEGRAM_CHAT_ID)).strip()
+                            aw_sym = str(locked_payload.get("symbol") or locked_payload.get("instrument") or "UNKNOWN").strip()
+                            if tg_msg_id > 0:
+                                tg_edit_info = (tg_chat_id, tg_msg_id, aw_sym)
+
+                        if tg_edit_info:
+                            await self.ops_reporter.edit_message_after_action(
+                                tg_edit_info[0],
+                                tg_edit_info[1],
+                                f"⏳ <b>ABGELAUFEN (15 Min. TTL)</b>\nSignal <code>{html.escape(tg_edit_info[2])}</code> wurde automatisch verworfen."
+                            )
+                except FileNotFoundError:
+                    continue
+                except Exception as sweep_err:
+                    logging.error(f"Fehler im SEMI_AUTO TTL-Sweeper für {awaiting_file.name}: {sweep_err}")
 
             try:
                 await asyncio.wait_for(self.kill_event.wait(), timeout=1.0)
@@ -3656,6 +4141,8 @@ class ExecutorDaemon:
                     writer.writeheader()
                     writer.writerows(valid_rows)
                 tmp_journal.replace(journal_path)
+                if str(username).strip() == "admin":
+                    self._trigger_journal_telemetry_push()
                 logging.info(f"Trade {trade_id} atomar ins Journal von '{username}' (DAEMON_AUTO) geschrieben.")
             except Exception as e:
                 logging.error(f"Fehler beim Schreiben in trade_journal.csv: {e}")
@@ -3689,7 +4176,7 @@ class ExecutorDaemon:
             logging.info("Telegram Ops-Listener aktiv und bereit für Befehle.")
             while not self.kill_event.is_set():
                 try:
-                    params = {"offset": offset, "timeout": 5, "allowed_updates": ["message"]}
+                    params = {"offset": offset, "timeout": 5, "allowed_updates": ["message", "callback_query"]}
                     async with session.get(f"{url}/getUpdates", json=params) as resp:
                         if resp.status == 409:
                             logging.error("Ops-Listener: HTTP 409 Conflict (Doppelte Bot-Instanz?). Warte 10s...")
@@ -3708,6 +4195,21 @@ class ExecutorDaemon:
                         for update in data.get("result", []):
                             update_id = update["update_id"]
                             offset = update_id + 1
+
+                            cb = update.get("callback_query")
+                            if cb:
+                                if cb.get("from", {}).get("is_bot"):
+                                    continue
+                                cb_chat_id = str(
+                                    cb.get("message", {}).get("chat", {}).get("id")
+                                    or cb.get("from", {}).get("id")
+                                    or ""
+                                ).strip()
+                                if cb_chat_id != str(TELEGRAM_CHAT_ID).strip():
+                                    logging.warning(f"Ops-Listener: Sicherheitswarnung! Fremder Callback-Zugriff von Chat-ID {cb_chat_id} abgewiesen.")
+                                    continue
+                                await self._handle_semi_auto_callback(cb)
+                                continue
                             
                             msg = update.get("message")
                             if not msg:
@@ -3753,12 +4255,446 @@ class ExecutorDaemon:
                 await self._cmd_unlock_arm()
             elif cmd == "/unlock_confirm":
                 await self._cmd_unlock_confirm()
+            elif cmd == "/sim_semi":
+                await self._cmd_sim_semi()
             else:
                 escaped_cmd = html.escape(cmd)
-                await self.ops_reporter.send_message(f"Unbekannter Befehl: <code>{escaped_cmd}</code>\nGültig: /status, /fleet, /kill, /unlock")
+                await self.ops_reporter.send_message(f"Unbekannter Befehl: <code>{escaped_cmd}</code>\nGültig: /status, /fleet, /kill, /unlock, /sim_semi")
         except Exception as e:
             logging.error(f"Fehler im Ops-Handler für {cmd}: {e}")
             await self.ops_reporter.send_message(f"⚠️ Fehler bei der Ausführung: <code>{html.escape(str(e))}</code>")
+
+    async def _fetch_fresh_live_price_for_approval(
+        self,
+        symbol: str,
+        direction: str,
+        account_type: str,
+        fallback_price: float = 0.0,
+        is_simulation: bool = False
+    ) -> float:
+        dir_upper = str(direction or "LONG").strip().upper()
+        norm_acc_type = str(account_type or "").strip().lower()
+        sym_str = str(symbol or "").strip()
+        live_px = 0.0
+
+        if norm_acc_type == "ftmo" or "=X" in sym_str.upper():
+            try:
+                if self.ftmo.connected and MT5_AVAILABLE:
+                    async with self.ftmo._mt5_lock:
+                        resolved_sym = await self.ftmo._resolve_broker_symbol(sym_str)
+                        tick = await asyncio.to_thread(mt5.symbol_info_tick, resolved_sym)
+                    if tick is not None:
+                        if dir_upper == "LONG":
+                            live_px = float(getattr(tick, "ask", 0.0) or 0.0)
+                        else:
+                            live_px = float(getattr(tick, "bid", 0.0) or 0.0)
+                        if live_px <= 0.0:
+                            live_px = float(getattr(tick, "last", 0.0) or 0.0)
+            except Exception as e:
+                logging.warning(f"Live-Kurs Abruf (MT5) für {sym_str} fehlgeschlagen: {e}")
+
+        elif norm_acc_type in ("apex", "eod_futures"):
+            clean_sym = self.nt8._resolve_micro_symbol(sym_str)
+            orig_upper = sym_str.upper()
+
+            # 1) Frischen Kurs aus fleet_snapshot.json prüfen (max. 30 Sekunden alt)
+            snap_path = script_dir / "users" / "admin" / "fleet_snapshot.json"
+            if snap_path.exists():
+                try:
+                    with open(snap_path, 'r', encoding='utf-8') as f:
+                        snap_data = json.load(f)
+                    snap_ts_str = snap_data.get("timestamp") or snap_data.get("updated_at")
+                    if snap_ts_str:
+                        snap_dt = datetime.fromisoformat(str(snap_ts_str).replace("Z", "+00:00"))
+                        if snap_dt.tzinfo is None:
+                            snap_dt = snap_dt.replace(tzinfo=timezone.utc)
+                        snap_age = (datetime.now(timezone.utc) - snap_dt).total_seconds()
+                        if snap_age <= 30.0:
+                            lp_map = snap_data.get("live_prices", {})
+                            if isinstance(lp_map, dict):
+                                px_entry = lp_map.get(clean_sym) or lp_map.get(orig_upper)
+                                if isinstance(px_entry, dict):
+                                    if dir_upper == "LONG":
+                                        live_px = _parse_float_safe(px_entry.get("ask"), fallback=0.0)
+                                    else:
+                                        live_px = _parse_float_safe(px_entry.get("bid"), fallback=0.0)
+                                    if live_px <= 0.0:
+                                        live_px = _parse_float_safe(px_entry.get("last"), fallback=0.0)
+                except Exception as e:
+                    logging.warning(f"Snapshot Live-Kurs Check für {sym_str} fehlgeschlagen: {e}")
+
+            # 2) Fallback über yfinance (max. 2.5s Timeout)
+            if live_px <= 0.0:
+                mapped_sym = self.nt8.YFINANCE_MAPPING.get(clean_sym, clean_sym)
+                try:
+                    def _fetch_yf_live():
+                        try:
+                            ticker = yf.Ticker(mapped_sym)
+                            if hasattr(ticker, "fast_info"):
+                                raw_p = ticker.fast_info.get("lastPrice")
+                                if raw_p is not None:
+                                    p = float(raw_p)
+                                    if p > 0.0:
+                                        return p
+                            hist = ticker.history(period="1d", interval="1m")
+                            if hist is not None and not hist.empty and "Close" in hist.columns:
+                                closes = hist["Close"].dropna()
+                                if not closes.empty:
+                                    p = float(closes.iloc[-1])
+                                    if p > 0.0:
+                                        return p
+                        except Exception:
+                            pass
+                        return 0.0
+
+                    live_px = await asyncio.wait_for(asyncio.to_thread(_fetch_yf_live), timeout=2.5)
+                except asyncio.TimeoutError:
+                    logging.warning(f"yfinance Live-Kurs Timeout (2.5s) für {mapped_sym}.")
+                except Exception as e:
+                    logging.warning(f"yfinance Live-Kurs Fehler für {mapped_sym}: {e}")
+
+        if live_px > 0.0:
+            return float(live_px)
+        return float(fallback_price) if is_simulation else 0.0
+
+    async def _handle_semi_auto_callback(self, callback_query: dict):
+        cb_id = str(callback_query.get("id", "")).strip()
+        cb_data = str(callback_query.get("data", "")).strip()
+        msg_obj = callback_query.get("message") or {}
+        chat_id = str(msg_obj.get("chat", {}).get("id", TELEGRAM_CHAT_ID)).strip()
+        message_id = int(msg_obj.get("message_id", 0) or 0)
+
+        parts = cb_data.split(":", 1)
+        if len(parts) != 2 or parts[0] not in ("semi_exec", "semi_rej") or not parts[1].strip():
+            await self.ops_reporter.answer_callback_query(cb_id, "Ungültiger Button-Payload")
+            return
+
+        action_prefix = parts[0]
+        approval_id = parts[1].strip()
+
+        # Stufe 1 — Doppelklick- & Idempotenz-Sperre
+        already_processed = False
+        approval_path = None
+        signal_payload = None
+
+        async with self._approval_lock:
+            if approval_id in self._processed_approvals:
+                already_processed = True
+            else:
+                for candidate in sorted(self.dir_awaiting_approval.glob("*.json")):
+                    try:
+                        with open(candidate, 'r', encoding='utf-8') as f:
+                            cand_data = json.load(f)
+                        if str(cand_data.get("approval_id", "")).strip() == approval_id:
+                            approval_path = candidate
+                            signal_payload = cand_data
+                            break
+                    except Exception as e:
+                        logging.warning(f"Fehler beim Lesen von {candidate.name} in 05_awaiting_approval: {e}")
+
+                self._processed_approvals.add(approval_id)
+
+        if already_processed:
+            await self.ops_reporter.answer_callback_query(cb_id, "Bereits verarbeitet.")
+            return
+
+        if approval_path is None or signal_payload is None:
+            await self.ops_reporter.answer_callback_query(cb_id, "Signal nicht mehr verfügbar.")
+            if message_id > 0:
+                await self.ops_reporter.edit_message_after_action(
+                    chat_id,
+                    message_id,
+                    "ℹ️ <b>Signal bereits verarbeitet oder abgelaufen.</b>"
+                )
+            return
+
+        display_sym = str(signal_payload.get("symbol") or signal_payload.get("instrument") or "UNKNOWN").strip()
+        sym = str(signal_payload.get("instrument") or signal_payload.get("symbol") or "").strip()
+        safe_account = str(signal_payload.get("account") or signal_payload.get("account_id") or "").strip()
+        direction = str(signal_payload.get("direction", "LONG")).strip().upper()
+
+        # Zweig A — Ablehnung
+        if action_prefix == "semi_rej":
+            await self.ops_reporter.answer_callback_query(cb_id, "Einstieg verworfen.")
+            signal_payload["status"] = "REJECTED"
+            signal_payload["rejection_reason"] = "USER_REJECTED_SEMI_AUTO"
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"❌ <b>VERWORFEN: {html.escape(display_sym)} ({html.escape(direction)})</b>\nManuell durch Nutzer abgelehnt."
+            )
+            return
+
+        # Zweig B — Freigabe (semi_exec)
+        # Stufe 2 — KILL_SWITCH-Prüfung
+        if self.kill_event.is_set() or self.kill_in_progress or KILL_SWITCH_PATH.exists():
+            await self.ops_reporter.answer_callback_query(cb_id, "🛑 NOTAUS AKTIV!", show_alert=True)
+            signal_payload["rejection_reason"] = "KILL_SWITCH_ACTIVE"
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                "🛑 <b>ABGEBROCHEN: NOTAUS (KILL_SWITCH) AKTIV</b>"
+            )
+            return
+
+        # Stufe 3 — 15-Minuten-Prop-TTL-Prüfung (900 Sekunden)
+        expires_at = _parse_float_safe(signal_payload.get("expires_at"), fallback=0.0)
+        if expires_at <= 0.0:
+            sig_ts_str = signal_payload.get("timestamp")
+            if sig_ts_str:
+                try:
+                    parsed_dt = datetime.fromisoformat(str(sig_ts_str).replace("Z", "+00:00"))
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                    expires_at = parsed_dt.timestamp() + 900.0
+                except Exception:
+                    expires_at = 0.0
+
+        if expires_at > 0.0 and datetime.now(timezone.utc).timestamp() > float(expires_at):
+            await self.ops_reporter.answer_callback_query(cb_id, "⏳ Zeitfenster (15 Min.) abgelaufen!", show_alert=True)
+            signal_payload["rejection_reason"] = "EXPIRED_TTL"
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"⏳ <b>ABGELAUFEN (TTL &gt; 15 Min.): {html.escape(display_sym)}</b>\nSignal wurde verworfen."
+            )
+            return
+
+        # Stufe 4 — Frische Live-Kurs-Abfrage & CRV-Slippage-Bremse (>= 1.25)
+        is_sim = bool(signal_payload.get("is_simulation", False))
+        acc_type = str(signal_payload.get("account_type", "eod_futures")).strip().lower() or "eod_futures"
+        fallback_entry = _parse_float_safe(
+            signal_payload.get("entry") or signal_payload.get("current_price") or signal_payload.get("price"),
+            fallback=0.0
+        )
+
+        live_px = await self._fetch_fresh_live_price_for_approval(
+            sym,
+            direction,
+            acc_type,
+            fallback_price=fallback_entry,
+            is_simulation=is_sim
+        )
+
+        if live_px <= 0.0:
+            await self.ops_reporter.answer_callback_query(cb_id, "⚠️ Kein frischer Live-Kurs verfügbar!", show_alert=True)
+            signal_payload["rejection_reason"] = "NO_LIVE_PRICE_ON_APPROVAL"
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"⚠️ <b>ABGEBROCHEN (KEIN LIVE-KURS): {html.escape(display_sym)}</b>\nKein frischer Marktkurs zur Freigabe verfügbar."
+            )
+            return
+
+        sl_raw = signal_payload.get("sl_price") if signal_payload.get("sl_price") is not None else signal_payload.get("sl")
+        tp_raw = signal_payload.get("tp_price") if signal_payload.get("tp_price") is not None else signal_payload.get("tp")
+        sl_val = _parse_float_safe(sl_raw, fallback=0.0)
+        tp_val = _parse_float_safe(tp_raw, fallback=0.0)
+        max_limit_val = _parse_float_safe(signal_payload.get("max_limit_price"), fallback=0.0)
+
+        crv_ok = True
+        risk = (live_px - sl_val) if direction == "LONG" else (sl_val - live_px)
+        if sl_val > 0.0 and risk <= 0.0:
+            crv_ok = False
+
+        if crv_ok and tp_val > 0.0 and risk > 0.0:
+            reward = (tp_val - live_px) if direction == "LONG" else (live_px - tp_val)
+            if (reward / risk) < 1.25:
+                crv_ok = False
+
+        if crv_ok and max_limit_val > 0.0:
+            if (direction == "LONG" and live_px > max_limit_val) or (direction == "SHORT" and live_px < max_limit_val):
+                crv_ok = False
+
+        if not crv_ok:
+            await self.ops_reporter.answer_callback_query(cb_id, "⚠️ Slippage zu hoch (CRV < 1.25)!", show_alert=True)
+            signal_payload["rejection_reason"] = "SLIPPAGE_CRV_BREACH"
+            signal_payload["checked_live_price"] = live_px
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"⚠️ <b>ABGEBROCHEN (SLIPPAGE / CRV &lt; 1.25): {html.escape(display_sym)}</b>\nLive-Kurs {live_px} verletzt Chance-Risiko-Schwelle."
+            )
+            return
+
+        # Stufe 5 — Simulation-Weiche ODER frischer RESONO-Check & Broker-Order
+        if is_sim:
+            await self.ops_reporter.answer_callback_query(cb_id, "✅ Simulation erfolgreich geprüft!")
+            signal_payload["status"] = "SIMULATED_EXECUTED"
+            signal_payload["simulated_live_price"] = live_px
+            self._archive_signal(signal_payload, approval_path, self.dir_executed)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"✅ <b>[SIMULATION BESTANDEN] {html.escape(display_sym)} ({html.escape(direction)})</b>\n"
+                f"Alle 5 Schutzstufen erfolgreich durchlaufen (Live-Check-Kurs: {live_px}, keine Broker-Order gesendet)."
+            )
+            return
+
+        await self.ops_reporter.answer_callback_query(cb_id, "⏳ Prüfe RESONO & platziere Order...")
+        signal_payload["current_price"] = live_px
+        signal_payload["entry"] = live_px
+
+        safe_qty = signal_payload.get("qty") or signal_payload.get("shares_contracts", 1)
+        raw_acc_size = signal_payload.get("account_size") if signal_payload.get("account_size") is not None else signal_payload.get("balance")
+        parsed_acc_size = _parse_float_safe(raw_acc_size, fallback=0.0)
+        acc_size_arg = parsed_acc_size if parsed_acc_size > 0 else None
+
+        raw_daily_buf = signal_payload.get("daily_buffer")
+        daily_buf_arg = _parse_float_safe(raw_daily_buf, fallback=None) if raw_daily_buf is not None else None
+
+        raw_max_dd_buf = signal_payload.get("max_dd_buffer")
+        max_dd_buf_arg = _parse_float_safe(raw_max_dd_buf, fallback=None) if raw_max_dd_buf is not None else None
+
+        result = await self.process_signal(
+            account_type=acc_type,
+            account_id=safe_account,
+            symbol=sym,
+            direction=direction,
+            qty=float(safe_qty),
+            entry=float(live_px),
+            sl=float(sl_val),
+            tp=float(tp_val),
+            current_price=float(live_px),
+            score=signal_payload.get("score", 60),
+            setup_type=signal_payload.get("setup_type", "SETUP_B"),
+            is_fleet=signal_payload.get("is_fleet", False),
+            balance=float(signal_payload.get("balance", 50000.0)),
+            account_size=acc_size_arg,
+            trailing_threshold=float(signal_payload.get("trailing_threshold", 47500.0)),
+            daily_buffer=daily_buf_arg,
+            max_dd_buffer=max_dd_buf_arg
+        )
+
+        if result and result.get("status") == "DENIED":
+            reason = str(result.get("reason", "RESONO_DENIED"))
+            signal_payload["rejection_reason"] = reason
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.reporter.report_signal_rejected(safe_account, sym, "RESONO_DENIED", reason)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"🚫 <b>ABGEWIESEN (RESONO): {html.escape(display_sym)}</b>\nGrund: {html.escape(reason)}"
+            )
+        elif result and result.get("status") == "APPROVED":
+            broker_res = result.get("broker_res", {})
+            b_status = str(broker_res.get("status", "BROKER_REJECTED"))
+            if b_status == "FILLED":
+                signal_payload["broker_order_id"] = broker_res.get("order_id", "")
+                if broker_res.get("price") and float(broker_res["price"]) > 0.0:
+                    signal_payload["execution_price"] = float(broker_res["price"])
+                    signal_payload["entry"] = float(broker_res["price"])
+                if broker_res.get("qty") and float(broker_res["qty"]) > 0.0:
+                    signal_payload["qty"] = float(broker_res["qty"])
+                if broker_res.get("sl_price") and float(broker_res["sl_price"]) > 0.0:
+                    signal_payload["sl_price"] = float(broker_res["sl_price"])
+                    signal_payload["sl"] = float(broker_res["sl_price"])
+                if broker_res.get("tp_price") is not None and float(broker_res["tp_price"]) >= 0.0:
+                    signal_payload["tp_price"] = float(broker_res["tp_price"])
+                    signal_payload["tp"] = float(broker_res["tp_price"])
+                signal_payload["execution_timestamp"] = datetime.now(timezone.utc).isoformat()
+                signal_payload["status"] = "FILLED"
+                self._archive_signal(signal_payload, approval_path, self.dir_executed)
+                self._write_to_journal(signal_payload)
+
+                exec_price = signal_payload.get("execution_price", signal_payload.get("entry", live_px))
+                exec_qty = signal_payload.get("qty", safe_qty)
+                await self.ops_reporter.edit_message_after_action(
+                    chat_id,
+                    message_id,
+                    f"✅ <b>AUSGEFÜHRT: {html.escape(display_sym)} ({html.escape(direction)})</b>\n"
+                    f"Konto: <code>{html.escape(safe_account)}</code> | Fill: <b>{exec_price}</b> | Qty: <b>{exec_qty}</b>"
+                )
+            elif b_status == "MARKET_CLOSED":
+                signal_payload["rejection_reason"] = "MARKET_CLOSED"
+                self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+                await self.reporter.report_signal_rejected(safe_account, sym, "MARKET_CLOSED")
+                await self.ops_reporter.edit_message_after_action(
+                    chat_id,
+                    message_id,
+                    f"⚠️ <b>NICHT AUSGEFÜHRT: {html.escape(display_sym)}</b>\nStatus: <code>{html.escape(b_status)}</code>"
+                )
+            elif b_status == "VOLUME_TOO_SMALL":
+                signal_payload["rejection_reason"] = "VOLUME_TOO_SMALL"
+                signal_payload["rejection_detail"] = broker_res.get("reason", "")
+                self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+                await self.reporter.report_signal_rejected(safe_account, sym, "VOLUME_TOO_SMALL", signal_payload["rejection_detail"])
+                await self.ops_reporter.edit_message_after_action(
+                    chat_id,
+                    message_id,
+                    f"⚠️ <b>NICHT AUSGEFÜHRT: {html.escape(display_sym)}</b>\nStatus: <code>{html.escape(b_status)}</code>"
+                )
+            else:
+                rej_reason = broker_res.get("reason", "BROKER_REJECTED")
+                signal_payload["rejection_reason"] = rej_reason
+                self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+                await self.reporter.report_signal_rejected(safe_account, sym, "BROKER_REJECTED", str(rej_reason))
+                await self.ops_reporter.edit_message_after_action(
+                    chat_id,
+                    message_id,
+                    f"⚠️ <b>NICHT AUSGEFÜHRT: {html.escape(display_sym)}</b>\nStatus: <code>{html.escape(b_status)}</code>"
+                )
+        else:
+            signal_payload["rejection_reason"] = "UNKNOWN_ERROR"
+            self._archive_signal(signal_payload, approval_path, self.dir_rejected)
+            await self.ops_reporter.edit_message_after_action(
+                chat_id,
+                message_id,
+                f"⚠️ <b>NICHT AUSGEFÜHRT: {html.escape(display_sym)}</b>\nStatus: <code>UNKNOWN_ERROR</code>"
+            )
+
+    async def _cmd_sim_semi(self):
+        apex_cfg, _ = self._load_lab_accounts_config()
+        cfg_name = str(apex_cfg.get("name") or "MFFU 100k EOD").strip()
+        approval_id = f"sim_{uuid.uuid4().hex[:8]}"
+        now_utc = datetime.now(timezone.utc)
+        expires_at = now_utc.timestamp() + 900.0
+
+        sim_payload = {
+            "is_simulation": True,
+            "action": "ENTRY",
+            "execution_mode": "SEMI_AUTO",
+            "account_type": "eod_futures",
+            "account_id": NT8_ACCOUNT,
+            "account_name": cfg_name,
+            "symbol": "SIM_SEMI_M6E",
+            "instrument": "M6E",
+            "direction": "LONG",
+            "setup_type": "SETUP_B",
+            "score": 75,
+            "entry": 1.10000,
+            "current_price": 1.10000,
+            "sl_price": 1.09200,
+            "tp_price": 1.11600,
+            "max_limit_price": 1.10356,
+            "approval_id": approval_id,
+            "expires_at": expires_at,
+            "status": "AWAITING_APPROVAL",
+            "timestamp": now_utc.isoformat(),
+            "username": "admin"
+        }
+
+        res = await self._send_semi_auto_approval_prompt(sim_payload, approval_id, expires_at)
+        if isinstance(res, dict):
+            tg_result = res.get("result")
+            if isinstance(tg_result, dict):
+                if tg_result.get("message_id") is not None:
+                    sim_payload["telegram_message_id"] = tg_result.get("message_id")
+                tg_chat = tg_result.get("chat")
+                if isinstance(tg_chat, dict) and tg_chat.get("id") is not None:
+                    sim_payload["telegram_chat_id"] = tg_chat.get("id")
+
+        sim_tmp = self.dir_awaiting_approval / f"{approval_id}.tmp"
+        sim_final = self.dir_awaiting_approval / f"{approval_id}.json"
+        with open(sim_tmp, 'w', encoding='utf-8') as f:
+            json.dump(sim_payload, f, indent=4)
+        sim_tmp.replace(sim_final)
+        logging.info(f"SEMI_AUTO Simulation angelegt: {sim_final.name} (approval_id={approval_id})")
 
     async def _cmd_unlock_arm(self):
         import time
@@ -3838,36 +4774,76 @@ class ExecutorDaemon:
         await self.ops_reporter.send_message(report)
 
     async def _cmd_fleet(self):
-        apex_live = await self._resolve_live_risk_state("apex", NT8_ACCOUNT)
-        apex_size = apex_live.get("account_size", 50000.0)
-        
-        if apex_live.get("live_connected"):
-            eq = apex_live.get("current_balance", 0.0)
-            hw = apex_live.get("high_watermark", 0.0)
-            d_pnl = apex_live.get("live_daily_pnl", 0.0)
-            d_buf = apex_live.get("daily_buffer", 0.0)
-            md_buf = apex_live.get("max_dd_buffer", 0.0)
-            eff_buf = min(d_buf, md_buf)
-            
-            apex_info = (
-                f"🏎️ <b>APEX (Futures)</b>\n"
-                f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
-                f"Equity: {eq:,.2f} USD\n"
-                f"High-Watermark: {hw:,.2f} USD\n"
-                f"Tages-PnL: {d_pnl:,.2f} USD\n"
-                f"Max-DD Puffer: {md_buf:,.2f} USD\n"
-                f"Daily Puffer: {d_buf:,.2f} USD\n"
-                f"Bottleneck: <b>{eff_buf:,.2f} USD</b>\n"
-            )
+        apex_cfg, _ = self._load_lab_accounts_config()
+        nt8_check_str = f"{apex_cfg.get('_key', '')} {apex_cfg.get('name', '')} {apex_cfg.get('broker', '')} {apex_cfg.get('account_type', '')}".lower()
+        nt8_account_type = "eod_futures" if any(kw in nt8_check_str for kw in ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")) else "apex"
+        nt8_display_name = str(apex_cfg.get("name") or ("MFFU / EOD-Futures" if nt8_account_type == "eod_futures" else "Apex Account")).strip()
+
+        apex_live = await self._resolve_live_risk_state(nt8_account_type, NT8_ACCOUNT)
+        nt8_default_size = 100000.0 if nt8_account_type == "eod_futures" else 50000.0
+        apex_size = apex_live.get("account_size", nt8_default_size)
+
+        if nt8_account_type == "eod_futures":
+            nt8_risk_gear = str(apex_cfg.get("risk_gear", "EVAL_TURBO")).strip().upper() or "EVAL_TURBO"
+            nt8_raw_exec = str(apex_cfg.get("execution_mode", "SEMI_AUTO")).strip().upper() or "SEMI_AUTO"
+            nt8_exec_mode = "SEMI_AUTO" if nt8_raw_exec == "LIVE_AUTO" else nt8_raw_exec
+
+            if apex_live.get("live_connected"):
+                eq = apex_live.get("current_balance", 0.0)
+                hw = apex_live.get("high_watermark", 0.0)
+                d_pnl = apex_live.get("live_daily_pnl", 0.0)
+                md_buf = apex_live.get("max_dd_buffer", 0.0)
+                d_lim = float(apex_live.get("daily_loss_limit", 0.0))
+                d_buf = apex_live.get("daily_buffer", 0.0)
+                eff_buf = md_buf if d_lim <= 0.0 else min(d_buf, md_buf)
+
+                apex_info = (
+                    f"🏎️ <b>{html.escape(nt8_display_name)} (EOD-Futures)</b>\n"
+                    f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                    f"Gang: <code>{html.escape(nt8_risk_gear)}</code> | Modus: <code>{html.escape(nt8_exec_mode)}</code>\n"
+                    f"Equity: {eq:,.2f} USD\n"
+                    f"High-Watermark: {hw:,.2f} USD\n"
+                    f"Tages-PnL: {d_pnl:,.2f} USD\n"
+                    f"Max-DD Puffer (Bottleneck): <b>{eff_buf:,.2f} USD</b>\n"
+                )
+            else:
+                cfg_trail = float(apex_live.get("max_trailing_dd") or (apex_size * 0.03))
+                apex_info = (
+                    f"🏎️ <b>{html.escape(nt8_display_name)} (EOD-Futures)</b>\n"
+                    f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                    f"Gang: <code>{html.escape(nt8_risk_gear)}</code> | Modus: <code>{html.escape(nt8_exec_mode)}</code>\n"
+                    f"Status: Keine NT8 Live-Verbindung.\n"
+                    f"Größe (Basis): {apex_size:,.2f} USD\n"
+                    f"Max-DD (EOD Basis): {cfg_trail:,.2f} USD\n"
+                )
         else:
-            cfg_trail = apex_size * 0.05
-            apex_info = (
-                f"🏎️ <b>APEX (Futures)</b>\n"
-                f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
-                f"Status: Keine NT8 Live-Verbindung.\n"
-                f"Größe (Basis): {apex_size:,.2f} USD\n"
-                f"Max DD (Basis): {cfg_trail:,.2f} USD\n"
-            )
+            if apex_live.get("live_connected"):
+                eq = apex_live.get("current_balance", 0.0)
+                hw = apex_live.get("high_watermark", 0.0)
+                d_pnl = apex_live.get("live_daily_pnl", 0.0)
+                d_buf = apex_live.get("daily_buffer", 0.0)
+                md_buf = apex_live.get("max_dd_buffer", 0.0)
+                eff_buf = min(d_buf, md_buf)
+                
+                apex_info = (
+                    f"🏎️ <b>APEX (Futures)</b>\n"
+                    f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                    f"Equity: {eq:,.2f} USD\n"
+                    f"High-Watermark: {hw:,.2f} USD\n"
+                    f"Tages-PnL: {d_pnl:,.2f} USD\n"
+                    f"Max-DD Puffer: {md_buf:,.2f} USD\n"
+                    f"Daily Puffer: {d_buf:,.2f} USD\n"
+                    f"Bottleneck: <b>{eff_buf:,.2f} USD</b>\n"
+                )
+            else:
+                cfg_trail = apex_size * 0.05
+                apex_info = (
+                    f"🏎️ <b>APEX (Futures)</b>\n"
+                    f"Konto: <code>{html.escape(NT8_ACCOUNT)}</code>\n"
+                    f"Status: Keine NT8 Live-Verbindung.\n"
+                    f"Größe (Basis): {apex_size:,.2f} USD\n"
+                    f"Max DD (Basis): {cfg_trail:,.2f} USD\n"
+                )
 
         ftmo_acc = str(MT5_LOGIN) if MT5_LOGIN > 0 else "FTMO"
         ftmo_live = await self._resolve_live_risk_state("ftmo", ftmo_acc)
@@ -4059,6 +5035,7 @@ class ExecutorDaemon:
                         writer.writeheader()
                         writer.writerows(rows)
                     tmp_path.replace(journal_path)
+                    self._trigger_journal_telemetry_push()
                     
         report = (
             f"🚨 <b>SYSTEM-NOTAUS VOLLZOGEN</b>\n"
@@ -4121,6 +5098,7 @@ async def run_daemon():
     asyncio.create_task(daemon.telegram_ops_listener(), name="telegram_ops_listener"),
     ]
     logging.info("Alle 5 Hintergrund-Dienste aktiv. Daemon läuft im permanenten 24/7-Modus.")
+    daemon._trigger_journal_telemetry_push()
     try:
         # Prozess dauerhaft aktiv halten, bis kill_event durch Signal oder Kill-Switch ausgelöst wird
         await daemon.kill_event.wait()
@@ -4535,6 +5513,251 @@ async def run_test_battery():
         daemon.nt8.place_bracket_order = orig_nt8_place_order
         daemon._load_lab_accounts_config = orig_load_lab_cfg
 
+    logging.info("--- STARTING TEST 11: SEMI_AUTO Schleuse, eod_futures-Zwangsriegel, 5-fach-Klickschutz & /sim_semi ---")
+    orig_t11_fetch_price = daemon._fetch_fresh_live_price_for_approval
+    orig_t11_place_order = daemon.nt8.place_bracket_order
+    orig_t11_load_cfg = daemon._load_lab_accounts_config
+    t11_created_files: list[Path] = []
+    t11_broker_calls: list = []
+
+    async def _mock_t11_place_bracket_order(account_id, symbol, direction, qty, entry_price, sl_price, tp_price):
+        t11_broker_calls.append((account_id, symbol, direction, qty))
+        return {"status": "MARKET_CLOSED", "reason": "TEST_11_MOCK"}
+
+    def _mock_t11_load_lab_cfg():
+        return (
+            {
+                "_key": "mffu_100k_test",
+                "name": "MFFU 100k EOD Test",
+                "broker": "mffu",
+                "account_type": "eod_futures",
+                "execution_mode": "SEMI_AUTO",
+                "risk_gear": "EVAL_TURBO",
+                "account_size": 100000.0,
+                "daily_loss_limit": 0.0,
+                "max_trailing_dd": 3000.0
+            },
+            {}
+        )
+
+    try:
+        daemon.nt8.place_bracket_order = _mock_t11_place_bracket_order
+        daemon._load_lab_accounts_config = _mock_t11_load_lab_cfg
+
+        # Teil A: eod_futures-Zwangsriegel
+        assert daemon._resolve_entry_execution_mode({"execution_mode": "LIVE_AUTO"}, "eod_futures") == "SEMI_AUTO", "Test 11A: eod_futures-Zwangsriegel fehlgeschlagen!"
+        assert daemon._resolve_entry_execution_mode({"execution_mode": "LIVE_AUTO"}, "apex") == "LIVE_AUTO", "Test 11A: apex LIVE_AUTO fehlgeschlagen!"
+
+        # Teil B: SEMI_AUTO-Spooler-Schleuse nach 05_awaiting_approval + Ablehnung & Doppelklick-Sperre
+        t11_rej_name = f"sig_t11_rej_{uuid.uuid4().hex[:8]}.json"
+        t11_rej_path = daemon.dir_pending / t11_rej_name
+        t11_created_files.append(t11_rej_path)
+
+        t11_rej_payload = {
+            "account_type": "eod_futures",
+            "execution_mode": "LIVE_AUTO",
+            "account_id": "MFFU_TEST_100K",
+            "symbol": "M6E",
+            "direction": "LONG",
+            "entry": 1.10000,
+            "sl_price": 1.09200,
+            "tp_price": 1.11600,
+            "max_limit_price": 1.10356,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        t11_rej_tmp = t11_rej_path.with_suffix(".tmp")
+        with open(t11_rej_tmp, "w", encoding="utf-8") as f:
+            json.dump(t11_rej_payload, f, indent=4)
+        t11_rej_tmp.replace(t11_rej_path)
+
+        await asyncio.sleep(1.5)
+        awaiting_rej_file = daemon.dir_awaiting_approval / t11_rej_name
+        for _ in range(10):
+            if awaiting_rej_file.exists():
+                break
+            await asyncio.sleep(0.25)
+
+        assert awaiting_rej_file.exists(), "Test 11B: Signal wurde nicht nach 05_awaiting_approval verschoben!"
+        assert not (daemon.dir_executed / t11_rej_name).exists(), "Test 11B: Signal darf nicht in 03_executed liegen!"
+        assert not (daemon.dir_rejected / t11_rej_name).exists(), "Test 11B: Signal darf nicht in 04_rejected liegen!"
+        assert len(t11_broker_calls) == 0, "Test 11B: Broker-Order darf beim Parken nicht ausgelöst werden!"
+
+        with open(awaiting_rej_file, "r", encoding="utf-8") as f:
+            rej_parked_data = json.load(f)
+        assert rej_parked_data.get("status") == "AWAITING_APPROVAL", f"Test 11B: Unerwarteter Status: {rej_parked_data.get('status')}"
+        assert rej_parked_data.get("execution_mode") == "SEMI_AUTO", f"Test 11B: Zwangsriegel nicht gesetzt: {rej_parked_data.get('execution_mode')}"
+        approval_id = str(rej_parked_data.get("approval_id", "")).strip()
+        assert approval_id, "Test 11B: approval_id fehlt!"
+
+        await daemon._handle_semi_auto_callback({
+            "id": "cb_t11_rej_1",
+            "from": {"is_bot": False, "id": TELEGRAM_CHAT_ID},
+            "message": {"message_id": 101, "chat": {"id": TELEGRAM_CHAT_ID}},
+            "data": f"semi_rej:{approval_id}"
+        })
+
+        rej_done_file = daemon.dir_rejected / t11_rej_name
+        assert rej_done_file.exists(), "Test 11B: Abgelehntes Signal liegt nicht in 04_rejected!"
+        with open(rej_done_file, "r", encoding="utf-8") as f:
+            rej_done_data = json.load(f)
+        assert rej_done_data.get("rejection_reason") == "USER_REJECTED_SEMI_AUTO", f"Test 11B: Falscher Ablehnungsgrund: {rej_done_data.get('rejection_reason')}"
+
+        # Doppelklick auf dieselbe approval_id simulieren
+        await daemon._handle_semi_auto_callback({
+            "id": "cb_t11_rej_2",
+            "from": {"is_bot": False, "id": TELEGRAM_CHAT_ID},
+            "message": {"message_id": 101, "chat": {"id": TELEGRAM_CHAT_ID}},
+            "data": f"semi_rej:{approval_id}"
+        })
+        assert rej_done_file.exists(), "Test 11B: Zustand nach Doppelklick verändert!"
+        assert not (daemon.dir_executed / t11_rej_name).exists(), "Test 11B: Doppelklick darf keine Ausführung auslösen!"
+        assert len(t11_broker_calls) == 0, "Test 11B: Doppelklick darf keine Broker-Order auslösen!"
+
+        # Teil C: Slippage-CRV-Bremse beim Klick auf Einstieg ausführen
+        t11_slip_name = f"sig_t11_slip_{uuid.uuid4().hex[:8]}.json"
+        t11_slip_path = daemon.dir_pending / t11_slip_name
+        t11_created_files.append(t11_slip_path)
+
+        t11_slip_payload = {
+            "account_type": "eod_futures",
+            "account_id": "MFFU_TEST_100K",
+            "symbol": "M6E",
+            "direction": "LONG",
+            "entry": 1.10000,
+            "sl_price": 1.09200,
+            "tp_price": 1.11600,
+            "max_limit_price": 1.10356,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        t11_slip_tmp = t11_slip_path.with_suffix(".tmp")
+        with open(t11_slip_tmp, "w", encoding="utf-8") as f:
+            json.dump(t11_slip_payload, f, indent=4)
+        t11_slip_tmp.replace(t11_slip_path)
+
+        await asyncio.sleep(1.5)
+        awaiting_slip_file = daemon.dir_awaiting_approval / t11_slip_name
+        for _ in range(10):
+            if awaiting_slip_file.exists():
+                break
+            await asyncio.sleep(0.25)
+
+        assert awaiting_slip_file.exists(), "Test 11C: Slippage-Signal liegt nicht in 05_awaiting_approval!"
+        with open(awaiting_slip_file, "r", encoding="utf-8") as f:
+            slip_parked_data = json.load(f)
+        approval_id_slip = str(slip_parked_data.get("approval_id", "")).strip()
+        assert approval_id_slip, "Test 11C: approval_id_slip fehlt!"
+
+        async def _mock_t11_fetch_price_slippage(symbol, direction, account_type, fallback_price=0.0, is_simulation=False):
+            return 1.10500
+
+        daemon._fetch_fresh_live_price_for_approval = _mock_t11_fetch_price_slippage
+
+        await daemon._handle_semi_auto_callback({
+            "id": "cb_t11_slip_1",
+            "from": {"is_bot": False, "id": TELEGRAM_CHAT_ID},
+            "message": {"message_id": 102, "chat": {"id": TELEGRAM_CHAT_ID}},
+            "data": f"semi_exec:{approval_id_slip}"
+        })
+
+        slip_rej_file = daemon.dir_rejected / t11_slip_name
+        assert slip_rej_file.exists(), "Test 11C: Slippage-Signal liegt nicht in 04_rejected!"
+        with open(slip_rej_file, "r", encoding="utf-8") as f:
+            slip_rej_data = json.load(f)
+        assert slip_rej_data.get("rejection_reason") == "SLIPPAGE_CRV_BREACH", f"Test 11C: Falscher Ablehnungsgrund: {slip_rej_data.get('rejection_reason')}"
+        assert len(t11_broker_calls) == 0, "Test 11C: Slippage-Signal darf keine Broker-Order auslösen!"
+
+        # Teil D: /sim_semi-Simulationstest ohne Broker-Order
+        async def _mock_t11_fetch_price_valid(symbol, direction, account_type, fallback_price=0.0, is_simulation=False):
+            return 1.10000
+
+        daemon._fetch_fresh_live_price_for_approval = _mock_t11_fetch_price_valid
+
+        pre_sim_files = set(daemon.dir_awaiting_approval.glob("*.json"))
+        await daemon._cmd_sim_semi()
+        post_sim_files = set(daemon.dir_awaiting_approval.glob("*.json"))
+
+        sim_file = None
+        sim_approval_id = ""
+        for cand in sorted(post_sim_files - pre_sim_files):
+            with open(cand, "r", encoding="utf-8") as f:
+                cand_data = json.load(f)
+            if cand_data.get("symbol") == "SIM_SEMI_M6E":
+                sim_file = cand
+                sim_approval_id = str(cand_data.get("approval_id", "")).strip()
+                break
+
+        assert sim_file is not None and sim_approval_id, "Test 11D: /sim_semi Datei SIM_SEMI_M6E nicht in 05_awaiting_approval gefunden!"
+        t11_created_files.append(sim_file)
+
+        await daemon._handle_semi_auto_callback({
+            "id": "cb_t11_sim_1",
+            "from": {"is_bot": False, "id": TELEGRAM_CHAT_ID},
+            "message": {"message_id": 103, "chat": {"id": TELEGRAM_CHAT_ID}},
+            "data": f"semi_exec:{sim_approval_id}"
+        })
+
+        sim_exec_file = daemon.dir_executed / sim_file.name
+        assert sim_exec_file.exists(), "Test 11D: /sim_semi Datei liegt nicht in 03_executed!"
+        with open(sim_exec_file, "r", encoding="utf-8") as f:
+            sim_exec_data = json.load(f)
+        assert sim_exec_data.get("status") == "SIMULATED_EXECUTED", f"Test 11D: Unerwarteter Status: {sim_exec_data.get('status')}"
+        assert len(t11_broker_calls) == 0, "Test 11D: /sim_semi darf keine Broker-Order auslösen!"
+
+        logging.info("Test 11: SEMI_AUTO Schleuse, eod_futures-Zwangsriegel, 5-fach-Klickschutz & /sim_semi erfolgreich.")
+    finally:
+        daemon._fetch_fresh_live_price_for_approval = orig_t11_fetch_price
+        daemon.nt8.place_bracket_order = orig_t11_place_order
+        daemon._load_lab_accounts_config = orig_t11_load_cfg
+        for fpath in t11_created_files:
+            for q_dir in (
+                daemon.dir_pending,
+                daemon.dir_processing,
+                daemon.dir_executed,
+                daemon.dir_rejected,
+                daemon.dir_awaiting_approval,
+            ):
+                target_file = q_dir / fpath.name
+                if target_file.exists():
+                    try:
+                        target_file.unlink()
+                    except OSError:
+                        pass
+
+    logging.info("--- STARTING TEST 12: Journal Telemetry Push & Coalescing Guard ---")
+    t12_old_url = TELEMETRY_ENDPOINT_URL
+    t12_old_token = TELEMETRY_SECRET_TOKEN
+    t12_old_journal_env = os.environ.get("TELEMETRY_JOURNAL_ENDPOINT_URL")
+    try:
+        if "TELEMETRY_JOURNAL_ENDPOINT_URL" in os.environ:
+            del os.environ["TELEMETRY_JOURNAL_ENDPOINT_URL"]
+
+        TELEMETRY_ENDPOINT_URL = "https://invarix.de/api/telemetry/fleet"
+        assert daemon._resolve_journal_telemetry_url().endswith("/api/telemetry/journal"), "Test 12: Journal-URL-Auflösung fehlgeschlagen!"
+
+        daemon._telemetry_enabled = True
+        TELEMETRY_SECRET_TOKEN = "TEST_TOKEN"
+        daemon._journal_telemetry_flight_active = True
+        daemon._journal_telemetry_dirty = False
+        daemon._trigger_journal_telemetry_push()
+        assert daemon._journal_telemetry_dirty is True, "Test 12: Coalescing-Flag _journal_telemetry_dirty wurde nicht gesetzt!"
+
+        TELEMETRY_ENDPOINT_URL = "http://127.0.0.1:65535/api/telemetry/fleet"
+        daemon._journal_telemetry_dirty = False
+        await daemon._push_journal_telemetry_background()
+        assert daemon._journal_telemetry_flight_active is False, "Test 12: _journal_telemetry_flight_active wurde nicht zurückgesetzt!"
+
+        logging.info("Test 12: Journal Telemetry Push & Coalescing Guard erfolgreich.")
+    finally:
+        TELEMETRY_ENDPOINT_URL = t12_old_url
+        TELEMETRY_SECRET_TOKEN = t12_old_token
+        if t12_old_journal_env is not None:
+            os.environ["TELEMETRY_JOURNAL_ENDPOINT_URL"] = t12_old_journal_env
+        elif "TELEMETRY_JOURNAL_ENDPOINT_URL" in os.environ:
+            del os.environ["TELEMETRY_JOURNAL_ENDPOINT_URL"]
+        daemon._telemetry_enabled = False
+        daemon._journal_telemetry_dirty = False
+        daemon._journal_telemetry_flight_active = False
+
     logging.info("Beende Testbatterie, räume Tasks auf...")
     daemon.kill_event.set()
     await asyncio.gather(watcher_task, guard_task, spooler_task)
@@ -4542,6 +5765,8 @@ async def run_test_battery():
         await daemon.ftmo.disconnect()
     if hasattr(daemon.nt8, 'disconnect'):
         await daemon.nt8.disconnect()
+
+    await daemon._close_telemetry_session()
 
     daemon._cleanup_fleet_snapshot()
 

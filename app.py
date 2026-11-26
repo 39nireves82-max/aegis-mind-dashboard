@@ -975,6 +975,28 @@ def load_config():
             "tickers": list(tickers_dict.values())
         }
     dirty_cfg = False
+    _eod_cfg_kws = ("eod_futures", "eod futures", "mffu", "tradeify")
+    for acc_id, acc_data in config.get("lab_accounts", {}).items():
+        if not isinstance(acc_data, dict):
+            continue
+        _ep_cfg = str(acc_data.get("exit_profile", "")).strip().lower()
+        _tax_cfg = str(acc_data.get("tax_category", "")).strip().lower()
+        _probe_cfg = f"{acc_data.get('name', '')} {acc_data.get('account_type', '')}".lower()
+        is_eod_cfg = (_ep_cfg == "eod_futures") or (
+            _tax_cfg == "prop_firm" and any(kw in _probe_cfg for kw in _eod_cfg_kws)
+        )
+        if is_eod_cfg:
+            if str(acc_data.get("execution_mode", "")).strip() == "LIVE_AUTO":
+                acc_data["execution_mode"] = "SEMI_AUTO"
+                dirty_cfg = True
+            _dl_raw = acc_data.get("daily_loss")
+            try:
+                _dl_val = float(_dl_raw) if _dl_raw is not None else None
+            except (TypeError, ValueError):
+                _dl_val = None
+            if _dl_val is None or _dl_val > 0.0:
+                acc_data["daily_loss"] = 0.0
+                dirty_cfg = True
     for list_key in ["futures_tickers", "prop_watchlist"]:
         if list_key in config and isinstance(config[list_key], list):
             for item in config[list_key]:
@@ -1054,6 +1076,93 @@ def get_effective_forex_risk_pts(symbol, raw_pts, current_price, fx_usd_eur=1.0)
         return raw_pts
 #endregion
 #region CALC CORE
+def get_us_market_day_status(dt_et=None):
+    if dt_et is None:
+        try:
+            et_tz = zoneinfo.ZoneInfo("America/New_York")
+            dt_et = datetime.datetime.now(et_tz)
+        except Exception:
+            dt_et = datetime.datetime.now()
+
+    d = dt_et.date() if isinstance(dt_et, datetime.datetime) else dt_et
+    y = d.year
+
+    def _nth_weekday(year, month, weekday, n):
+        first = datetime.date(year, month, 1)
+        offset = (weekday - first.weekday()) % 7
+        return first + datetime.timedelta(days=offset + (n - 1) * 7)
+
+    def _last_weekday(year, month, weekday):
+        next_first = datetime.date(year + 1, 1, 1) if month == 12 else datetime.date(year, month + 1, 1)
+        last_day = next_first - datetime.timedelta(days=1)
+        offset = (last_day.weekday() - weekday) % 7
+        return last_day - datetime.timedelta(days=offset)
+
+    def _observed(dt_val):
+        if dt_val.weekday() == 5:
+            return dt_val - datetime.timedelta(days=1)
+        if dt_val.weekday() == 6:
+            return dt_val + datetime.timedelta(days=1)
+        return dt_val
+
+    def _easter_sunday(year):
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d_e = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d_e - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return datetime.date(year, month, day)
+
+    new_year_obs = _observed(datetime.date(y, 1, 1))
+    next_new_year_obs = _observed(datetime.date(y + 1, 1, 1))
+    mlk_day = _nth_weekday(y, 1, 0, 3)
+    presidents_day = _nth_weekday(y, 2, 0, 3)
+    good_friday = _easter_sunday(y) - datetime.timedelta(days=2)
+    memorial_day = _last_weekday(y, 5, 0)
+    juneteenth_obs = _observed(datetime.date(y, 6, 19))
+    ind_day_obs = _observed(datetime.date(y, 7, 4))
+    labor_day = _nth_weekday(y, 9, 0, 1)
+    thanksgiving = _nth_weekday(y, 11, 3, 4)
+    xmas_obs = _observed(datetime.date(y, 12, 25))
+
+    holidays = {
+        new_year_obs,
+        next_new_year_obs,
+        mlk_day,
+        presidents_day,
+        good_friday,
+        memorial_day,
+        juneteenth_obs,
+        ind_day_obs,
+        labor_day,
+        thanksgiving,
+        xmas_obs,
+    }
+
+    early_closes = {thanksgiving + datetime.timedelta(days=1)}
+    july_3 = datetime.date(y, 7, 3)
+    if july_3.weekday() in (0, 1, 2, 3) and july_3 != ind_day_obs:
+        early_closes.add(july_3)
+    dec_24 = datetime.date(y, 12, 24)
+    if dec_24.weekday() in (0, 1, 2, 3) and dec_24 != xmas_obs:
+        early_closes.add(dec_24)
+
+    if d in holidays:
+        return ("HOLIDAY", "US-Börsenfeiertag (Markt geschlossen)")
+    if d in early_closes:
+        return ("EARLY_CLOSE", "US-Brückentag (Early Close 13:00 ET / 19:00 MEZ)")
+    return ("REGULAR", "Regulärer Handelstag")
+
+
 def is_market_open_mez(symbol, category_hint=""):
     sym_u = str(symbol).upper().strip()
     cat_u = str(category_hint).upper()
@@ -1077,6 +1186,22 @@ def is_market_open_mez(symbol, category_hint=""):
         if (wd == 4 and hr >= 23) or (wd == 5) or (wd == 6 and hr < 23):
             return False
         return True
+
+    # 2.5 US-Feiertags- & Early-Close-Schutz (CME Futures / Rohstoffe & US-Aktien/ETFs)
+    is_cme_us = ("=F" in sym_u) or ("FUTURES" in cat_u) or ("ROHSTOFFE" in cat_u)
+    eu_suffixes = (".DE", ".SW", ".L", ".F", ".MU", ".AS")
+    is_us_instrument = is_cme_us or not any(sym_u.endswith(ext) for ext in eu_suffixes)
+    if is_us_instrument:
+        try:
+            et_tz = zoneinfo.ZoneInfo("America/New_York")
+            now_et = datetime.datetime.now(et_tz)
+        except Exception:
+            now_et = datetime.datetime.now()
+        us_status, _ = get_us_market_day_status(now_et)
+        if us_status == "HOLIDAY":
+            return False
+        if us_status == "EARLY_CLOSE" and now_et.hour >= 13:
+            return False
         
     # 3. CME Futures / Rohstoffe: Geschlossen Fr 23:00 bis So 24:00 Uhr MEZ sowie täglich 23:00 bis 00:00 Uhr MEZ (Maintenance)
     if "=F" in sym_u or any(x in cat_u for x in ["FUTURES", "ROHSTOFFE"]):
@@ -1129,6 +1254,11 @@ def get_fx_rate(from_curr, to_curr="EUR"):
 
 @st.cache_data(ttl=3600)
 def get_economic_calendar():
+    us_status, _ = get_us_market_day_status()
+    if us_status == "HOLIDAY":
+        return True, "US-Börsenfeiertag", "Ganztägig", "CME Futures & US-Aktien geschlossen. Kein regulärer Handel."
+    if us_status == "EARLY_CLOSE":
+        return True, "US-Brückentag (Early Close)", "13:00 ET (19:00 MEZ)", "Verkürzte US-Session! Handelsstopp & EOD-Flatten greifen bereits ab 12:45 ET (18:45 MEZ)."
     today = datetime.date.today()
     
     # 1. NFP (Non-Farm Payrolls): Meistens der erste Freitag im Monat
@@ -3141,6 +3271,21 @@ with st.sidebar:
             elif sym_u_chk_early == "EURUSD=X":
                 session_times = "07:00–12:00 ET"
                 if wd_early >= 5 or not (7.0 <= t_float_early < 12.0): in_session_early = False
+
+        us_status_early, us_reason_early = get_us_market_day_status(now_dt_early)
+        is_cme_fut_early = (
+            ("=F" in sym_u_chk_early)
+            or (normalize_futures_micro_symbol(sym_u_chk_early) is not None)
+            or (actual_asset_class in ["Futures", "Rohstoffe"])
+        )
+        us_session_banner_msg = ""
+        if is_cme_fut_early:
+            if us_status_early == "HOLIDAY":
+                in_session_early = False
+                us_session_banner_msg = "⏸️ US-Börsenfeiertag: Markt geschlossen, kein Einstieg erlaubt."
+            elif us_status_early == "EARLY_CLOSE" and t_float_early >= 12.75:
+                in_session_early = False
+                us_session_banner_msg = "⏸️ US-Brückentag (Early Close): Einstiege nur bis 12:45 ET (18:45 MEZ) erlaubt."
             
         # 2. Asset / Profile Veto Check
         asset_block_reason = ""
@@ -3202,6 +3347,8 @@ with st.sidebar:
         elif not market_open_prop_early or not in_session_early:
             if admin_bypass_prop or is_private_prop:
                 st.success(f"🟢 **Bereit (Bypass):** {sel_pf_acc_name} | {empfehlung['timeframe']}")
+            elif us_session_banner_msg:
+                st.error(us_session_banner_msg)
             else:
                 st.error(f"🔴 **Session inaktiv:** Handelsfenster ist {session_times} MEZ.")
         else:
@@ -3473,7 +3620,26 @@ with st.sidebar:
             elif (sym_core_late == "MCL") and (wd >= 5 or not (8.5 <= t_float < 11.5)): in_session = False
             elif sym_u_chk == "EURUSD=X" and (wd >= 5 or not (7.0 <= t_float < 12.0)): in_session = False
         
-        if not market_open_prop:
+        us_status, us_reason = get_us_market_day_status(now_dt)
+        is_cme_fut_late = (
+            ("=F" in sym_u_chk)
+            or (normalize_futures_micro_symbol(sym_u_chk) is not None)
+            or (actual_asset_class in ["Futures", "Rohstoffe"])
+        )
+        us_session_warn_msg = ""
+        if is_cme_fut_late:
+            if us_status == "HOLIDAY":
+                in_session = False
+                us_session_warn_msg = "⏸️ US-Börsenfeiertag: Markt geschlossen, kein Einstieg erlaubt."
+            elif us_status == "EARLY_CLOSE" and t_float >= 12.75:
+                in_session = False
+                us_session_warn_msg = "⏸️ US-Brückentag (Early Close): Einstiege nur bis 12:45 ET (18:45 MEZ) erlaubt."
+
+        if us_session_warn_msg:
+            st.warning(us_session_warn_msg)
+            if not admin_bypass_prop:
+                btn_disabled_prop = True
+        elif not market_open_prop:
             st.info("⏸️ Markt geschlossen (Wochenende / Außerbörslich). Kurse basieren auf dem letzten Schlusskurs.")
             if not admin_bypass_prop:
                 btn_disabled_prop = True
@@ -6232,12 +6398,17 @@ with tab_dict["lab"]:
         
     active_acc = accounts[st.session_state.active_lab_account]
     cur_mode = active_acc.get("execution_mode", "CO_PILOT")
-    if st.session_state.get("role") != "admin" and cur_mode == "LIVE_AUTO":
+    if st.session_state.get("role") != "admin" and cur_mode in ["LIVE_AUTO", "SEMI_AUTO"]:
         cur_mode = "CO_PILOT"
+    if active_acc.get("exit_profile") == "eod_futures" and cur_mode == "LIVE_AUTO":
+        cur_mode = "SEMI_AUTO"
         
     if cur_mode == "LIVE_AUTO":
         glow_color, glow_shadow = "#EF4444", "0 0 16px rgba(239, 68, 68, 0.8), 0 0 32px rgba(239, 68, 68, 0.4)"
         status_text = "🔴 LIVE DESK [SCHARF — VOLLAUTOMATIK]"
+    elif cur_mode == "SEMI_AUTO":
+        glow_color, glow_shadow = "#F59E0B", "0 0 14px rgba(245, 158, 11, 0.75)"
+        status_text = "🟡 LIVE DESK [SEMI-AUTO — TELEGRAM-FREIGABE]"
     elif cur_mode == "CO_PILOT":
         glow_color, glow_shadow = "#3B82F6", "0 0 14px rgba(59, 130, 246, 0.7)"
         status_text = "🔵 CO-PILOT [MANUELLE AUSFÜHRUNG]"
@@ -6273,12 +6444,24 @@ with tab_dict["lab"]:
     floating_pnl = 0.0
     open_trades_data = []
     
+    _micro_yf_map = {
+        "MNQ": "NQ=F", "MES": "ES=F", "MYM": "YM=F", "M2K": "RTY=F",
+        "MCL": "CL=F", "MGC": "GC=F", "SIL": "SI=F", "M6E": "6E=F"
+    }
+
+    def _map_micro_to_yf(raw_sym):
+        s_clean = str(raw_sym).strip()
+        s_key = s_clean.upper().split()[0] if s_clean else ""
+        return _micro_yf_map.get(s_key, s_clean)
+    
     if not df_open.empty:
         open_symbols = df_open['symbol'].unique().tolist()
+        yf_open_symbols = list(dict.fromkeys(_map_micro_to_yf(s) for s in open_symbols))
         try:
-            df_prices = fetch_market_data(open_symbols, "5d", "1d")
+            df_prices = fetch_market_data(yf_open_symbols, "5d", "1d")
             for idx, row in df_open.iterrows():
                 sym = row['symbol']
+                yf_sym = _map_micro_to_yf(sym)
                 ep = float(row['entry_price'])
                 fx = float(row.get('fx_rate', 1.0))
                 qty = float(row['position_size'])
@@ -6286,12 +6469,12 @@ with tab_dict["lab"]:
                 
                 cur_p = ep
                 if isinstance(df_prices.columns, pd.MultiIndex):
-                    if sym in df_prices.columns.get_level_values(0):
-                        cur_p = df_prices[sym]["Close"].dropna().iloc[-1]
-                    elif sym in df_prices.columns.get_level_values(1):
-                        cur_p = df_prices.xs(sym, level=1, axis=1)["Close"].dropna().iloc[-1]
-                elif "Close" in df_prices:
-                    cur_p = df_prices["Close"].dropna().iloc[-1]
+                    if yf_sym in df_prices.columns.get_level_values(0):
+                        cur_p = float(df_prices[yf_sym]["Close"].dropna().iloc[-1])
+                    elif yf_sym in df_prices.columns.get_level_values(1):
+                        cur_p = float(df_prices.xs(yf_sym, level=1, axis=1)["Close"].dropna().iloc[-1])
+                elif "Close" in df_prices and not df_prices["Close"].dropna().empty:
+                    cur_p = float(df_prices["Close"].dropna().iloc[-1])
                     
                 point_val = float(row.get('point_value', 1.0)) if pd.notna(row.get('point_value')) else 1.0
                 sym_u = str(sym).upper().strip()
@@ -6361,16 +6544,25 @@ with tab_dict["lab"]:
         
         # --- COCKPIT-MODUS-BANNER ---
         cur_mode = active_acc.get("execution_mode", "CO_PILOT")
-        if st.session_state.get("role") != "admin" and cur_mode == "LIVE_AUTO":
+        if st.session_state.get("role") != "admin" and cur_mode in ["LIVE_AUTO", "SEMI_AUTO"]:
             cur_mode = "CO_PILOT"
             active_acc["execution_mode"] = "CO_PILOT"
             st.session_state.config["lab_accounts"][st.session_state.active_lab_account]["execution_mode"] = "CO_PILOT"
+            save_config(st.session_state.config)
+        if active_acc.get("exit_profile") == "eod_futures" and cur_mode == "LIVE_AUTO":
+            cur_mode = "SEMI_AUTO"
+            active_acc["execution_mode"] = "SEMI_AUTO"
+            st.session_state.config["lab_accounts"][st.session_state.active_lab_account]["execution_mode"] = "SEMI_AUTO"
             save_config(st.session_state.config)
             
         if cur_mode == "LIVE_AUTO":
             bg_col, border_col = "rgba(239, 68, 68, 0.15)", "#EF4444"
             mode_text = "🔴 LIVE DESK — SCHARF (VOLLAUTOMATIK)"
             glow_color, glow_shadow = "#EF4444", "0 0 16px rgba(239, 68, 68, 0.8), 0 0 32px rgba(239, 68, 68, 0.4)"
+        elif cur_mode == "SEMI_AUTO":
+            bg_col, border_col = "rgba(245, 158, 11, 0.15)", "#F59E0B"
+            mode_text = "🟡 SEMI-AUTO — TELEGRAM-FREIGABE (1-KLICK)"
+            glow_color, glow_shadow = "#F59E0B", "0 0 14px rgba(245, 158, 11, 0.75)"
         elif cur_mode == "CO_PILOT":
             bg_col, border_col = "rgba(59, 130, 246, 0.15)", "#3B82F6"
             mode_text = "🔵 CO-PILOT — MANUELLE AUSFÜHRUNG"
@@ -6507,13 +6699,16 @@ with tab_dict["lab"]:
                                     break
                         if not found:
                             try:
-                                df_p = fetch_market_data([row['symbol']], "5d", "1d")
+                                yf_sym_card = _map_micro_to_yf(row['symbol'])
+                                df_p = fetch_market_data([yf_sym_card], "5d", "1d")
                                 if not df_p.empty:
                                     if isinstance(df_p.columns, pd.MultiIndex):
-                                        if "Close" in df_p.columns.get_level_values(0):
-                                            cur_p = float(df_p["Close"].dropna().iloc[-1])
-                                        elif row['symbol'] in df_p.columns.levels[0]:
-                                            cur_p = float(df_p[row['symbol']]["Close"].dropna().iloc[-1])
+                                        if yf_sym_card in df_p.columns.get_level_values(0):
+                                            cur_p = float(df_p[yf_sym_card]["Close"].dropna().iloc[-1])
+                                        elif yf_sym_card in df_p.columns.get_level_values(1):
+                                            cur_p = float(df_p.xs(yf_sym_card, level=1, axis=1)["Close"].dropna().iloc[-1])
+                                        elif "Close" in df_p.columns.get_level_values(0):
+                                            cur_p = float(df_p["Close"].dropna().iloc[-1].iloc[0])
                                     elif "Close" in df_p.columns:
                                         cur_p = float(df_p["Close"].dropna().iloc[-1])
                             except Exception:
@@ -6918,7 +7113,7 @@ with tab_dict["lab"]:
                                 so_disabled = in_flight
                                 if in_flight:
                                     popover_lbl = "⏳ Order in Ausführung..."
-                                elif account_exec_mode == "LIVE_AUTO":
+                                elif account_exec_mode in ["LIVE_AUTO", "SEMI_AUTO"]:
                                     popover_lbl = "⚖️ Scale-Out"
                                 else:
                                     popover_lbl = "⚖️ Co-Pilot Scale-Out"
@@ -6926,7 +7121,7 @@ with tab_dict["lab"]:
                             so_nonce = st.session_state.so_nonce_dict.get(orig_id_str, 0)
 
                             with st.popover(popover_lbl, disabled=so_disabled, help=popover_help, use_container_width=True, key=f"pop_so_{orig_id_str}_{so_nonce}"):
-                                if account_exec_mode == "LIVE_AUTO":
+                                if account_exec_mode in ["LIVE_AUTO", "SEMI_AUTO"]:
                                     st.markdown("**⚖️ Teilverkauf & Runner auf Net-BE**")
                                 else:
                                     st.markdown("**⚖️ Co-Pilot Scale-Out & Net-BE**")
@@ -6981,7 +7176,7 @@ with tab_dict["lab"]:
                                 elif is_crypto: asset_unit = "Coins"
                                 else: asset_unit = "Stück (Aktien)"
 
-                                if account_exec_mode != "LIVE_AUTO":
+                                if account_exec_mode not in ["LIVE_AUTO", "SEMI_AUTO"]:
                                     qty_fmt_sold = f"{sold_qty_dyn:g}" if is_future else (f"{sold_qty_dyn:.4f}" if is_crypto else f"{sold_qty_dyn:.2f}")
                                     qty_fmt_rest = f"{rest_qty_dyn:g}" if is_future else (f"{rest_qty_dyn:.4f}" if is_crypto else f"{rest_qty_dyn:.2f}")
                                     
@@ -6999,7 +7194,7 @@ with tab_dict["lab"]:
                                     key=f"so_p_{row['id']}_{idx}"
                                 )
                                 
-                                btn_label = "⚡ Twin-Split ausführen" if account_exec_mode == "LIVE_AUTO" else "✅ Im Broker ausgeführt & Journal teilen"
+                                btn_label = "⚡ Twin-Split ausführen" if account_exec_mode in ["LIVE_AUTO", "SEMI_AUTO"] else "✅ Im Broker ausgeführt & Journal teilen"
                                 
                                 if st.button(btn_label, key=f"btn_so_exec_{row['id']}_{idx}", type="primary", use_container_width=True):
                                     st.session_state.so_nonce_dict[orig_id_str] = so_nonce + 1
@@ -7070,7 +7265,7 @@ with tab_dict["lab"]:
                                                 try: os.remove(tmp_s)
                                                 except OSError: pass
                                                 
-                                    if account_exec_mode == "LIVE_AUTO":
+                                    if account_exec_mode in ["LIVE_AUTO", "SEMI_AUTO"]:
                                         # 2. Spooler-Queue: Atomares Compound-Signal
                                         pending_dir_so = os.getenv("INVARIX_PENDING_DIR") or os.path.join(BASE_DIR, "signals", "01_pending")
                                         os.makedirs(pending_dir_so, exist_ok=True)
@@ -7458,18 +7653,43 @@ with tab_dict["lab"]:
                 with c_s11:
                     new_broker_id = st.text_input("Broker-ID / Kontonummer", value=active_acc.get("broker_account_id", ""), placeholder="DEMO9530978", help="Leer lassen für automatische Erkennung AUTO_ROUTED", key=f"brk_id_{active_acc['id']}")
                 with c_s12:
+                    live_prof_exec_raw = str(st.session_state.get(f"prof_{active_acc['id']}", ""))
+                    if "EOD-Futures" in live_prof_exec_raw:
+                        eff_exit_profile = "eod_futures"
+                    else:
+                        eff_exit_profile = chosen_exit_profile or active_acc.get("exit_profile", "")
+
+                    is_eod_exec_lock = (eff_exit_profile == "eod_futures")
+                    exec_key = f"exec_{active_acc['id']}"
+
                     if st.session_state.get("role") == "admin":
-                        exec_opts = ["LIVE_AUTO", "CO_PILOT", "EXPERIMENT"]
+                        if is_eod_exec_lock:
+                            exec_opts = ["SEMI_AUTO", "CO_PILOT", "EXPERIMENT"]
+                        else:
+                            exec_opts = ["LIVE_AUTO", "SEMI_AUTO", "CO_PILOT", "EXPERIMENT"]
                     else:
                         exec_opts = ["CO_PILOT", "EXPERIMENT"]
-                        
+
                     cur_exec = active_acc.get("execution_mode", "CO_PILOT")
+                    if is_eod_exec_lock and st.session_state.get("role") == "admin":
+                        if cur_exec == "LIVE_AUTO":
+                            cur_exec = "SEMI_AUTO"
+                        if st.session_state.get(exec_key) == "LIVE_AUTO":
+                            st.session_state[exec_key] = "SEMI_AUTO"
+
+                    if exec_key in st.session_state and st.session_state[exec_key] not in exec_opts:
+                        st.session_state[exec_key] = "SEMI_AUTO" if (is_eod_exec_lock and st.session_state.get("role") == "admin") else "CO_PILOT"
+
                     if cur_exec not in exec_opts:
                         cur_exec = "CO_PILOT"
-                        
-                    new_exec_mode = st.selectbox("Ausführungs-Modus", exec_opts, index=exec_opts.index(cur_exec), key=f"exec_{active_acc['id']}")
+
+                    new_exec_mode = st.selectbox("Ausführungs-Modus", exec_opts, index=exec_opts.index(cur_exec), key=exec_key)
+                    if is_eod_exec_lock and st.session_state.get("role") == "admin":
+                        st.caption("🔒 EOD-Futures: LIVE_AUTO gesperrt (nur SEMI_AUTO / CO_PILOT)")
 
                 if st.button("💾 Kontodaten speichern", use_container_width=True, key=f"btn_save_acc_{active_acc['id']}"):
+                    if chosen_exit_profile == "eod_futures" and new_exec_mode == "LIVE_AUTO":
+                        new_exec_mode = "SEMI_AUTO"
                     prev_exit_profile = active_acc.get("exit_profile")
                     prev_account_size = float(active_acc.get("account_size", 0.0))
                     prev_trail_dd_raw = active_acc.get("trail_dd")
@@ -8026,14 +8246,30 @@ with tab_dict["lab"]:
                         for user_folder in os.listdir(USERS_DIR):
                             uf_path = os.path.join(USERS_DIR, user_folder)
                             if os.path.isdir(uf_path):
+                                user_dfs = []
                                 j_path = os.path.join(uf_path, "trade_journal.csv")
-                                if os.path.exists(j_path):
-                                    df_user = pd.read_csv(j_path)
-                                    df_c = df_user[df_user['status'] == 'CLOSED'].copy()
-                                    if not df_c.empty:
-                                        df_c['Mandant'] = f"Mandant {mandant_idx}"
-                                        all_closed.append(df_c)
-                                        mandant_idx += 1
+                                nc_j_path = os.path.join(uf_path, "netcup_trade_journal.csv")
+                                for src_path in (j_path, nc_j_path):
+                                    if os.path.exists(src_path):
+                                        try:
+                                            df_part = pd.read_csv(src_path)
+                                            if not df_part.empty:
+                                                user_dfs.append(df_part)
+                                        except Exception:
+                                            pass
+                                if user_dfs:
+                                    df_user = pd.concat(user_dfs, ignore_index=True)
+                                    if 'id' in df_user.columns:
+                                        df_user = df_user.drop_duplicates(subset=['id'], keep='last')
+                                    if 'status' in df_user.columns:
+                                        df_c = df_user[df_user['status'] == 'CLOSED'].copy()
+                                        if not df_c.empty:
+                                            df_c['pnl_eur'] = pd.to_numeric(df_c['pnl_eur'], errors='coerce').fillna(0.0)
+                                            if 'r_multiple' in df_c.columns:
+                                                df_c['r_multiple'] = pd.to_numeric(df_c['r_multiple'], errors='coerce')
+                                            df_c['Mandant'] = f"Mandant {mandant_idx}"
+                                            all_closed.append(df_c)
+                                            mandant_idx += 1
                         
                         if all_closed:
                             df_master = pd.concat(all_closed, ignore_index=True)
@@ -8763,254 +8999,318 @@ with tab_fleet:
             snapshot_mode = "FALLBACK"
             snapshot = {}
             
-    # 2. Schema-Normalisierung (Netcup vs. Hetzner Formate)
-    config_accounts = st.session_state.config.get("lab_accounts", {})
+    def _safe_float(val, default=0.0):
+        try:
+            if val is None or pd.isna(val):
+                return default
+            return float(val)
+        except (TypeError, ValueError):
+            return default
+
+    # 2. Strikte Netcup-Hoheit (Prop-Desks) & Hybride Privatkonten
     fleet_accounts = {}
-    
+    used_snap_keys = set()
+    snap_accs = snapshot.get("accounts", {}) if (snapshot_mode in ["LIVE", "STALE"] and isinstance(snapshot.get("accounts"), dict)) else {}
+
+    if snapshot_mode in ["LIVE", "STALE"] and snap_accs:
+        for s_k, s_a in snap_accs.items():
+            if not isinstance(s_a, dict):
+                continue
+            cls_probe = " ".join([
+                str(s_a.get("account_type", "")),
+                str(s_a.get("exit_profile", "")),
+                str(s_a.get("account_name", "")),
+                str(s_k)
+            ]).lower()
+
+            if any(kw in cls_probe for kw in ("eod_futures", "eod", "mffu", "tradeify")):
+                a_class = "eod_futures"
+                def_currency = "USD"
+            elif "apex" in cls_probe:
+                a_class = "apex"
+                def_currency = "USD"
+            elif "ftmo" in cls_probe:
+                a_class = "ftmo"
+                def_currency = "EUR"
+            else:
+                continue
+
+            raw_cap = s_a.get("account_size")
+            if _safe_float(raw_cap, 0.0) <= 0.0:
+                raw_cap = s_a.get("capital")
+            start_cap = _safe_float(raw_cap, 50000.0)
+            if start_cap <= 0.0:
+                start_cap = 50000.0
+
+            if a_class == "eod_futures":
+                def_daily, def_trail = 0.0, start_cap * 0.03
+            elif a_class == "apex":
+                def_daily, def_trail = start_cap * 0.025, start_cap * 0.05
+            else:
+                def_daily, def_trail = start_cap * 0.05, start_cap * 0.10
+
+            raw_dl = s_a.get("daily_loss_limit")
+            if raw_dl is None:
+                raw_dl = s_a.get("daily_loss")
+            if raw_dl is not None:
+                dl_parsed = _safe_float(raw_dl, def_daily)
+                daily_loss = 0.0 if (a_class == "eod_futures" and dl_parsed <= 0.0) else (dl_parsed if dl_parsed > 0.0 else def_daily)
+            else:
+                daily_loss = def_daily
+
+            raw_mdd = s_a.get("max_dd_limit")
+            if _safe_float(raw_mdd, 0.0) <= 0.0:
+                raw_mdd = s_a.get("max_trailing_dd")
+            if _safe_float(raw_mdd, 0.0) <= 0.0:
+                raw_mdd = s_a.get("trail_dd")
+            trail_dd = _safe_float(raw_mdd, def_trail)
+            if trail_dd <= 0.0:
+                trail_dd = def_trail
+
+            currency = str(s_a.get("currency", "")).strip() or def_currency
+            acc_name = str(s_a.get("account_name", "")).strip() or str(s_k)
+            broker_acc_id = str(s_a.get("account_id", "")).strip()
+            equity_val = _safe_float(s_a.get("equity"), start_cap)
+            balance_val = _safe_float(s_a.get("balance"), equity_val)
+            daily_pnl_val = _safe_float(s_a.get("daily_pnl"), 0.0)
+            daily_buf_val = _safe_float(s_a.get("daily_buffer"), daily_loss)
+            max_dd_buf_val = _safe_float(s_a.get("max_dd_buffer"), trail_dd)
+            hwm_val = _safe_float(s_a.get("high_watermark"), max(start_cap, equity_val))
+            exec_mode_val = str(s_a.get("execution_mode", "")).strip() or "CO_PILOT"
+            risk_gear_val = str(s_a.get("risk_gear", "")).strip() or "EVAL_TURBO"
+            tks = s_a.get("tickers") if isinstance(s_a.get("tickers"), list) else (s_a.get("whitelist") if isinstance(s_a.get("whitelist"), list) else [])
+
+            acc_id = f"snap_{s_k}"
+            used_snap_keys.add(s_k)
+            fleet_accounts[acc_id] = {
+                "id": acc_id,
+                "name": acc_name,
+                "broker_account_id": broker_acc_id,
+                "class": a_class,
+                "risk_gear": risk_gear_val,
+                "start_cap": start_cap,
+                "daily_loss": daily_loss,
+                "trail_dd": trail_dd,
+                "currency": currency,
+                "execution_mode": exec_mode_val,
+                "tickers": tks,
+                "equity": equity_val,
+                "balance": balance_val,
+                "daily_pnl": daily_pnl_val,
+                "daily_buffer": daily_buf_val,
+                "max_dd_buffer": max_dd_buf_val,
+                "high_watermark": hwm_val,
+                "snapshot_mode": snapshot_mode,
+                "broker_connected": bool(s_a.get("live_connected", False)),
+                "snap_data": s_a
+            }
+
+    # Private Depots & Swing-Konten (Hybrid-fähig: Snapshot-Match oder lokales Hetzner-Journal)
+    config_accounts = st.session_state.config.get("lab_accounts", {})
     for acc_id, a_data in config_accounts.items():
-        a_type_raw = str(a_data.get("account_type", "")).lower()
-        exit_prof = str(a_data.get("exit_profile", "")).lower()
-        tax_cat = str(a_data.get("tax_category", "")).lower()
-        
-        a_name_raw = str(a_data.get("name", "")).lower()
-        _eod_kws_f = ("eod_futures", "eod futures", "eod-futures", "mffu", "tradeify")
-        
-        if tax_cat == "private": a_class = "private"
-        elif exit_prof == "eod_futures" or any(kw in a_type_raw or kw in a_name_raw for kw in _eod_kws_f): a_class = "eod_futures"
-        elif exit_prof in ["apex_lock", "apex_commodity_scale"]: a_class = "apex"
-        elif exit_prof == "ftmo_swing": a_class = "ftmo"
-        elif "apex" in a_type_raw: a_class = "apex"
-        elif "ftmo" in a_type_raw: a_class = "ftmo"
-        else: a_class = "private"
-        
-        start_cap = float(a_data.get("account_size", a_data.get("capital", 10000.0)))
-        
-        if a_class == "eod_futures": def_daily, def_trail, currency = 0.0, start_cap * 0.03, "USD"
-        elif a_class == "apex": def_daily, def_trail, currency = start_cap * 0.025, start_cap * 0.05, "USD"
-        elif a_class == "ftmo": def_daily, def_trail, currency = start_cap * 0.05, start_cap * 0.10, "EUR"
-        else: def_daily, def_trail, currency = 0.0, 0.0, "EUR"
-        
-        daily_loss = float(a_data.get("daily_loss", a_data.get("daily_loss_limit", def_daily)))
-        trail_dd = float(a_data.get("trail_dd", a_data.get("max_trailing_dd", def_trail)))
-        
-        fleet_accounts[acc_id] = {
+        if str(a_data.get("tax_category", "")).lower() != "private":
+            continue
+        start_cap = _safe_float(a_data.get("account_size", a_data.get("capital")), 10000.0)
+        fa_priv = {
             "id": acc_id,
             "name": a_data.get("name", "Unknown"),
             "broker_account_id": str(a_data.get("broker_account_id", "")).strip(),
-            "class": a_class,
+            "class": "private",
             "risk_gear": a_data.get("risk_gear", "EVAL_TURBO"),
             "start_cap": start_cap,
-            "daily_loss": daily_loss,
-            "trail_dd": trail_dd,
-            "currency": currency,
+            "daily_loss": 0.0,
+            "trail_dd": 0.0,
+            "currency": "EUR",
             "execution_mode": a_data.get("execution_mode", "CO_PILOT"),
             "tickers": a_data.get("tickers", []),
             "equity": start_cap,
             "balance": start_cap,
             "daily_pnl": 0.0,
-            "daily_buffer": daily_loss,
-            "max_dd_buffer": trail_dd,
+            "daily_buffer": 0.0,
+            "max_dd_buffer": 0.0,
             "high_watermark": start_cap,
-            "live_connected": False
+            "snapshot_mode": "FALLBACK",
+            "broker_connected": False
         }
 
-    # 3. Identity-Matching & Split-Brain Schutz (Live-Daten Zuordnung)
-    assigned_snap_keys = set()
-    if snapshot_mode in ["LIVE", "STALE"] and "accounts" in snapshot:
-        snap_accs = snapshot["accounts"]
-        
-        # Prio 1: Broker Account ID
-        for acc_id, fa in fleet_accounts.items():
-            if fa["broker_account_id"]:
+        if snapshot_mode in ["LIVE", "STALE"] and snap_accs:
+            matched_priv_snap = None
+            if fa_priv["broker_account_id"]:
                 for s_k, s_a in snap_accs.items():
-                    if s_k not in assigned_snap_keys and str(s_a.get("account_id", "")).lower() == fa["broker_account_id"].lower():
-                        fa["snap_data"] = s_a
-                        assigned_snap_keys.add(s_k)
+                    if s_k not in used_snap_keys and isinstance(s_a, dict) and str(s_a.get("account_id", "")).strip().lower() == fa_priv["broker_account_id"].lower():
+                        matched_priv_snap = (s_k, s_a)
                         break
-        # Prio 2: Kontoname
-        for acc_id, fa in fleet_accounts.items():
-            if "snap_data" not in fa:
+            if not matched_priv_snap:
                 for s_k, s_a in snap_accs.items():
-                    if s_k not in assigned_snap_keys and str(s_a.get("account_name", "")).lower() == fa["name"].lower():
-                        fa["snap_data"] = s_a
-                        assigned_snap_keys.add(s_k)
+                    if s_k not in used_snap_keys and isinstance(s_a, dict) and str(s_a.get("account_name", "")).strip().lower() == fa_priv["name"].lower():
+                        matched_priv_snap = (s_k, s_a)
                         break
-        # Prio 3: Kontoklasse (Fallback)
-        for acc_id, fa in fleet_accounts.items():
-            if "snap_data" not in fa:
-                for s_k, s_a in snap_accs.items():
-                    if s_k not in assigned_snap_keys and (s_k.startswith(fa["class"]) or (fa["class"] == "eod_futures" and s_k == "apex")):
-                        fa["snap_data"] = s_a
-                        assigned_snap_keys.add(s_k)
-                        break
+            if matched_priv_snap:
+                s_k_p, s_a_p = matched_priv_snap
+                used_snap_keys.add(s_k_p)
+                fa_priv["snap_data"] = s_a_p
+                fa_priv["snapshot_mode"] = snapshot_mode
+                fa_priv["equity"] = _safe_float(s_a_p.get("equity"), fa_priv["equity"])
+                fa_priv["balance"] = _safe_float(s_a_p.get("balance"), fa_priv["balance"])
+                fa_priv["broker_connected"] = bool(s_a_p.get("live_connected", False))
+                if str(s_a_p.get("currency", "")).strip():
+                    fa_priv["currency"] = str(s_a_p.get("currency", "")).strip()
 
-    # 4. Journal-Zuordnung für offene Trades (Fallback / Risiko-Metriken)
-    df_j = load_trade_journal()
-    assigned_trades = {acc_id: [] for acc_id in fleet_accounts}
-    if not df_j.empty:
-        for _, r in df_j.iterrows():
-            j_acc = str(r.get("account_name", ""))
-            sym = str(r.get("symbol", ""))
+        fleet_accounts[acc_id] = fa_priv
+
+    # 3. Offene Trades zuordnen (Prop-Desks aus Netcup-Journal + open_positions Fallback; Privat aus lokalem Journal)
+    open_trades_fleet = {acc_id: [] for acc_id in fleet_accounts}
+    assigned_private_trades = {acc_id: [] for acc_id, fa in fleet_accounts.items() if fa["class"] == "private"}
+
+    netcup_journal_path = get_user_file("netcup_trade_journal.csv")
+    df_netcup_j = pd.DataFrame()
+    if os.path.exists(netcup_journal_path):
+        try:
+            df_netcup_j = pd.read_csv(netcup_journal_path)
+        except Exception:
+            df_netcup_j = pd.DataFrame()
+
+    prop_ids = [aid for aid, fa in fleet_accounts.items() if fa["class"] in ["ftmo", "apex", "eod_futures"]]
+    if not df_netcup_j.empty and "status" in df_netcup_j.columns and prop_ids:
+        df_nc_open = df_netcup_j[df_netcup_j["status"].astype(str).str.upper() == "OPEN"]
+        for _, r in df_nc_open.iterrows():
+            j_acc = str(r.get("account_name", "")).strip()
+            sym = str(r.get("symbol", "")).strip()
+            sym_u = sym.upper()
             matched_acc_id = None
-            
-            for acc_id, fa in fleet_accounts.items():
-                if j_acc == fa["name"] or (fa["broker_account_id"] and j_acc == fa["broker_account_id"]):
+
+            for acc_id in prop_ids:
+                fa = fleet_accounts[acc_id]
+                if j_acc.lower() == fa["name"].lower() or (fa["broker_account_id"] and j_acc.lower() == fa["broker_account_id"].lower()):
                     matched_acc_id = acc_id
                     break
-            
-            if not matched_acc_id and j_acc in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
-                for acc_id, fa in fleet_accounts.items():
-                    if fa["execution_mode"] == "LIVE_AUTO" and sym in fa["tickers"]:
+
+            if not matched_acc_id and j_acc.upper() in ["AUTO_ROUTED", "DEMO_SPOOLER", "AUTO"]:
+                for acc_id in prop_ids:
+                    fa = fleet_accounts[acc_id]
+                    tks_u = [str(t).upper().strip() for t in fa["tickers"]]
+                    if sym_u in tks_u:
                         matched_acc_id = acc_id
                         break
                 if not matched_acc_id:
-                    is_j_forex = sym.endswith("=X")
-                    for acc_id, fa in fleet_accounts.items():
+                    is_j_forex = sym_u.endswith("=X") or (len(sym_u) == 6 and sym_u.isalpha())
+                    for acc_id in prop_ids:
+                        fa = fleet_accounts[acc_id]
                         if is_j_forex and fa["class"] == "ftmo":
                             matched_acc_id = acc_id
                             break
                         elif not is_j_forex and fa["class"] in ["apex", "eod_futures"]:
                             matched_acc_id = acc_id
                             break
-                            
-            if matched_acc_id:
-                assigned_trades[matched_acc_id].append(r)
 
-    # 5. RESONO-Puffer-Parität & Mathematische Schutzschilde
+            if matched_acc_id:
+                open_trades_fleet[matched_acc_id].append(r.to_dict())
+
+    for acc_id in prop_ids:
+        if not open_trades_fleet[acc_id]:
+            snap_open_pos = fleet_accounts[acc_id].get("snap_data", {}).get("open_positions", [])
+            if isinstance(snap_open_pos, list) and len(snap_open_pos) > 0:
+                for pos in snap_open_pos:
+                    if not isinstance(pos, dict):
+                        continue
+                    open_trades_fleet[acc_id].append({
+                        "status": "OPEN",
+                        "symbol": pos.get("symbol") or pos.get("instrument") or "N/A",
+                        "direction": pos.get("direction") or pos.get("side") or pos.get("type") or "N/A",
+                        "position_size": pos.get("position_size", pos.get("qty", pos.get("volume", pos.get("quantity", 0)))),
+                        "entry_price": pos.get("entry_price", pos.get("price_open", pos.get("avg_price", 0.0))),
+                        "current_sl": pos.get("current_sl", pos.get("sl", pos.get("sl_price", 0.0))),
+                        "current_risk_eur": _safe_float(pos.get("current_risk_eur", pos.get("planned_risk_eur", pos.get("risk_eur", 0.0))), 0.0),
+                        "planned_risk_eur": _safe_float(pos.get("planned_risk_eur", pos.get("risk_eur", 0.0)), 0.0)
+                    })
+
+    df_j_local = load_trade_journal()
+    if not df_j_local.empty and assigned_private_trades:
+        for _, r in df_j_local.iterrows():
+            j_acc = str(r.get("account_name", "")).strip()
+            for acc_id in assigned_private_trades:
+                fa = fleet_accounts[acc_id]
+                if j_acc == fa["name"] or (fa["broker_account_id"] and j_acc == fa["broker_account_id"]):
+                    assigned_private_trades[acc_id].append(r)
+                    if str(r.get("status", "")).upper() == "OPEN":
+                        open_trades_fleet[acc_id].append(r.to_dict())
+                    break
+
+    # 4. RESONO-Puffer-Parität, Freeze-Status & Flotten-Kennzahlen
     fx_usd_eur = get_fx_rate("$", "EUR")
     fx_usd_eur = fx_usd_eur if fx_usd_eur > 0 else 1.0
-    
+
     total_fleet_buffer_eur = 0.0
     daily_pnl_ftmo_eur = 0.0
     daily_pnl_apex_usd = 0.0
     usd_cluster_open_count = 0
     total_active_risk_eur = 0.0
-    
+
     for acc_id, fa in fleet_accounts.items():
-        df_my = pd.DataFrame(assigned_trades[acc_id]) if assigned_trades[acc_id] else pd.DataFrame(columns=df_j.columns)
-        if "snap_data" in fa and snapshot_mode in ["LIVE", "STALE"]:
-            fa["snapshot_mode"] = snapshot_mode
-            fa["broker_connected"] = fa["snap_data"].get("live_connected", False)
-        else:
-            fa["snapshot_mode"] = "FALLBACK"
-            fa["broker_connected"] = False
-        
-        # Split-Brain Regel
-        if fa["snapshot_mode"] in ["LIVE", "STALE"]:
-            sd = fa["snap_data"]
-            try:
-                cap_val = float(sd.get("account_size") or sd.get("capital") or 0)
-                if cap_val > 0: fa["start_cap"] = cap_val
-            except Exception: pass
-            
-            try:
-                dl_val = float(sd.get("daily_loss_limit") or sd.get("daily_loss") or 0)
-                if fa["class"] == "eod_futures" and dl_val <= 0:
-                    fa["daily_loss"] = 0.0
-                elif dl_val > 0:
-                    fa["daily_loss"] = dl_val
-            except Exception: pass
-            
-            try:
-                mdd_val = float(sd.get("max_dd_limit") or sd.get("max_trailing_dd") or sd.get("trail_dd") or 0)
-                if mdd_val > 0: fa["trail_dd"] = mdd_val
-            except Exception: pass
-            
-            if str(sd.get("account_id", "")).strip(): fa["broker_account_id"] = str(sd.get("account_id", "")).strip()
-            if str(sd.get("account_name", "")).strip(): fa["name"] = str(sd.get("account_name", "")).strip()
-            if str(sd.get("execution_mode", "")).strip(): fa["execution_mode"] = str(sd.get("execution_mode", "")).strip()
-            if str(sd.get("currency", "")).strip(): fa["currency"] = str(sd.get("currency", "")).strip()
-            
-            tks = sd.get("tickers") or sd.get("whitelist")
-            if isinstance(tks, list) and len(tks) > 0: fa["tickers"] = tks
-            
-            fa["equity"] = float(sd.get("equity", fa["equity"]))
-            fa["balance"] = float(sd.get("balance", fa["balance"]))
-            fa["daily_buffer"] = float(sd.get("daily_buffer", fa["daily_buffer"]))
-            fa["max_dd_buffer"] = float(sd.get("max_dd_buffer", fa["max_dd_buffer"]))
-            fa["daily_pnl"] = float(sd.get("daily_pnl", 0.0))
-            if str(sd.get("risk_gear", "")).strip():
-                fa["risk_gear"] = str(sd.get("risk_gear", "")).strip()
-            if fa["class"] in ["apex", "eod_futures"]:
-                fa["high_watermark"] = float(sd.get("high_watermark", fa["high_watermark"]))
-        else:
+        if fa["class"] == "private" and fa["snapshot_mode"] == "FALLBACK":
+            df_my = pd.DataFrame(assigned_private_trades.get(acc_id, [])) if assigned_private_trades.get(acc_id) else pd.DataFrame(columns=df_j_local.columns)
             realized_pnl_eur, today_realized_pnl_eur, floating_pnl_eur = 0.0, 0.0, 0.0
             today_str = datetime.datetime.now().strftime("%d/%m/%Y")
-            
+
             if not df_my.empty:
                 df_trading = df_my[~df_my['setup_type'].isin(['DEPOSIT', 'WITHDRAWAL', 'PAYOUT', 'CHALLENGE_FEE'])]
                 df_closed = df_trading[df_trading['status'] == 'CLOSED']
-                realized_pnl_eur = float(df_closed['pnl_eur'].sum()) if not df_closed.empty else 0.0
+                realized_pnl_eur = _safe_float(df_closed['pnl_eur'].sum(), 0.0) if not df_closed.empty else 0.0
                 df_today = df_closed[df_closed['exit_date'].astype(str).str.contains(today_str, na=False)]
-                today_realized_pnl_eur = float(df_today['pnl_eur'].sum()) if not df_today.empty else 0.0
-                
+                today_realized_pnl_eur = _safe_float(df_today['pnl_eur'].sum(), 0.0) if not df_today.empty else 0.0
+
                 df_open = df_trading[df_trading['status'] == 'OPEN']
                 if not df_open.empty:
                     try:
                         df_prices = fetch_market_data(df_open['symbol'].unique().tolist(), "5d", "1d")
                         for _, r in df_open.iterrows():
                             sym = r['symbol']
-                            ep = float(r['entry_price'])
-                            fx = float(r.get('fx_rate', 1.0))
-                            qty = float(r['position_size'])
+                            ep = _safe_float(r['entry_price'], 0.0)
+                            fx = _safe_float(r.get('fx_rate', 1.0), 1.0)
+                            qty = _safe_float(r['position_size'], 0.0)
                             dir_m = 1 if r['direction'] == 'Long' else -1
                             cur_p = ep
-                            
+
                             if isinstance(df_prices.columns, pd.MultiIndex):
                                 if sym in df_prices.columns.get_level_values(0): cur_p = df_prices[sym]["Close"].dropna().iloc[-1]
                                 elif sym in df_prices.columns.get_level_values(1): cur_p = df_prices.xs(sym, level=1, axis=1)["Close"].dropna().iloc[-1]
                             elif "Close" in df_prices: cur_p = df_prices["Close"].dropna().iloc[-1]
-                            
-                            pv = float(r.get('point_value', 1.0)) if pd.notna(r.get('point_value')) else 1.0
+
+                            pv = _safe_float(r.get('point_value', 1.0), 1.0)
                             sym_u = str(sym).upper().strip()
-                            
+
                             if any(sym_u.startswith(pair) for pair in ["USDJPY", "USDCAD", "USDCHF"]): raw_pnl = ((cur_p - ep) / cur_p) * qty * pv * dir_m if cur_p > 0 else 0.0
                             elif sym_u.startswith("EURJPY"): raw_pnl = (((cur_p - ep) / cur_p) / fx) * qty * pv * dir_m if (cur_p > 0 and fx > 0) else 0.0
                             else: raw_pnl = (cur_p - ep) * qty * pv * dir_m
-                            
-                            floating_pnl_eur += (raw_pnl * fx) - float(r.get('est_fees_eur', 0.0))
+
+                            floating_pnl_eur += (raw_pnl * fx) - _safe_float(r.get('est_fees_eur', 0.0), 0.0)
                     except Exception:
                         pass
-                        
+
             total_pnl_eur = realized_pnl_eur + floating_pnl_eur
-            daily_pnl_eur = today_realized_pnl_eur + floating_pnl_eur
-            
-            if fa["currency"] == "USD":
-                fa["equity"] = fa["start_cap"] + (total_pnl_eur / fx_usd_eur)
-                fa["daily_pnl"] = daily_pnl_eur / fx_usd_eur
-            else:
-                fa["equity"] = fa["start_cap"] + total_pnl_eur
-                fa["daily_pnl"] = daily_pnl_eur
-                
-            if fa["class"] in ["apex", "eod_futures"]:
-                saved_hwm = fa["start_cap"]
-                nt8_path = get_user_file("nt8_account_state.json")
-                if os.path.exists(nt8_path):
-                    try:
-                        with open(nt8_path, "r") as f:
-                            saved_hwm = float(json.load(f).get(fa["broker_account_id"], {}).get("high_watermark", saved_hwm))
-                    except Exception: pass
-                
-                hwm = max(saved_hwm, fa["start_cap"], fa["equity"])
-                fa["high_watermark"] = hwm
-                raw_ko = hwm - fa["trail_dd"]
-                einrast = (fa["start_cap"] + (fa["start_cap"] * 0.001)) if fa["class"] == "eod_futures" else (fa["start_cap"] + 100.0)
-                ko_floor = einrast if raw_ko >= einrast else raw_ko
-                fa["max_dd_buffer"] = max(0.0, fa["equity"] - ko_floor)
-            elif fa["class"] == "ftmo":
-                max_dd_floor = fa["start_cap"] - fa["trail_dd"]
-                fa["max_dd_buffer"] = max(0.0, fa["equity"] - max_dd_floor)
-            else:
-                fa["max_dd_buffer"] = fa["trail_dd"]
-                
-            fa["daily_buffer"] = max(0.0, min(fa["daily_loss"], fa["daily_loss"] + min(0.0, fa["daily_pnl"])))
-            
-        daily_ratio = fa["daily_buffer"] / fa["daily_loss"] if fa["daily_loss"] > 0 else 1.0
-        dd_ratio = fa["max_dd_buffer"] / fa["trail_dd"] if fa["trail_dd"] > 0 else 1.0
-        daily_ratio = max(0.0, min(1.0, daily_ratio))
-        dd_ratio = max(0.0, min(1.0, dd_ratio))
-        fa["effective_ratio"] = min(daily_ratio, dd_ratio)
-        
+            fa["equity"] = fa["start_cap"] + total_pnl_eur
+            fa["daily_pnl"] = today_realized_pnl_eur + floating_pnl_eur
+
+        daily_ratio = max(0.0, fa["daily_buffer"] / fa["daily_loss"]) if fa["daily_loss"] > 0 else None
+        dd_ratio = max(0.0, fa["max_dd_buffer"] / fa["trail_dd"]) if fa["trail_dd"] > 0 else 1.0
+        if fa["class"] == "eod_futures" or daily_ratio is None:
+            fa["effective_ratio"] = dd_ratio
+        else:
+            fa["effective_ratio"] = min(daily_ratio, dd_ratio)
+
+        if fa["class"] in ["apex", "eod_futures"]:
+            hwm = fa["high_watermark"]
+            raw_ko = hwm - fa["trail_dd"]
+            lock_offset = (fa["start_cap"] * 0.001) if fa["class"] == "eod_futures" else 100.0
+            lock_level = fa["start_cap"] + lock_offset
+            is_frozen = (fa["trail_dd"] > 0 and raw_ko >= lock_level)
+            ko_floor = lock_level if is_frozen else raw_ko
+        else:
+            is_frozen = False
+            ko_floor = 0.0
+        fa["is_frozen"] = is_frozen
+        fa["ko_floor"] = ko_floor
+
         if fa["class"] in ["apex", "eod_futures"]:
             if fa["effective_ratio"] >= 0.60: fa["zone"] = "GREEN"
             elif fa["effective_ratio"] >= 0.32: fa["zone"] = "YELLOW"
@@ -9021,81 +9321,88 @@ with tab_fleet:
             else: fa["zone"] = "RED"
         else:
             fa["zone"] = "PRIVATE"
-            
-        bottleneck_native = fa["max_dd_buffer"] if (fa["class"] == "eod_futures" or fa["daily_loss"] <= 0) else min(fa["daily_buffer"], fa["max_dd_buffer"])
-        if fa["currency"] == "USD":
-            total_fleet_buffer_eur += bottleneck_native * fx_usd_eur
-            daily_pnl_apex_usd += fa["daily_pnl"]
-        else:
-            total_fleet_buffer_eur += bottleneck_native
-            if fa["class"] == "ftmo":
+
+        if fa["class"] in ["apex", "eod_futures", "ftmo"]:
+            bottleneck_native = fa["max_dd_buffer"] if (fa["class"] == "eod_futures" or fa["daily_loss"] <= 0) else min(fa["daily_buffer"], fa["max_dd_buffer"])
+            if fa["currency"] == "USD":
+                total_fleet_buffer_eur += bottleneck_native * fx_usd_eur
+            else:
+                total_fleet_buffer_eur += bottleneck_native
+
+            if fa["class"] in ["apex", "eod_futures"]:
+                daily_pnl_apex_usd += fa["daily_pnl"]
+            elif fa["class"] == "ftmo":
                 daily_pnl_ftmo_eur += fa["daily_pnl"]
-                
-        if not df_my.empty:
-            df_open_my = df_my[df_my['status'] == 'OPEN']
-            for _, r in df_open_my.iterrows():
-                total_active_risk_eur += float(r.get("current_risk_eur", r.get("planned_risk_eur", 0.0)))
-                if fa["class"] == "ftmo" and "USD" in str(r.get("symbol", "")).upper():
-                    usd_cluster_open_count += 1
-                    
+
+        for t_open in open_trades_fleet[acc_id]:
+            total_active_risk_eur += _safe_float(t_open.get("current_risk_eur", t_open.get("planned_risk_eur", 0.0)), 0.0)
+            if fa["class"] == "ftmo" and "USD" in str(t_open.get("symbol", "")).upper():
+                usd_cluster_open_count += 1
+
     st.markdown("### 🚀 Multi-Account Flotten-Cockpit")
     kill_switch = snapshot.get("kill_switch_active", False) if snapshot_mode in ["LIVE", "STALE"] else False
     node_name = snapshot.get("node_name", "Unknown Node")
     exec_mode = snapshot.get("executor_mode", "UNKNOWN")
     upd_at = snapshot.get("updated_at", "")
-    
+
     raw_node = str(node_name).strip()
     host_label = "Netcup Execution Host" if not raw_node or raw_node == "Unknown Node" else raw_node
     stand_disp = snapshot_stand_str if snapshot_stand_str else upd_at
-    
+
     if snapshot_mode == "LIVE":
         st.success(f"🟢 **LIVE** · {host_label} · Stand: {stand_disp}")
     elif snapshot_mode == "STALE":
         st.warning(f"⚠️ **NICHT LIVE** ({snapshot_age_str}) · {host_label} · Stand: {stand_disp} — Daten eingefroren bis zum nächsten Sync")
     else:
-        st.info("📁 **FALLBACK** · Lokales Journal & Konfiguration (Noch kein Live-Snapshot empfangen)")
+        st.info("📁 **FALLBACK** · Noch kein Live-Snapshot vom Netcup-Host empfangen")
 
     if kill_switch:
         st.error(f"🚨 **LIVE-DAEMON AKTIV — NOTAUS EINGELEITET!**")
-        
+
     c1, c2, c3, c4 = st.columns(4)
-    
+
     prop_accs = [fa for fa in fleet_accounts.values() if fa["class"] in ["apex", "eod_futures", "ftmo"]]
     red_count = sum(1 for fa in prop_accs if fa["zone"] == "RED")
     yellow_count = sum(1 for fa in prop_accs if fa["zone"] == "YELLOW")
     green_count = sum(1 for fa in prop_accs if fa["zone"] == "GREEN")
-    
+    disconnected_count = sum(
+        1 for fa in prop_accs
+        if fa.get("snapshot_mode") in ["LIVE", "STALE"] and not bool(fa.get("broker_connected", False))
+    )
+
     if kill_switch:
         health_label = "🔴 NOTAUS AKTIV"
     elif red_count > 0:
         health_label = "🔴 VETO / ROTE ZONE"
+    elif disconnected_count > 0:
+        health_label = "🔌 BROKER GETRENNT"
     elif yellow_count > 0:
         health_label = "🟡 SCHONMODUS"
     elif len(prop_accs) > 0:
         health_label = "🟢 ALL SYSTEMS GO"
     else:
         health_label = "⚪ PRIVAT-MODUS"
-        
+
     delta_health = f"{green_count} 🟢 | {yellow_count} 🟡 | {red_count} 🔴"
+    if disconnected_count > 0:
+        delta_health += f" | 🔌 {disconnected_count} Broker getrennt"
     if snapshot_mode == "STALE":
         delta_health += " | ⚠️ Stand nicht live"
-        
+
     c1.metric("Flotten-Gesundheit", health_label, delta_health, delta_color="off")
-    
-    open_trades_fleet = {aid: [t for t in assigned_trades[aid] if t.get("status") == "OPEN"] for aid in fleet_accounts}
+
     total_open_count = sum(len(txs) for txs in open_trades_fleet.values())
-    
     ftmo_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "ftmo")
     apex_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] in ["apex", "eod_futures"])
     priv_open = sum(len(open_trades_fleet[aid]) for aid, fa in fleet_accounts.items() if fa["class"] == "private")
     usd_cluster_lbl = "🟡 USD-Cluster Belegt (1/1)" if usd_cluster_open_count >= 1 else "🟢 USD-Cluster Frei (0/1)"
-    
-    c2.metric("Offene Positionen", f"{total_open_count}", f"FTMO: {ftmo_open} | Apex: {apex_open} | Privat: {priv_open} | {usd_cluster_lbl}", delta_color="off")
-    
+
+    c2.metric("Offene Positionen", f"{total_open_count}", f"FTMO: {ftmo_open} | Futures: {apex_open} | Privat: {priv_open} | {usd_cluster_lbl}", delta_color="off")
+
     util_pct = (total_active_risk_eur / total_fleet_buffer_eur * 100) if total_fleet_buffer_eur > 0 else 0.0
     c3.metric("Aktives Restrisiko (€)", f"{total_active_risk_eur:,.2f} €", f"Auslastung: {util_pct:.1f} % (von {total_fleet_buffer_eur:,.2f} €)", delta_color="inverse" if util_pct > 80 else "off")
-    
-    c4.metric("Tages-PnL (Währungsgetrennt)", f"FTMO: {daily_pnl_ftmo_eur:+,.2f} €", f"Apex: {daily_pnl_apex_usd:+,.2f} $", delta_color="normal")
+
+    c4.metric("Tages-PnL (Währungsgetrennt)", f"FTMO: {daily_pnl_ftmo_eur:+,.2f} €", f"Futures: {daily_pnl_apex_usd:+,.2f} $", delta_color="normal")
     
     st.markdown("---")
     st.subheader("⚖️ RESONO Puffer-Parität")
@@ -9113,55 +9420,123 @@ with tab_fleet:
             if zone == "GREEN": return "#10B981"
             if zone == "YELLOW": return "#F59E0B"
             return "#EF4444"
+
+        def _build_bar_hover(fa, total_pct, surplus_pct):
+            if fa["class"] in ["apex", "eod_futures"]:
+                freeze_line = (
+                    f"Trailing-DD: 🔒 Freeze (KO-Floor: {fa['ko_floor']:,.2f} {fa['currency']})"
+                    if fa["is_frozen"]
+                    else f"Trailing-DD: 🔓 Trailing (KO-Floor: {fa['ko_floor']:,.2f} {fa['currency']})"
+                )
+            else:
+                freeze_line = "Trailing-DD: 🔓 Trailing (Statisch)"
+            surplus_line = f"<br>Puffer-Überschuss: +{surplus_pct:.1f} %" if surplus_pct > 0 else ""
+            return (
+                f"<b>{fa['name']}</b>"
+                f"<br>Effektiv: {total_pct:.1f} %"
+                f"{surplus_line}"
+                f"<br>Tagespuffer: {fa['daily_buffer']:,.2f} {fa['currency']}"
+                f"<br>Max DD Puffer: {fa['max_dd_buffer']:,.2f} {fa['currency']}"
+                f"<br>{freeze_line}"
+                f"<br>Zone: {fa['zone']}"
+            )
             
         if ftmo_accs:
-            x_ftmo, y_ftmo, custom_ftmo, colors_ftmo = [], [], [], []
+            x_ftmo_base, x_ftmo_surplus, y_ftmo = [], [], []
+            texts_ftmo_base, texts_ftmo_surplus, hovers_ftmo = [], [], []
+            colors_ftmo, widths_ftmo_surplus = [], []
             for i, fa in enumerate(ftmo_accs):
-                eff_pct = fa["effective_ratio"] * 100
-                x_ftmo.append(-eff_pct)
+                total_pct = max(0.0, fa["effective_ratio"] * 100.0)
+                base_pct = min(100.0, total_pct)
+                surplus_pct = max(0.0, total_pct - 100.0)
+                freeze_suffix = " · 🔒 Freeze" if fa["is_frozen"] else ""
+
+                x_ftmo_base.append(-base_pct)
+                x_ftmo_surplus.append(-surplus_pct)
                 y_ftmo.append(y_labels[i])
-                custom_ftmo.append([eff_pct, fa["daily_buffer"], fa["max_dd_buffer"], fa["currency"], fa["name"], fa["zone"]])
+                texts_ftmo_base.append(f"{fa['name']} · {total_pct:.0f} %{freeze_suffix}")
+                texts_ftmo_surplus.append(f"+{surplus_pct:.0f} %" if surplus_pct > 0 else "")
+                hovers_ftmo.append(_build_bar_hover(fa, total_pct, surplus_pct))
                 colors_ftmo.append(get_zone_color(fa["zone"]))
+                widths_ftmo_surplus.append(2.5 if surplus_pct > 0 else 0.0)
                 
             fig.add_trace(go.Bar(
-                x=x_ftmo, y=y_ftmo, orientation='h',
+                x=x_ftmo_base, y=y_ftmo, orientation='h',
                 marker_color=colors_ftmo,
                 marker_line_color="#0B0F17",
                 marker_line_width=2.5,
-                customdata=custom_ftmo,
-                texttemplate="%{customdata[4]} · %{customdata[0]:.0f} %",
+                text=texts_ftmo_base,
+                texttemplate="%{text}",
                 textposition="auto",
                 textfont=dict(color="#FFFFFF", size=13),
-                hovertemplate="<b>%{customdata[4]}</b><br>Effektiv: %{customdata[0]:.1f} %<br>Tagespuffer: %{customdata[1]:,.2f} %{customdata[3]}<br>Max DD Puffer: %{customdata[2]:,.2f} %{customdata[3]}<br>Zone: %{customdata[5]}<extra></extra>",
-                name="FTMO / Forex-Desks"
+                hovertext=hovers_ftmo,
+                hovertemplate="%{hovertext}<extra></extra>",
+                name="FTMO / Forex-Desks (Basis)"
+            ))
+
+            fig.add_trace(go.Bar(
+                x=x_ftmo_surplus, y=y_ftmo, orientation='h',
+                marker=dict(color="#FBBF24", line=dict(color="#0B0F17", width=widths_ftmo_surplus)),
+                text=texts_ftmo_surplus,
+                texttemplate="%{text}",
+                textposition="auto",
+                textfont=dict(color="#0B0F17", size=12),
+                hovertext=hovers_ftmo,
+                hovertemplate="%{hovertext}<extra></extra>",
+                name="FTMO / Forex-Desks (Überschuss)"
             ))
             
         if apex_accs:
-            x_apex, y_apex, custom_apex, colors_apex = [], [], [], []
+            x_apex_base, x_apex_surplus, y_apex = [], [], []
+            texts_apex_base, texts_apex_surplus, hovers_apex = [], [], []
+            colors_apex, widths_apex_surplus = [], []
             for i, fa in enumerate(apex_accs):
-                eff_pct = fa["effective_ratio"] * 100
-                x_apex.append(eff_pct)
+                total_pct = max(0.0, fa["effective_ratio"] * 100.0)
+                base_pct = min(100.0, total_pct)
+                surplus_pct = max(0.0, total_pct - 100.0)
+                freeze_suffix = " · 🔒 Freeze" if fa["is_frozen"] else ""
+
+                x_apex_base.append(base_pct)
+                x_apex_surplus.append(surplus_pct)
                 y_apex.append(y_labels[i])
-                custom_apex.append([eff_pct, fa["daily_buffer"], fa["max_dd_buffer"], fa["currency"], fa["name"], fa["zone"]])
+                texts_apex_base.append(f"{fa['name']} · {total_pct:.0f} %{freeze_suffix}")
+                texts_apex_surplus.append(f"+{surplus_pct:.0f} %" if surplus_pct > 0 else "")
+                hovers_apex.append(_build_bar_hover(fa, total_pct, surplus_pct))
                 colors_apex.append(get_zone_color(fa["zone"]))
+                widths_apex_surplus.append(2.5 if surplus_pct > 0 else 0.0)
                 
             fig.add_trace(go.Bar(
-                x=x_apex, y=y_apex, orientation='h',
+                x=x_apex_base, y=y_apex, orientation='h',
                 marker_color=colors_apex,
                 marker_line_color="#0B0F17",
                 marker_line_width=2.5,
-                customdata=custom_apex,
-                texttemplate="%{customdata[4]} · %{customdata[0]:.0f} %",
+                text=texts_apex_base,
+                texttemplate="%{text}",
                 textposition="auto",
                 textfont=dict(color="#FFFFFF", size=13),
-                hovertemplate="<b>%{customdata[4]}</b><br>Effektiv: %{customdata[0]:.1f} %<br>Tagespuffer: %{customdata[1]:,.2f} %{customdata[3]}<br>Max DD Puffer: %{customdata[2]:,.2f} %{customdata[3]}<br>Zone: %{customdata[5]}<extra></extra>",
-                name="Apex / Futures-Desks"
+                hovertext=hovers_apex,
+                hovertemplate="%{hovertext}<extra></extra>",
+                name="Futures-Desks (Basis)"
             ))
+
+            fig.add_trace(go.Bar(
+                x=x_apex_surplus, y=y_apex, orientation='h',
+                marker=dict(color="#FBBF24", line=dict(color="#0B0F17", width=widths_apex_surplus)),
+                text=texts_apex_surplus,
+                texttemplate="%{text}",
+                textposition="auto",
+                textfont=dict(color="#0B0F17", size=12),
+                hovertext=hovers_apex,
+                hovertemplate="%{hovertext}<extra></extra>",
+                name="Futures-Desks (Überschuss)"
+            ))
+
+        max_axis = max([122.0] + [fa["effective_ratio"] * 100.0 + 18.0 for fa in prop_accs])
             
         fig.update_layout(
             barmode="relative",
             xaxis=dict(
-                range=[-122, 122],
+                range=[-max_axis, max_axis],
                 tickvals=[-100, -60, -30, 0, 32, 60, 100],
                 ticktext=["100 %", "60 %", "30 %", "0 % (Freeze)", "32 %", "60 %", "100 %"],
                 zeroline=True, zerolinewidth=3, zerolinecolor="#F8FAFC",
@@ -9180,28 +9555,37 @@ with tab_fleet:
             ]
         )
         
+        fig.add_vline(x=-100, line_dash="dash", line_color="#FBBF24", opacity=0.45)
         fig.add_vline(x=-60, line_dash="dash", line_color="#F59E0B", opacity=0.5)
         fig.add_vline(x=-30, line_dash="dash", line_color="#EF4444", opacity=0.5)
         fig.add_vline(x=32, line_dash="dash", line_color="#EF4444", opacity=0.5)
         fig.add_vline(x=60, line_dash="dash", line_color="#F59E0B", opacity=0.5)
+        fig.add_vline(x=100, line_dash="dash", line_color="#FBBF24", opacity=0.45)
         
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("⚪ Keine Prop-Konten (FTMO/Apex) konfiguriert. Füge Konten im 'Konto/Lab'-Tab hinzu.")
+        if snapshot_mode == "FALLBACK":
+            st.info("📡 Noch kein Live-Snapshot vom Netcup-Host vorhanden. Prop-Desks erscheinen automatisch nach dem ersten Telemetrie-Sync.")
+        else:
+            st.info("⚪ Keine Prop-Konten (FTMO/Apex/EOD-Futures) im aktuellen Netcup-Snapshot gemeldet.")
 
     st.markdown("---")
     c_det_l, c_det_r = st.columns(2)
     
     def render_account_expander(fa, open_txs):
         zone_icon = "🟢 Grün" if fa["zone"] == "GREEN" else ("🟡 Schonmodus" if fa["zone"] == "YELLOW" else ("🔴 Rot" if fa["zone"] == "RED" else "⚪ Privat"))
+        broker_connected = bool(fa.get("broker_connected", False))
         
-        if fa["snapshot_mode"] == "LIVE": conn_icon = "⚡ Live"
-        elif fa["snapshot_mode"] == "STALE": conn_icon = "⚠️ Nicht live"
-        else: conn_icon = "📁 Fallback"
+        if fa["snapshot_mode"] in ["LIVE", "STALE"] and not broker_connected:
+            conn_icon = "🔌 Broker getrennt"
+        elif fa["snapshot_mode"] == "LIVE" and broker_connected:
+            conn_icon = "⚡ Live"
+        elif fa["snapshot_mode"] == "STALE" and broker_connected:
+            conn_icon = "⚠️ Nicht live"
+        else:
+            conn_icon = "📁 Fallback"
         
-        is_expanded = (len(open_txs) > 0) or (fa["zone"] not in ["GREEN", "PRIVATE"])
-        
-        with st.expander(f"{fa['name']} ({fa['broker_account_id'] or 'Keine ID'}) | {zone_icon} | {conn_icon}", expanded=is_expanded):
+        with st.expander(f"{fa['name']} ({fa['broker_account_id'] or 'Keine ID'}) | {zone_icon} | {conn_icon}", expanded=False):
             st.markdown(f"**Modus:** `{fa['execution_mode']}` | **Whitelist:** `{', '.join(fa['tickers']) if fa['tickers'] else 'Keine'}`")
             
             is_eod_exp = (fa["class"] == "eod_futures" or fa["daily_loss"] <= 0)
@@ -9220,11 +9604,9 @@ with tab_fleet:
             
             if fa["class"] in ["apex", "eod_futures"]:
                 hwm = fa["high_watermark"]
-                raw_ko = hwm - fa["trail_dd"]
                 lock_offset = (fa["start_cap"] * 0.001) if fa["class"] == "eod_futures" else 100.0
-                lock_level = fa["start_cap"] + lock_offset
-                is_locked = raw_ko >= lock_level
-                ko_floor = lock_level if is_locked else raw_ko
+                is_locked = bool(fa.get("is_frozen", False))
+                ko_floor = float(fa.get("ko_floor", 0.0))
                 
                 lock_str = f"(🔒 Eingerastet +{lock_offset:,.0f} $)" if is_locked else "(🔓 Offen / Trailing)"
                 if fa["class"] == "eod_futures":
@@ -9239,7 +9621,7 @@ with tab_fleet:
             if open_txs:
                 tx_data = []
                 for t in open_txs:
-                    risk_val = float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0)))
+                    risk_val = _safe_float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0)), 0.0)
                     tx_data.append({
                         "Symbol": t.get("symbol"),
                         "Dir": t.get("direction"),
@@ -9255,16 +9637,93 @@ with tab_fleet:
     with c_det_l:
         st.markdown("### 🌍 FTMO / Forex-Desks")
         if not ftmo_accs:
-            st.caption("Keine FTMO Konten.")
+            st.caption("Noch kein Live-Snapshot vom Netcup-Host." if snapshot_mode == "FALLBACK" else "Keine FTMO-Konten im Snapshot.")
         for fa in ftmo_accs:
             render_account_expander(fa, open_trades_fleet[fa["id"]])
             
     with c_det_r:
         st.markdown("### 🏎️ Futures-Desks (Apex / EOD)")
         if not apex_accs:
-            st.caption("Keine Futures-Konten.")
+            st.caption("Noch kein Live-Snapshot vom Netcup-Host." if snapshot_mode == "FALLBACK" else "Keine Futures-Konten im Snapshot.")
         for fa in apex_accs:
             render_account_expander(fa, open_trades_fleet[fa["id"]])
+
+    st.markdown("---")
+    with st.expander("📚 Netcup Kontohistorie (Prop-Desks)", expanded=False):
+        nc_hist_path = get_user_file("netcup_trade_journal.csv")
+        df_nc_raw = pd.DataFrame()
+        if os.path.exists(nc_hist_path):
+            try:
+                df_nc_raw = pd.read_csv(nc_hist_path)
+            except Exception:
+                df_nc_raw = pd.DataFrame()
+
+        df_nc_closed = pd.DataFrame()
+        if not df_nc_raw.empty and "status" in df_nc_raw.columns:
+            df_nc_closed = df_nc_raw[df_nc_raw["status"].astype(str).str.upper() == "CLOSED"].copy()
+            if not df_nc_closed.empty:
+                if "symbol" in df_nc_closed.columns:
+                    df_nc_closed = df_nc_closed[~df_nc_closed["symbol"].astype(str).str.upper().isin(["CASH", "PAYOUT", "CHALLENGE_FEE"])]
+                if "setup_type" in df_nc_closed.columns:
+                    df_nc_closed = df_nc_closed[~df_nc_closed["setup_type"].astype(str).str.upper().isin(["DEPOSIT", "WITHDRAWAL", "PAYOUT", "CHALLENGE_FEE"])]
+
+        if df_nc_closed.empty:
+            st.info("Noch keine abgeschlossenen Netcup-Prop-Trades synchronisiert.")
+        else:
+            for req_col in ["account_name", "entry_date", "exit_date", "symbol", "direction", "position_size", "exit_reason", "pnl_eur", "r_multiple"]:
+                if req_col not in df_nc_closed.columns:
+                    df_nc_closed[req_col] = 0.0 if req_col in ["pnl_eur", "r_multiple", "position_size"] else ""
+
+            df_nc_closed["account_name"] = df_nc_closed["account_name"].fillna("Unbekannt").astype(str)
+            df_nc_closed["pnl_eur"] = pd.to_numeric(df_nc_closed["pnl_eur"], errors="coerce").fillna(0.0)
+            df_nc_closed["r_multiple"] = pd.to_numeric(df_nc_closed["r_multiple"], errors="coerce").fillna(0.0)
+
+            nc_acc_opts = ["Alle Prop-Konten"] + sorted(df_nc_closed["account_name"].unique().tolist())
+            sel_nc_acc = st.selectbox("Konto filtern:", nc_acc_opts, index=0, key="fleet_netcup_hist_filter")
+
+            df_nc_view = df_nc_closed if sel_nc_acc == "Alle Prop-Konten" else df_nc_closed[df_nc_closed["account_name"] == sel_nc_acc].copy()
+
+            def _parse_nc_exit_dt(val):
+                s = str(val).strip()
+                for dt_fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        return datetime.datetime.strptime(s, dt_fmt)
+                    except ValueError:
+                        pass
+                try:
+                    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    return datetime.datetime.min
+
+            df_nc_view["_sort_dt"] = df_nc_view["exit_date"].apply(_parse_nc_exit_dt)
+            df_nc_view = df_nc_view.sort_values(by="_sort_dt", ascending=False).drop(columns=["_sort_dt"])
+
+            nc_total_pnl = float(df_nc_view["pnl_eur"].sum())
+            nc_trade_cnt = len(df_nc_view)
+            nc_wins = int((df_nc_view["pnl_eur"] > 0).sum())
+            nc_winrate = (nc_wins / nc_trade_cnt * 100.0) if nc_trade_cnt > 0 else 0.0
+
+            c_nh1, c_nh2, c_nh3 = st.columns(3)
+            c_nh1.metric("Realisierter PnL (€)", f"{nc_total_pnl:,.2f} €")
+            c_nh2.metric("Abgeschlossene Trades", f"{nc_trade_cnt}")
+            c_nh3.metric("Winrate (%)", f"{nc_winrate:.1f} %")
+
+            df_nc_disp = df_nc_view[["account_name", "entry_date", "exit_date", "symbol", "direction", "position_size", "exit_reason", "pnl_eur", "r_multiple"]].copy()
+            df_nc_disp["pnl_eur"] = df_nc_disp["pnl_eur"].apply(lambda x: f"{x:.2f} €")
+            df_nc_disp["r_multiple"] = df_nc_disp["r_multiple"].apply(lambda x: f"{x:.2f} R")
+            df_nc_disp.rename(columns={
+                "account_name": "Konto",
+                "entry_date": "Entry",
+                "exit_date": "Exit",
+                "symbol": "Ticker",
+                "direction": "Richtung",
+                "position_size": "Größe",
+                "exit_reason": "Exit-Grund",
+                "pnl_eur": "PnL (€)",
+                "r_multiple": "R-Multiple"
+            }, inplace=True)
+
+            st.dataframe(df_nc_disp, hide_index=True, use_container_width=True)
             
     private_accs = [fa for fa in fleet_accounts.values() if fa["class"] == "private"]
     if private_accs:
@@ -9274,7 +9733,7 @@ with tab_fleet:
         for i, fa in enumerate(private_accs):
             with c_priv[i % 4]:
                 txs = open_trades_fleet[fa["id"]]
-                r_eur = sum(float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0))) for t in txs)
+                r_eur = sum(_safe_float(t.get("current_risk_eur", t.get("planned_risk_eur", 0.0)), 0.0) for t in txs)
                 with st.container(border=True):
                     st.markdown(f"**{fa['name']}**")
                     st.caption(f"Kapital: {fa['equity']:,.2f} {fa['currency']} | Whitelist: {len(fa['tickers'])}")

@@ -349,8 +349,112 @@ def run_test_battery():
     assert res_4_3["max_lots"] == 0.0, f"4.3 Fehler: max_lots={res_4_3['max_lots']}"
     print(f"  [OK] 4.3 Rote Zone (Puffer $35 < $50 Notbremse): allowed={res_4_3['allowed']}, status={res_4_3['status_code']}, Lots={res_4_3['max_lots']}\n")
 
+    # =========================================================================
+    # 5. TEST-BATTERIE 5: EOD-FUTURES (MFFU / TRADEIFY) — DYNAMIK & GANGSCHALTUNG
+    # =========================================================================
+    print("--- [BATTERIE 5] EOD-FUTURES (DYNAMISCH, GANGSCHALTUNG & BELEGUNGS-DECKEL) ---")
+
+    # Szenario 5.1: Frisches 100k EOD Konto (daily_loss_limit=0.0 -> kein Div/0, EVAL_TURBO $350)
+    eod_5_1 = {
+        "account_id": "MFFU_100K_EVAL",
+        "account_type": "eod_futures",
+        "account_size": 100000.0,
+        "current_balance": 100000.0,
+        "high_watermark": 100000.0,
+        "daily_loss_limit": 0.0,
+        "has_open_position": False
+    }
+    res_5_1 = resono.evaluate_account_risk(eod_5_1, {"symbol": "MNQ", "stop_distance_points": 50.0})
+    assert res_5_1["allowed"] is True, f"5.1 Fehler: allowed={res_5_1['allowed']}"
+    assert res_5_1["status_code"] == "GREEN_FULL", f"5.1 Fehler: status_code={res_5_1['status_code']}"
+    assert res_5_1["max_contracts"] == 3, f"5.1 Fehler: max_contracts={res_5_1['max_contracts']}"
+    assert res_5_1["risk_buffer_usd"] == 3000.0, f"5.1 Fehler: risk_buffer_usd={res_5_1['risk_buffer_usd']}"
+    assert "EVAL_TURBO" in res_5_1["ui_reason"] and "350.00" in res_5_1["ui_reason"], f"5.1 Fehler: {res_5_1['ui_reason']}"
+    print(f"  [OK] 5.1 100k EOD EVAL_TURBO (daily_loss=0.0): Puffer=${res_5_1['risk_buffer_usd']} -> {res_5_1['max_contracts']} MNQ ({res_5_1['status_code']})")
+
+    # Szenario 5.2: Dynamische Skalierung auf 50k EOD (3% DD = $1.500 | EVAL_TURBO $175 | FUNDED_SHIELD $125)
+    eod_5_2_eval = {
+        "account_id": "MFFU_50K_EVAL",
+        "account_type": "eod_futures",
+        "account_size": 50000.0,
+        "current_balance": 50000.0,
+        "high_watermark": 50000.0,
+        "has_open_position": False
+    }
+    res_5_2a = resono.evaluate_account_risk(eod_5_2_eval, {"symbol": "MGC", "stop_distance_points": 17.5})
+    assert res_5_2a["allowed"] is True and res_5_2a["risk_buffer_usd"] == 1500.0, f"5.2a Fehler: {res_5_2a}"
+    assert "EVAL_TURBO" in res_5_2a["ui_reason"] and "175.00" in res_5_2a["ui_reason"], f"5.2a Fehler: {res_5_2a['ui_reason']}"
+
+    eod_5_2_funded = dict(eod_5_2_eval, account_id="MFFU_50K_PA", name="MFFU 50k Funded")
+    res_5_2b = resono.evaluate_account_risk(eod_5_2_funded, {"symbol": "MNQ", "stop_distance_points": 62.5})
+    res_5_2c = resono.evaluate_account_risk(eod_5_2_funded, {"symbol": "MGC", "stop_distance_points": 13.0})
+    assert res_5_2b["allowed"] is True and "FUNDED_SHIELD" in res_5_2b["ui_reason"] and "125.00" in res_5_2b["ui_reason"], f"5.2b Fehler: {res_5_2b}"
+    assert res_5_2c["allowed"] is False and res_5_2c["status_code"] == "SL_TOO_WIDE", f"5.2c Fehler: {res_5_2c}"
+    print("  [OK] 5.2 50k EOD Skalierung: DD=$1500.0 | EVAL_TURBO=$175 | FUNDED_SHIELD=$125 (MGC 13.0 -> SL_TOO_WIDE)")
+
+    # Szenario 5.3: 4er-Kader am exakten Stop-Deckel im FUNDED_SHIELD ($250) + Überschreitung (MGC 26.0)
+    eod_5_3_funded = dict(eod_5_1, account_id="MFFU_100K_PA", name="MFFU 100k Funded")
+    for k_sym, k_sl, exp_risk in [("6E=F", 0.0160, 200.0), ("GC=F", 25.0, 250.0), ("CL=F", 2.50, 250.0), ("NQ=F", 62.5, 125.0)]:
+        r_k = resono.evaluate_account_risk(eod_5_3_funded, {"symbol": k_sym, "stop_distance_points": k_sl})
+        assert r_k["allowed"] is True and r_k["status_code"] == "GREEN_FULL", f"5.3 Fehler {k_sym}: {r_k}"
+        assert r_k["trade_risk_usd"] == exp_risk and r_k["max_contracts"] >= 1, f"5.3 Risiko {k_sym}: {r_k}"
+        assert r_k["max_contracts"] * r_k["trade_risk_usd"] <= 250.0, f"5.3 Gesamtrisiko {k_sym}: {r_k}"
+    res_5_3_over = resono.evaluate_account_risk(eod_5_3_funded, {"symbol": "MGC", "stop_distance_points": 26.0})
+    assert res_5_3_over["allowed"] is False and res_5_3_over["status_code"] == "SL_TOO_WIDE", f"5.3 Over Fehler: {res_5_3_over}"
+    print("  [OK] 5.3 4er-Kader am Stop-Deckel (6E/GC/CL/NQ) im FUNDED_SHIELD ($250): 4/4 frei, MGC 26.0 -> SL_TOO_WIDE")
+
+    # Szenario 5.4: Auto-Gangwechsel ab KO-Floor-Freeze (HWM $103.100 -> KO-Floor $100.100 -> FUNDED_SHIELD)
+    eod_5_4_freeze = {
+        "account_id": "MFFU_100K_EVAL",
+        "account_type": "eod_futures",
+        "account_size": 100000.0,
+        "current_balance": 103100.0,
+        "high_watermark": 103100.0,
+        "has_open_position": False
+    }
+    res_5_4a = resono.evaluate_account_risk(eod_5_4_freeze, {"symbol": "MGC", "stop_distance_points": 25.0})
+    res_5_4b = resono.evaluate_account_risk(eod_5_4_freeze, {"symbol": "MGC", "stop_distance_points": 26.0})
+    assert res_5_4a["allowed"] is True and res_5_4a["ko_threshold_usd"] == 100100.0, f"5.4a Fehler: {res_5_4a}"
+    assert "FUNDED_SHIELD" in res_5_4a["ui_reason"] and "250.00" in res_5_4a["ui_reason"], f"5.4a Gang: {res_5_4a['ui_reason']}"
+    assert res_5_4b["allowed"] is False and res_5_4b["status_code"] == "SL_TOO_WIDE", f"5.4b Fehler: {res_5_4b}"
+    print("  [OK] 5.4 Auto-Gangwechsel @ HWM $103.100 (KO-Floor $100.100): FUNDED_SHIELD ($250) aktiv")
+
+    # Szenario 5.5: Gelbe Zone (halbiertes Risiko, Cap=1) & Rote Zone + Sniper-Reha
+    eod_5_5_yel = dict(eod_5_1, current_balance=98500.0, high_watermark=100000.0)
+    res_5_5_yel_ok = resono.evaluate_account_risk(eod_5_5_yel, {"symbol": "MNQ", "stop_distance_points": 87.5})
+    res_5_5_yel_no = resono.evaluate_account_risk(eod_5_5_yel, {"symbol": "MNQ", "stop_distance_points": 88.0})
+    assert res_5_5_yel_ok["allowed"] is True and res_5_5_yel_ok["status_code"] == "YELLOW_THROTTLED" and res_5_5_yel_ok["max_contracts"] == 1, f"5.5 Gelb OK: {res_5_5_yel_ok}"
+    assert res_5_5_yel_no["allowed"] is False and res_5_5_yel_no["status_code"] == "SL_TOO_WIDE", f"5.5 Gelb Wide: {res_5_5_yel_no}"
+
+    eod_5_5_red = dict(eod_5_1, current_balance=97750.0, high_watermark=100000.0)
+    res_5_5_red_mute = resono.evaluate_account_risk(eod_5_5_red, {"symbol": "MNQ", "stop_distance_points": 50.0, "score": 70.0})
+    res_5_5_red_snip = resono.evaluate_account_risk(eod_5_5_red, {"symbol": "MNQ", "stop_distance_points": 75.0, "score": 80.0})
+    assert res_5_5_red_mute["allowed"] is False and res_5_5_red_mute["status_code"] == "MUTED_RED_ZONE", f"5.5 Rot Mute: {res_5_5_red_mute}"
+    assert res_5_5_red_snip["allowed"] is True and res_5_5_red_snip["status_code"] == "SNIPER_REHAB" and res_5_5_red_snip["max_contracts"] == 1, f"5.5 Rot Sniper: {res_5_5_red_snip}"
+    print("  [OK] 5.5 Gelbe Zone (Cap=1, 50% Risiko) & Rote Zone (MUTED_RED_ZONE vs. SNIPER_REHAB)")
+
+    # Szenario 5.6: Belegungs-Deckel (max. 2 Futures, max. 1 pro Asset) & Whitelist (MES gesperrt)
+    eod_5_6_one = dict(eod_5_1, has_open_position=True, open_positions_count=1, open_symbols=["MNQ"])
+    res_5_6_ok = resono.evaluate_account_risk(eod_5_6_one, {"symbol": "M6E", "stop_distance_points": 0.0120})
+    res_5_6_same = resono.evaluate_account_risk(eod_5_6_one, {"symbol": "NQ=F", "stop_distance_points": 40.0})
+    eod_5_6_two = dict(eod_5_1, has_open_position=True, open_positions_count=2, open_symbols=["MNQ", "MGC"])
+    res_5_6_full = resono.evaluate_account_risk(eod_5_6_two, {"symbol": "MCL", "stop_distance_points": 1.50})
+    res_5_6_mes = resono.evaluate_account_risk(eod_5_1, {"symbol": "MES", "stop_distance_points": 10.0, "point_value": 5.0})
+    assert res_5_6_ok["allowed"] is True, f"5.6 1 offen -> 2. Asset: {res_5_6_ok}"
+    assert res_5_6_same["allowed"] is False and res_5_6_same["status_code"] == "VETO_OCCUPIED", f"5.6 Same-Asset: {res_5_6_same}"
+    assert res_5_6_full["allowed"] is False and res_5_6_full["status_code"] == "VETO_OCCUPIED", f"5.6 2 offen: {res_5_6_full}"
+    assert res_5_6_mes["allowed"] is False and res_5_6_mes["status_code"] == "UNAUTHORIZED_PROP_ASSET", f"5.6 MES: {res_5_6_mes}"
+    print("  [OK] 5.6 Belegungs-Deckel (max. 2 Futures, 1 pro Asset) & Whitelist (MES -> UNAUTHORIZED_PROP_ASSET)")
+
+    # Szenario 5.7: Plateau-Korridore MGC/M6E (65-75) & point_value=0.0 Schutz (Veto Stufe 3)
+    assert resono.calculate_plateau_distance("MGC", 70.0) == 0.0 and resono.calculate_plateau_distance("M6E", 65.0) == 0.0
+    assert resono.calculate_plateau_distance("M6E", 80.0) == 5.0
+    res_5_7_pv0 = resono.evaluate_account_risk(eod_5_1, {"symbol": "M6E", "stop_distance_points": 0.0100, "point_value": 0.0})
+    assert res_5_7_pv0["allowed"] is False and res_5_7_pv0["status_code"] == "INVALID_SL_DISTANCE", f"5.7 PV=0: {res_5_7_pv0}"
+    print("  [OK] 5.7 Plateau-Korridore (MGC/M6E: 65-75) & point_value=0.0 Schutz (INVALID_SL_DISTANCE)\n")
+
     print("============================================================")
-    print("✅ ALLE 4 RESONO TEST-BATTERIEN ERFOLGREICH BESTANDEN (17/17)")
+    print("✅ ALLE 5 RESONO TEST-BATTERIEN ERFOLGREICH BESTANDEN (24/24)")
     print("============================================================")
 
 

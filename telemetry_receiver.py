@@ -68,7 +68,7 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Not Found"})
 
     def do_POST(self):
-        if self.path != '/api/telemetry/fleet':
+        if self.path not in ('/api/telemetry/fleet', '/api/telemetry/journal'):
             return self.send_json(404, {"error": "Not Found"})
 
         # Stufe 1: Server-Token bereit
@@ -89,7 +89,7 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
         if 'application/json' not in self.headers.get('Content-Type', ''):
             return self.send_json(415, {"error": "Unsupported Media Type - Must be application/json"})
 
-        # Stufe 4: Payload-Größenlimit 64 KB
+        # Stufe 4: Payload-Größenlimit (64 KB für Fleet, 2 MB für Journal)
         clength_str = self.headers.get('Content-Length')
         if not clength_str:
             return self.send_json(411, {"error": "Length Required"})
@@ -100,62 +100,114 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             return self.send_json(400, {"error": "Bad Request - Invalid Content-Length"})
         
-        if clength > 65536:
-            return self.send_json(413, {"error": "Payload Too Large - Exceeds 64KB"})
+        max_bytes = 2097152 if self.path == '/api/telemetry/journal' else 65536
+        if clength > max_bytes:
+            limit_label = "2MB" if self.path == '/api/telemetry/journal' else "64KB"
+            return self.send_json(413, {"error": f"Payload Too Large - Exceeds {limit_label}"})
 
         raw_data = self.rfile.read(clength)
 
-        # Stufe 5: JSON-Syntax & Top-Level-Whitelist
+        # Stufe 5: JSON-Syntax & Root-Dictionary
         try:
             payload = json.loads(raw_data.decode('utf-8'))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return self.send_json(400, {"error": "Bad Request - Invalid JSON"})
 
         if not isinstance(payload, dict):
             return self.send_json(400, {"error": "Bad Request - JSON must be an object"})
 
-        allowed_keys = {"schema_version", "updated_at", "accounts", "node_origin", "executor_mode", "kill_switch_active"}
-        required_keys = {"schema_version", "updated_at", "accounts"}
         payload_keys = set(payload.keys())
-        
-        if not required_keys.issubset(payload_keys):
-            return self.send_json(400, {"error": "Bad Request - Missing required keys"})
-        if not payload_keys.issubset(allowed_keys):
-            return self.send_json(400, {"error": "Bad Request - Unknown keys in payload"})
 
-        # Stufe 6: Inhalts- & Zeitstempel-Plausibilität
-        if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
-            return self.send_json(400, {"error": "Bad Request - Invalid schema_version"})
-        
-        if "kill_switch_active" in payload and type(payload["kill_switch_active"]) is not bool:
-            return self.send_json(400, {"error": "Bad Request - kill_switch_active must be bool"})
-
-        accounts = payload["accounts"]
-        if not isinstance(accounts, dict) or not accounts:
-            return self.send_json(400, {"error": "Bad Request - accounts must be a non-empty object"})
-        
-        required_acc_keys = {"account_id", "currency", "equity", "daily_buffer", "max_dd_buffer"}
-        for acc_k, acc_v in accounts.items():
-            if not isinstance(acc_v, dict) or not required_acc_keys.issubset(set(acc_v.keys())):
-                return self.send_json(400, {"error": "Bad Request - invalid account structure"})
-
-        try:
-            ts_str = payload["updated_at"].replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+        if self.path == '/api/telemetry/fleet':
+            allowed_keys = {
+                "schema_version", "updated_at", "accounts", "node_origin",
+                "executor_mode", "kill_switch_active", "timestamp", "live_prices"
+            }
+            required_keys = {"schema_version", "updated_at", "accounts"}
             
-            delta_sec = (datetime.now(timezone.utc) - dt).total_seconds()
-            if delta_sec > 300 or delta_sec < -60:
-                return self.send_json(422, {"error": "Unprocessable Entity - Timestamp out of valid range"})
-        except ValueError:
-            return self.send_json(400, {"error": "Bad Request - Invalid ISO-8601 timestamp"})
+            if not required_keys.issubset(payload_keys):
+                return self.send_json(400, {"error": "Bad Request - Missing required keys"})
+            if not payload_keys.issubset(allowed_keys):
+                return self.send_json(400, {"error": "Bad Request - Unknown keys in payload"})
 
-        # Speicherung
-        if not self.save_snapshot(payload):
-            return self.send_json(500, {"error": "Internal Server Error during write"})
+            # Stufe 6: Inhalts- & Zeitstempel-Plausibilität
+            if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+                return self.send_json(400, {"error": "Bad Request - Invalid schema_version"})
+            
+            if "kill_switch_active" in payload and type(payload["kill_switch_active"]) is not bool:
+                return self.send_json(400, {"error": "Bad Request - kill_switch_active must be bool"})
 
-        self.send_json(200, {"status": "ok"})
+            accounts = payload["accounts"]
+            if not isinstance(accounts, dict) or not accounts:
+                return self.send_json(400, {"error": "Bad Request - accounts must be a non-empty object"})
+            
+            required_acc_keys = {"account_id", "currency", "equity", "daily_buffer", "max_dd_buffer"}
+            for acc_k, acc_v in accounts.items():
+                if not isinstance(acc_v, dict) or not required_acc_keys.issubset(set(acc_v.keys())):
+                    return self.send_json(400, {"error": "Bad Request - invalid account structure"})
+
+            if not isinstance(payload["updated_at"], str):
+                return self.send_json(400, {"error": "Bad Request - Invalid ISO-8601 timestamp"})
+
+            try:
+                ts_str = payload["updated_at"].replace("Z", "+00:00")
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                
+                delta_sec = (datetime.now(timezone.utc) - dt).total_seconds()
+                if delta_sec > 300 or delta_sec < -60:
+                    return self.send_json(422, {"error": "Unprocessable Entity - Timestamp out of valid range"})
+            except ValueError:
+                return self.send_json(400, {"error": "Bad Request - Invalid ISO-8601 timestamp"})
+
+            # Speicherung
+            if not self.save_snapshot(payload):
+                return self.send_json(500, {"error": "Internal Server Error during write"})
+
+            self.send_json(200, {"status": "ok"})
+
+        elif self.path == '/api/telemetry/journal':
+            required_keys = {"schema_version", "updated_at", "csv_content"}
+            allowed_keys = {"schema_version", "updated_at", "csv_content", "node_origin", "row_count"}
+
+            if not required_keys.issubset(payload_keys):
+                return self.send_json(400, {"error": "Bad Request - Missing required keys"})
+            if not payload_keys.issubset(allowed_keys):
+                return self.send_json(400, {"error": "Bad Request - Unknown keys in payload"})
+
+            if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+                return self.send_json(400, {"error": "Bad Request - Invalid schema_version"})
+
+            if not isinstance(payload["updated_at"], str):
+                return self.send_json(400, {"error": "Bad Request - Invalid ISO-8601 timestamp"})
+
+            try:
+                ts_str = payload["updated_at"].replace("Z", "+00:00")
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+
+                delta_sec = (datetime.now(timezone.utc) - dt).total_seconds()
+                if delta_sec > 300 or delta_sec < -60:
+                    return self.send_json(422, {"error": "Unprocessable Entity - Timestamp out of valid range"})
+            except ValueError:
+                return self.send_json(400, {"error": "Bad Request - Invalid ISO-8601 timestamp"})
+
+            csv_content = payload["csv_content"]
+            if not isinstance(csv_content, str):
+                return self.send_json(400, {"error": "Bad Request - csv_content must be a string"})
+
+            if csv_content.strip():
+                first_line = next((line for line in csv_content.splitlines() if line.strip()), "")
+                header_cols = [col.strip().strip('"').strip("'").lstrip('\ufeff') for col in first_line.split(",")]
+                if "id" not in header_cols or "status" not in header_cols:
+                    return self.send_json(400, {"error": "Invalid CSV header"})
+
+            if not self.save_journal(csv_content):
+                return self.send_json(500, {"error": "Internal Server Error during write"})
+
+            self.send_json(200, {"status": "ok"})
 
     def save_snapshot(self, payload):
         test_dir = os.environ.get("_TEST_TARGET_DIR")
@@ -182,6 +234,39 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
                 return True
             except Exception as e:
                 logging.error(f"Error saving snapshot: {e}")
+                return False
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+
+    def save_journal(self, csv_content: str) -> bool:
+        test_dir = os.environ.get("_TEST_TARGET_DIR")
+        if test_dir:
+            target_dir = test_dir
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            user = os.environ.get("TELEMETRY_TARGET_USER", "admin")
+            target_dir = os.path.join(base_dir, "users", user)
+            os.makedirs(target_dir, exist_ok=True)
+
+        target_path = os.path.join(target_dir, "netcup_trade_journal.csv")
+        tid = threading.get_native_id()
+        uid = uuid.uuid4().hex
+        tmp_path = os.path.join(target_dir, f"netcup_trade_journal.{tid}.{uid}.tmp")
+
+        with _write_lock:
+            try:
+                with open(tmp_path, 'w', encoding='utf-8', newline='') as f:
+                    f.write(csv_content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, target_path)
+                return True
+            except Exception as e:
+                logging.error(f"Error saving journal: {e}")
                 return False
             finally:
                 if os.path.exists(tmp_path):
@@ -264,6 +349,33 @@ def run_self_test():
             assert r.status == 200, f"Success test failed (got {r.status})"
             r.read()
             assert os.path.exists(os.path.join(temp_dir, "fleet_snapshot.json")), "File not saved"
+
+            # Test 7: Journal Schema- & Header-Validierung
+            bad_journal_payload = json.dumps({
+                "schema_version": 1,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "csv_content": "foo,bar\n1,2"
+            })
+            conn.request("POST", "/api/telemetry/journal", bad_journal_payload, {"Content-Type": "application/json", "Authorization": "Bearer VALIDTOKEN_12345678901234567890123"})
+            r = conn.getresponse()
+            assert r.status == 400, f"Journal header validation test failed (got {r.status})"
+            r.read()
+
+            # Test 8: Journal Atomare Speicherung
+            valid_csv_content = "id,account_name,symbol,status\nT1,FTMO,EURUSD=X,OPEN\n"
+            valid_journal_payload = json.dumps({
+                "schema_version": 1,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "csv_content": valid_csv_content
+            })
+            conn.request("POST", "/api/telemetry/journal", valid_journal_payload, {"Content-Type": "application/json", "Authorization": "Bearer VALIDTOKEN_12345678901234567890123"})
+            r = conn.getresponse()
+            assert r.status == 200, f"Journal save test failed (got {r.status})"
+            r.read()
+            journal_target_path = os.path.join(temp_dir, "netcup_trade_journal.csv")
+            assert os.path.exists(journal_target_path), "Journal file not saved"
+            with open(journal_target_path, 'r', encoding='utf-8', newline='') as jf:
+                assert jf.read() == valid_csv_content, "Journal content mismatch"
             
             logging.info("All self-tests passed successfully.")
             sys.exit(0)
